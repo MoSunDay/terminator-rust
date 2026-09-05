@@ -1,7 +1,11 @@
 //! Session wiring: pty reader thread, terminal state, key encoding.
 
+use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use libghostty_vt::key::{Action, Encoder as KeyEncoder, Event as KeyEvent, Mods};
@@ -10,6 +14,7 @@ use libghostty_vt::terminal::Mode;
 use libghostty_vt::Terminal;
 
 use crate::pty::{self, PtyHandle};
+use crate::effects::{self, CellPx};
 use crate::term::{snapshot_frame, Frame};
 
 /// Events delivered by the pty reader thread.
@@ -65,6 +70,8 @@ impl SessionOpts {
 pub struct Session {
     handle: PtyHandle,
     events: Receiver<PtyEvent>,
+    /// Set by `terminate`; the reader thread polls it between reads.
+    stop: Arc<AtomicBool>,
     pub term: Terminal<'static, 'static>,
     render_state: RenderState<'static>,
     row_it: RowIterator<'static>,
@@ -73,6 +80,8 @@ pub struct Session {
     key_event: KeyEvent<'static>,
     /// Non-empty once the child has exited / the master closed.
     pub exit: Option<i32>,
+    /// Current cell pixel size, shared with the size-query effect.
+    cell_px: CellPx,
 }
 
 /// Spawn a session for the given options.
@@ -91,18 +100,35 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
     term.on_pty_write(move |_t, data| {
         let _ = pty::pty_write(write_fd, data);
     })?;
+    let cell_px = effects::new_cell_px();
+    effects::install(&mut term, Arc::clone(&cell_px))?;
 
     let (tx, rx) = channel::<PtyEvent>();
     let read_fd = handle.master_fd;
     let pid = handle.child_pid;
-    thread::Builder::new()
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_reader = Arc::clone(&stop);
+    let reader = thread::Builder::new()
         .name("pty-reader".to_string())
-        .spawn(move || reader_loop(read_fd, pid, tx))
-        .context("spawning reader thread")?;
+        .spawn(move || reader_loop(read_fd, pid, stop_reader, tx));
+    match reader {
+        Ok(_) => {}
+        Err(e) => {
+            // No reader thread will own or close the fd: clean up the
+            // just-forked child and the master fd ourselves.
+            signal_group(handle.child_pid, libc::SIGKILL);
+            // SAFETY: plain C close.
+            unsafe {
+                libc::close(handle.master_fd);
+            }
+            return Err(e).context("spawning reader thread");
+        }
+    }
 
     Ok(Session {
         handle,
         events: rx,
+        stop,
         term,
         render_state: RenderState::new()?,
         row_it: RowIterator::new()?,
@@ -110,13 +136,39 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
         key_encoder: KeyEncoder::new()?,
         key_event: KeyEvent::new()?,
         exit: None,
+        cell_px,
     })
 }
 
-/// Blocking reader loop for the pty master; runs on its own thread.
-fn reader_loop(fd: i32, pid: i32, tx: std::sync::mpsc::Sender<PtyEvent>) {
+/// Reader loop for the pty master; runs on its own thread.
+///
+/// Polls with a bounded timeout so a `terminate` request (stop flag) is
+/// noticed within 200ms; a blocking read could never be woken. This thread
+/// is the sole closer of the master fd.
+fn reader_loop(fd: i32, pid: i32, stop: Arc<AtomicBool>, tx: std::sync::mpsc::Sender<PtyEvent>) {
     let mut buf = [0u8; 8192];
     loop {
+        if stop.load(Ordering::Relaxed) {
+            break; // terminated from the UI side: no exit event needed
+        }
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll on one valid fd with a bounded timeout.
+        let rc = unsafe { libc::poll(&mut pfd, 1, 200) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            let _ = tx.send(PtyEvent::Exit(-1));
+            break;
+        }
+        if rc == 0 {
+            continue; // poll timeout: re-check the stop flag
+        }
         // SAFETY: plain C read on an int fd.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
         if n > 0 {
@@ -141,8 +193,52 @@ fn reader_loop(fd: i32, pid: i32, tx: std::sync::mpsc::Sender<PtyEvent>) {
         let _ = tx.send(PtyEvent::Exit(status));
         break;
     }
-    // SAFETY: plain C close.
+    // SAFETY: plain C close; this thread is the fd's last owner.
     unsafe { libc::close(fd) };
+}
+
+/// Ask a session's child to die and unwind its reader thread.
+///
+/// SIGHUPs the child's whole process group (the child is a session leader
+/// from `setsid`, so the group covers the shell and its jobs), flags the
+/// reader for shutdown — it closes the master fd itself within its poll
+/// timeout — and escalates to SIGKILL after one second if the group has
+/// not exited by then. Safe to call on already-dead sessions.
+pub fn terminate(sess: &mut Session) {
+    sess.stop.store(true, Ordering::Relaxed);
+    let pid = sess.handle.child_pid;
+    if pid <= 0 {
+        return;
+    }
+    signal_group(pid, libc::SIGHUP);
+    // Watchdog for SIGHUP-resistant children; reaps the child either way.
+    let spawned = thread::Builder::new()
+        .name("pty-kill".to_string())
+        .spawn(move || {
+            for _ in 0..50 {
+                thread::sleep(Duration::from_millis(20));
+                if matches!(pty::pty_wait(pid, true), Ok(Some(_))) {
+                    return;
+                }
+            }
+            signal_group(pid, libc::SIGKILL);
+            let _ = pty::pty_wait(pid, false);
+        })
+        .is_ok();
+    if !spawned {
+        // No watchdog possible: escalate right away instead.
+        signal_group(pid, libc::SIGKILL);
+    }
+}
+
+/// Signal the child's process group, falling back to the bare pid.
+fn signal_group(pid: i32, sig: i32) {
+    // SAFETY: plain C calls; errors (e.g. ESRCH) are ignored on purpose.
+    unsafe {
+        if libc::kill(-pid, sig) < 0 {
+            let _ = libc::kill(pid, sig);
+        }
+    }
 }
 
 /// Drain pty events into the terminal. Call once per UI frame.
@@ -190,7 +286,14 @@ pub fn resize(
         return Ok(());
     }
     sess.term.resize(cols, rows, cell_w_px, cell_h_px)?;
+    // Keep the size-query effect answering with live geometry.
+    *sess.cell_px.lock().unwrap_or_else(|e| e.into_inner()) = (cell_w_px, cell_h_px);
     pty::pty_resize(sess.handle.master_fd, cols, rows)
+}
+
+/// Pid of the session's child (0 when unknown).
+pub fn child_pid(sess: &Session) -> i32 {
+    sess.handle.child_pid
 }
 
 /// Write raw bytes to the pty.

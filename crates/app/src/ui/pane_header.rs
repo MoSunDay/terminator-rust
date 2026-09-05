@@ -33,11 +33,7 @@ pub fn show(
     pal: &Palette,
     dirty: &mut bool,
 ) {
-    let focused = st
-        .tree
-        .tabs
-        .get(tab)
-        .is_some_and(|t| t.focused == pane);
+    let focused = st.tree.tabs.get(tab).is_some_and(|t| t.focused == pane);
     let meta = st.panes.get(&pane);
     let osc = crate::session_map::osc_title(sess, pane);
     let exit = crate::session_map::exit_code(sess, pane);
@@ -83,10 +79,12 @@ pub fn show(
             TextEdit::singleline(buf).desired_width(title_rect.width()),
         );
         resp.request_focus();
-        let done = resp.lost_focus()
-            && ui.input(|i| i.key_pressed(Key::Enter) || i.key_pressed(Key::Escape));
-        if done {
-            if ui.input(|i| i.key_pressed(Key::Enter)) {
+        // egui TextEdit keeps focus on Escape, so react to the keys
+        // directly instead of waiting for lost_focus.
+        let confirm = ui.input(|i| i.key_pressed(Key::Enter));
+        let cancel = ui.input(|i| i.key_pressed(Key::Escape));
+        if confirm || cancel {
+            if confirm {
                 if let Some(m) = st.panes.get_mut(&pane) {
                     let value = buf.trim().to_string();
                     m.manual_title = if value.is_empty() { None } else { Some(value) };
@@ -115,7 +113,11 @@ pub fn show(
             );
             x += 26.0 + b.len() as f32 * 6.5;
         }
-        let hit = ui.interact(title_rect, Id::new("pane_title").with(pane), egui::Sense::click());
+        let hit = ui.interact(
+            title_rect,
+            Id::new("pane_title").with(pane),
+            egui::Sense::click(),
+        );
         if hit.double_clicked() {
             uist.pane_edit = Some((pane, title));
         }
@@ -139,14 +141,22 @@ pub fn show(
     );
 
     if close.clicked() {
-        actions::do_close_pane(st, sess, tab, pane, dirty);
+        actions::do_close_pane(st, sess, uist, tab, pane, dirty);
         return;
     }
     if trans.clicked() {
-        uist.trans_open = if uist.trans_open == Some(pane) { None } else { Some(pane) };
+        uist.trans_open = if uist.trans_open == Some(pane) {
+            None
+        } else {
+            Some(pane)
+        };
     }
     if color.clicked() {
-        uist.color_open = if uist.color_open == Some(pane) { None } else { Some(pane) };
+        uist.color_open = if uist.color_open == Some(pane) {
+            None
+        } else {
+            Some(pane)
+        };
         uist.color_buf = st
             .panes
             .get(&pane)
@@ -177,8 +187,7 @@ fn color_popup(
             p.horizontal_wrapped(|p| {
                 for sw in colors::swatches(pal) {
                     let c = to_c32(sw);
-                    if p
-                        .add(Button::new("  ").fill(c))
+                    if p.add(Button::new("  ").fill(c))
                         .on_hover_text(hex(sw))
                         .clicked()
                     {
@@ -191,7 +200,11 @@ fn color_popup(
                 }
             });
             p.horizontal(|p| {
-                p.add(TextEdit::singleline(&mut uist.color_buf).desired_width(80.0).hint_text("#rrggbb"));
+                p.add(
+                    TextEdit::singleline(&mut uist.color_buf)
+                        .desired_width(80.0)
+                        .hint_text("#rrggbb"),
+                );
                 if parse_rgb(&uist.color_buf).is_some() && p.button("apply").clicked() {
                     if let Some(rgb) = parse_rgb(&uist.color_buf) {
                         if let Some(m) = st.panes.get_mut(&pane) {
@@ -226,13 +239,8 @@ fn trans_popup(
         .open_bool(&mut open)
         .show(|p| {
             p.set_min_width(180.0);
-            let mut value = st
-                .panes
-                .get(&pane)
-                .map(|m| m.transparency)
-                .unwrap_or(0.0);
-            if p
-                .add(egui::Slider::new(&mut value, 0.0..=1.0).text("pane bg"))
+            let mut value = st.panes.get(&pane).map(|m| m.transparency).unwrap_or(0.0);
+            if p.add(egui::Slider::new(&mut value, 0.0..=1.0).text("pane bg"))
                 .changed()
             {
                 if let Some(m) = st.panes.get_mut(&pane) {
@@ -266,19 +274,27 @@ pub fn menu(
         uist.pane_edit = Some((pane, title));
     }
     if ui.button("Split horizontally").clicked() {
-        actions::apply_pane_action(st, sess, tab, pane, PaneAction::SplitHorizontal, dirty);
+        actions::apply_pane_action(
+            st,
+            sess,
+            uist,
+            tab,
+            pane,
+            PaneAction::SplitHorizontal,
+            dirty,
+        );
     }
     if ui.button("Split vertically").clicked() {
-        actions::apply_pane_action(st, sess, tab, pane, PaneAction::SplitVertical, dirty);
+        actions::apply_pane_action(st, sess, uist, tab, pane, PaneAction::SplitVertical, dirty);
     }
     if ui.button("Zoom pane").clicked() {
         uist.zoom = !uist.zoom;
     }
     if ui.button("Respawn pane").clicked() {
-        actions::apply_pane_action(st, sess, tab, pane, PaneAction::Respawn, dirty);
+        actions::apply_pane_action(st, sess, uist, tab, pane, PaneAction::Respawn, dirty);
     }
     ui.separator();
     if ui.button("Close pane").clicked() {
-        actions::apply_pane_action(st, sess, tab, pane, PaneAction::Close, dirty);
+        actions::apply_pane_action(st, sess, uist, tab, pane, PaneAction::Close, dirty);
     }
 }

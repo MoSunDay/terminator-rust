@@ -15,6 +15,7 @@ log = { workspace = true }
 [dev-dependencies]
 serde_json = { workspace = true }
 vt-pane = { workspace = true }
+libghostty-vt = { workspace = true }
 libghostty-vt-sys = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }

@@ -5,6 +5,7 @@
 //! objects. No egui types here.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use layout_tree::PaneId;
@@ -21,12 +22,32 @@ pub const START_ROWS: u16 = 24;
 
 pub struct SessionMap {
     pub map: HashMap<PaneId, Session>,
+    /// Earliest allowed re-spawn per pane after a spawn failure (backoff).
+    pub retry_at: HashMap<PaneId, Instant>,
 }
+
+/// Wait after a failed spawn before retrying (stops per-frame fork storms).
+pub const SPAWN_BACKOFF: Duration = Duration::from_secs(2);
 
 pub fn session_map() -> SessionMap {
     SessionMap {
         map: HashMap::new(),
+        retry_at: HashMap::new(),
     }
+}
+
+/// True while the pane's post-failure backoff window is still running.
+pub fn spawn_blocked(sess: &SessionMap, id: PaneId, now: Instant) -> bool {
+    sess.retry_at.get(&id).is_some_and(|at| *at > now)
+}
+
+/// Terminate a pane's child process group, stop its reader thread and
+/// drop the session. The single removal path for live sessions.
+pub fn terminate(sess: &mut SessionMap, id: PaneId) {
+    if let Some(mut s) = sess.map.remove(&id) {
+        vtask::terminate(&mut s);
+    }
+    sess.retry_at.remove(&id);
 }
 
 fn opts(plan: &SpawnPlan, cols: u16, rows: u16) -> SessionOpts {
@@ -150,7 +171,12 @@ mod tests {
                 return;
             }
         };
-        let cell = CellSize { w: 8.0, h: 16.0, w_px: 8, h_px: 16 };
+        let cell = CellSize {
+            w: 8.0,
+            h: 16.0,
+            w_px: 8,
+            h_px: 16,
+        };
         let f = sync_frame(&mut sess, 160.0, 80.0, cell);
         assert_eq!((f.cols, f.rows), (20, 5));
     }

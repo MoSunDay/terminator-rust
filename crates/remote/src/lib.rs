@@ -31,3 +31,40 @@ pub use session::{
     interpret_exit, local_plan, reconnect_argv, remote_plan, PaneKind, PaneStatus, SpawnPlan,
     EXIT_NO_ZELLIJ,
 };
+
+/// 50/50 mix of two `#rrggbb` colors; returns `b` unchanged when either
+/// side fails to parse.
+pub fn mix_hex(a: &str, b: &str) -> String {
+    match (hex_rgb(a), hex_rgb(b)) {
+        (Some((r1, g1, b1)), Some((r2, g2, b2))) => {
+            format!(
+                "#{:02x}{:02x}{:02x}",
+                (r1 + r2) / 2,
+                (g1 + g2) / 2,
+                (b1 + b2) / 2
+            )
+        }
+        _ => b.to_string(),
+    }
+}
+
+fn hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    let v = |i: usize| u8::from_str_radix(h.get(i..i + 2)?, 16).ok();
+    Some((v(0)?, v(2)?, v(4)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mix_hex;
+
+    #[test]
+    fn mix_hex_averages_and_falls_back() {
+        assert_eq!(mix_hex("#000000", "#ffffff"), "#7f7f7f");
+        assert_eq!(mix_hex("bad", "#112233"), "#112233");
+        assert_eq!(mix_hex("#112233", "nope"), "nope");
+    }
+}

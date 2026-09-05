@@ -1,6 +1,8 @@
 //! State transitions that coordinate the layout tree, pane metadata and
 //! live sessions (spawn/close/respawn). Pure tree edits live in state.rs.
 
+use std::time::Instant;
+
 use layout_tree::{close_pane, close_tab, new_tab, Axis, PaneId};
 use log::warn;
 use remote::{PaneKind, EXIT_NO_ZELLIJ};
@@ -11,9 +13,21 @@ use crate::state::{self, new_pane_meta, Action, AppState, PaneAction, UiState};
 /// Spawn sessions for every pane that lacks one; drop orphaned sessions.
 pub fn ensure_sessions(st: &AppState, sess: &mut SessionMap) {
     let ids = state::all_pane_ids(&st.tree);
-    sess.map.retain(|id, _| ids.contains(id));
+    let stale: Vec<PaneId> = sess
+        .map
+        .keys()
+        .filter(|id| !ids.contains(id))
+        .copied()
+        .collect();
+    for id in stale {
+        session_map::terminate(sess, id);
+    }
+    let now = Instant::now();
     for id in ids {
         if sess.map.contains_key(&id) {
+            continue;
+        }
+        if session_map::spawn_blocked(sess, id, now) {
             continue;
         }
         spawn_pane(st, sess, id);
@@ -22,11 +36,21 @@ pub fn ensure_sessions(st: &AppState, sess: &mut SessionMap) {
 
 fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
     if let Some(meta) = st.panes.get(&id) {
-        match session_map::spawn_meta(meta, &st.theme_name, session_map::START_COLS, session_map::START_ROWS) {
+        match session_map::spawn_meta(
+            meta,
+            &st.theme_name,
+            session_map::START_COLS,
+            session_map::START_ROWS,
+        ) {
             Ok(s) => {
                 sess.map.insert(id, s);
+                sess.retry_at.remove(&id);
             }
-            Err(e) => warn!("spawn pane {id}: {e}"),
+            Err(e) => {
+                warn!("spawn pane {id}: {e}");
+                sess.retry_at
+                    .insert(id, Instant::now() + session_map::SPAWN_BACKOFF);
+            }
         }
     }
 }
@@ -75,13 +99,24 @@ pub fn do_split(
 pub fn do_close_pane(
     st: &mut AppState,
     sess: &mut SessionMap,
+    ui: &mut UiState,
     tab: usize,
     pane: PaneId,
     dirty: &mut bool,
 ) {
     if close_pane(&mut st.tree, tab, pane).is_some() {
         st.panes.remove(&pane);
-        sess.map.remove(&pane);
+        session_map::terminate(sess, pane);
+        ui.zoom = false;
+        if ui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
+            ui.pane_edit = None;
+        }
+        if ui.color_open == Some(pane) {
+            ui.color_open = None;
+        }
+        if ui.trans_open == Some(pane) {
+            ui.trans_open = None;
+        }
         *dirty = true;
     }
     if st.tree.tabs.is_empty() {
@@ -89,14 +124,36 @@ pub fn do_close_pane(
     }
 }
 
-pub fn do_close_tab(st: &mut AppState, sess: &mut SessionMap, tab: usize, dirty: &mut bool) {
+pub fn do_close_tab(
+    st: &mut AppState,
+    sess: &mut SessionMap,
+    ui: &mut UiState,
+    tab: usize,
+    dirty: &mut bool,
+) {
     if let Some(t) = st.tree.tabs.get(tab) {
-        for pane in layout_tree::sorted_pane_ids(&t.root) {
+        let panes = layout_tree::sorted_pane_ids(&t.root);
+        for pane in panes {
             st.panes.remove(&pane);
-            sess.map.remove(&pane);
+            session_map::terminate(sess, pane);
+            if ui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
+                ui.pane_edit = None;
+            }
+            if ui.color_open == Some(pane) {
+                ui.color_open = None;
+            }
+            if ui.trans_open == Some(pane) {
+                ui.trans_open = None;
+            }
         }
     }
     close_tab(&mut st.tree, tab);
+    ui.zoom = false;
+    if let Some((anchor, _)) = ui.tab_edit.as_ref() {
+        if st.tree.tabs.iter().all(|t| state::tab_anchor(t) != *anchor) {
+            ui.tab_edit = None;
+        }
+    }
     if st.tree.tabs.is_empty() {
         do_new_tab(st, sess, PaneKind::Local, dirty);
     }
@@ -106,15 +163,27 @@ pub fn do_close_tab(st: &mut AppState, sess: &mut SessionMap, tab: usize, dirty:
 /// Kill and respawn a pane's process with the same plan. Remotes go through
 /// the idempotent bootstrap again (degraded flag reset).
 pub fn do_respawn(st: &mut AppState, sess: &mut SessionMap, pane: PaneId, dirty: &mut bool) {
-    let Some(meta) = st.panes.get_mut(&pane) else { return };
+    let Some(meta) = st.panes.get_mut(&pane) else {
+        return;
+    };
     meta.degraded = false;
-    sess.map.remove(&pane);
+    session_map::terminate(sess, pane);
     if let Some(meta) = st.panes.get(&pane) {
-        match session_map::spawn_meta(meta, &st.theme_name, session_map::START_COLS, session_map::START_ROWS) {
+        match session_map::spawn_meta(
+            meta,
+            &st.theme_name,
+            session_map::START_COLS,
+            session_map::START_ROWS,
+        ) {
             Ok(s) => {
                 sess.map.insert(pane, s);
+                sess.retry_at.remove(&pane);
             }
-            Err(e) => warn!("respawn pane {pane}: {e}"),
+            Err(e) => {
+                warn!("respawn pane {pane}: {e}");
+                sess.retry_at
+                    .insert(pane, Instant::now() + session_map::SPAWN_BACKOFF);
+            }
         }
     }
     *dirty = true;
@@ -129,15 +198,26 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
         .map(|(id, _)| *id)
         .collect();
     for id in ids {
+        if !matches!(
+            st.panes.get(&id).map(|m| &m.kind),
+            Some(PaneKind::Remote(_))
+        ) {
+            continue;
+        }
         if st.panes.get(&id).map(|m| m.degraded).unwrap_or(true) {
             continue;
         }
         if let Some(m) = st.panes.get_mut(&id) {
             m.degraded = true;
         }
-        sess.map.remove(&id);
+        session_map::terminate(sess, id);
         if let Some(m) = st.panes.get(&id) {
-            if let Ok(s) = session_map::spawn_meta(m, &st.theme_name, session_map::START_COLS, session_map::START_ROWS) {
+            if let Ok(s) = session_map::spawn_meta(
+                m,
+                &st.theme_name,
+                session_map::START_COLS,
+                session_map::START_ROWS,
+            ) {
                 sess.map.insert(id, s);
             }
         }
@@ -165,9 +245,8 @@ pub fn apply_action(
         }
         Action::ClosePane => {
             if let Some(pane) = st.tree.tabs.get(tab).map(|t| t.focused) {
-                do_close_pane(st, sess, tab, pane, dirty);
+                do_close_pane(st, sess, ui, tab, pane, dirty);
             }
-            ui.zoom = false;
         }
         Action::CycleFocus(fwd) => {
             layout_tree::cycle_focus(&mut st.tree, tab, fwd);
@@ -175,12 +254,14 @@ pub fn apply_action(
         Action::PrevTab => {
             if tab > 0 {
                 st.tree.active_tab = tab - 1;
+                ui.zoom = false; // zoom is per-tab
                 *dirty = true;
             }
         }
         Action::NextTab => {
             if tab + 1 < st.tree.tabs.len() {
                 st.tree.active_tab = tab + 1;
+                ui.zoom = false; // zoom is per-tab
                 *dirty = true;
             }
         }
@@ -204,6 +285,7 @@ pub fn apply_action(
                 do_respawn(st, sess, pane, dirty);
             }
         }
+        Action::Paste => {}    // handled in input::keyboard with clipboard access
         Action::CopyNoop => {} // TODO: selection copy once selection exists
     }
 }
@@ -211,6 +293,7 @@ pub fn apply_action(
 pub fn apply_pane_action(
     st: &mut AppState,
     sess: &mut SessionMap,
+    ui: &mut UiState,
     tab: usize,
     pane: PaneId,
     action: PaneAction,
@@ -224,7 +307,7 @@ pub fn apply_pane_action(
             do_split(st, sess, tab, Some(pane), Axis::Vertical, dirty);
         }
         PaneAction::Close => {
-            do_close_pane(st, sess, tab, pane, dirty);
+            do_close_pane(st, sess, ui, tab, pane, dirty);
         }
         PaneAction::Respawn => {
             do_respawn(st, sess, pane, dirty);

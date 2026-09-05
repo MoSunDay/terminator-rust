@@ -135,7 +135,7 @@ fn pty_roundtrip_printf() {
 fn pty_echo_and_resize() {
     let opts = SessionOpts::command(20, 4, vec!["cat".to_string()]);
     let mut sess = task::spawn_session(&opts).expect("session");
-    task::write(&mut sess, b"ping\n").expect("write");
+    task::write(&sess, b"ping\n").expect("write");
     let mut found = false;
     for _ in 0..30 {
         wait_output(&mut sess, 100);
@@ -147,19 +147,18 @@ fn pty_echo_and_resize() {
     }
     assert!(found, "echo did not come back");
     task::resize(&mut sess, 40, 10, 8, 16).expect("resize");
-    task::write(&mut sess, b"\x1b[6n").expect("cursor query");
-    // The terminal answers with a CPR; the encoder/pty path should see bytes.
-    let mut saw_reply = false;
+    task::write(&sess, b"\x1b[6n").expect("cursor query");
+    // After resize the terminal reports 40 columns (CPR comes back too).
+    let mut resized = false;
     for _ in 0..30 {
         wait_output(&mut sess, 100);
         let frame = task::frame(&mut sess).expect("frame");
-        // After resize, terminal reports 40 columns.
-        assert_eq!(frame.cols, 40);
-        let _ = frame;
-        saw_reply = true;
-        break;
+        if frame.cols == 40 {
+            resized = true;
+            break;
+        }
     }
-    assert!(saw_reply);
+    assert!(resized, "resize did not apply");
 }
 
 #[test]
@@ -178,3 +177,61 @@ fn pty_exit_status_propagates() {
     }
     assert_eq!(sess.exit, Some(7));
 }
+
+#[test]
+fn terminate_is_safe_on_dead_session() {
+    // Spawn a child that exits immediately, wait for its exit status, then
+    // terminate the (already dead) session: no panic, and the exit status
+    // stays visible. Skips on pty-less CI.
+    let opts = SessionOpts::command(20, 4, vec!["true".to_string()]);
+    let mut sess = match task::spawn_session(&opts) {
+        Ok(s) => s,
+        Err(e) => {
+            println!("skip: cannot spawn pty session: {e}");
+            return;
+        }
+    };
+    for _ in 0..50 {
+        wait_output(&mut sess, 100);
+        if sess.exit.is_some() {
+            break;
+        }
+    }
+    task::terminate(&mut sess);
+    for _ in 0..10 {
+        wait_output(&mut sess, 50);
+        if sess.exit.is_some() {
+            break;
+        }
+    }
+    assert!(sess.exit.is_some(), "exit status should still be visible");
+}
+
+#[test]
+fn terminate_kills_live_child_and_cleans_up() {
+    // The core leak fix: a running child (that ignores nothing, like sleep)
+    // must die via terminate; nothing may keep the pty master open.
+    let opts = SessionOpts::command(20, 4, vec!["sleep".to_string(), "300".to_string()]);
+    let mut sess = match task::spawn_session(&opts) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("skip: {e}");
+            return;
+        }
+    };
+    let pid = task::child_pid(&sess);
+    assert!(pid > 0);
+    task::terminate(&mut sess);
+    // Reaped by the watchdog (SIGHUP exit or the SIGKILL escalation).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut dead = false;
+    while std::time::Instant::now() < deadline {
+        if matches!(crate::pty::pty_wait(pid, true), Ok(Some(_))) {
+            dead = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(dead, "child {pid} survived terminate()");
+}
+
