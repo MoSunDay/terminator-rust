@@ -34,7 +34,14 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - ghostty vt resize takes 4 args (cols, rows, cell_w_px, cell_h_px);
   key::Encoder options via set_options_from_terminal (no Result).
 - egui Key letters are `Key::A..Z`; ghostty key::Key letters are plain
-  `A..Z`; app/input/keyboard.rs maps them.
+  `A..Z`; app/input/keymap.rs maps them.
+- ghostty legacy key encoder emits NOTHING for Alt+printable unless the
+  KeyEvent utf8 is set (probe: ALT+B utf8=None -> []; utf8="b" -> ESC b);
+  ctrl codes encode fine without text. egui-winit on X11 delivers Key AND
+  Text for Alt+letter - drop the Text duplicate (alt_keyed_chars).
+- Programs (zellij) stall on "Loading Zellij / Querying terminal emulator"
+  until DA1/DA2/DA3 + XTWINOPS size + color-scheme queries are answered:
+  vt-pane/src/effects.rs installs the callbacks; resize keeps cell_px live.
 - libghostty default palette green ~(181,189,104) red ~(224,108,117) -
   color tests assert dominance, not VGA values.
 
@@ -42,4 +49,6 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 Xvfb: render + catppuccin colors exact px, key echo, ANSI 256 bg exact
 px, Ctrl+Shift+E split, state.json save/restore across restart, WM close.
 ssh-localhost: zellij create+attach via bootstrap, exit-42 degrade,
-reconnect to live session.
+reconnect to live session. e2e gate: bootstrap config is chrome-free so
+"ZELLIJ" NEVER renders; gate = loading screen cleared + typed marker
+(zellij round-trip) + session in list-sessions.
