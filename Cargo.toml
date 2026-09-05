@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/layout-tree",
+    "crates/vt-pane",
+    "crates/theme",
+    "crates/remote",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/terminator-rust/terminator-rust"
+rust-version = "1.85"
+
+[workspace.dependencies]
+libghostty-vt = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "8272abe", default-features = false }
+libghostty-vt-sys = { git = "https://github.com/Uzaaft/libghostty-rs", rev = "8272abe", default-features = false, features = ["pkg-config"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+eframe = "0.36"
+egui = "0.36"
+
+layout-tree = { path = "crates/layout-tree", version = "0.1.0" }
+vt-pane = { path = "crates/vt-pane", version = "0.1.0" }
+theme = { path = "crates/theme", version = "0.1.0" }
+remote = { path = "crates/remote", version = "0.1.0" }
+
+[profile.release]
+lto = "thin"

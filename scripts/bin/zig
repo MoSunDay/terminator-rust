@@ -1,0 +1,3 @@
+#!/bin/sh
+# zig via pypi ziglang wheel (ziglang.org unreachable from this env)
+exec /usr/local/lib/python3.10/dist-packages/ziglang/zig "$@"
