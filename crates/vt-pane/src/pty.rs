@@ -24,7 +24,7 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
     if argv.is_empty() {
         bail!("argv must not be empty");
     }
-    let mut winsize = libc::winsize {
+    let winsize = libc::winsize {
         ws_row: rows,
         ws_col: cols,
         ws_xpixel: 0,
@@ -39,7 +39,7 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut winsize,
+            &winsize,
         )
     };
     if rc != 0 {
@@ -84,7 +84,7 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
                 libc::close(master);
                 libc::close(slave);
             }
-            return Err(err).context("fork");
+            Err(err).context("fork")
         }
         0 => {
             // Child: new session, slave becomes ctty + stdio, then exec.
