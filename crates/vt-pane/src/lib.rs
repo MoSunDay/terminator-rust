@@ -6,6 +6,7 @@
 //! channel each frame, then snapshots the render state into plain data
 //! (`Frame`) that carries no libghostty types or lifetimes.
 
+pub mod effects;
 pub mod pty;
 pub mod task;
 pub mod term;

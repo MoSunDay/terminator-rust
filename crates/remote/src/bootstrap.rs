@@ -69,7 +69,7 @@ pub fn zt_config_kdl(
             "        orange \"{c7}\"\n",
             "        black \"{bg}\"\n",
             "        white \"{fg}\"\n",
-            "        bright_black \"{bg}\"\n",
+            "        bright_black \"{bb}\"\n",
             "        bright_red \"{c1}\"\n",
             "        bright_green \"{c2}\"\n",
             "        bright_yellow \"{c3}\"\n",
@@ -80,6 +80,7 @@ pub fn zt_config_kdl(
             "    }}\n",
             "}}\n"
         ),
+        bb = crate::mix_hex(fg, bg),
         fg = fg,
         bg = bg,
         c1 = c1,
@@ -230,6 +231,15 @@ mod tests {
         // Heredoc safety: no generated body may contain the terminator line.
         assert!(!kdl.lines().any(|l| l == "EOF"));
         assert!(!zt_mini_kdl().lines().any(|l| l == "EOF"));
+    }
+
+    #[test]
+    fn bright_black_is_a_mix_not_plain_bg() {
+        let p = palette();
+        let kdl = zt_config_kdl(p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8]);
+        // SGR-90 text must stay visible: bright_black is a bg/fg mix, not bg.
+        assert!(kdl.contains(&format!("bright_black \"{}\"", crate::mix_hex(p[0], p[1]))));
+        assert!(!kdl.contains(&format!("bright_black \"{}\"", p[1])));
     }
 
     #[test]

@@ -195,6 +195,32 @@ pub fn set_parent_ratio(node: &mut Node, pane: PaneId, ratio: f32) -> bool {
     }
 }
 
+/// Set the ratio of the `level`-th split along the path from the root
+/// down to `pane`: level 0 is the outermost split containing `pane`,
+/// level 1 the next one down, and so on. Returns false when `pane` is
+/// missing or the path has no split at that level.
+pub fn set_ratio_at_level(node: &mut Node, pane: PaneId, level: usize, ratio: f32) -> bool {
+    if !contains_pane(node, pane) {
+        return false;
+    }
+    let clamped = ratio.clamp(MIN_RATIO, MAX_RATIO);
+    match node {
+        Node::Pane { .. } => false,
+        Node::Split { ratio: node_ratio, first, second, .. } => {
+            if level == 0 {
+                *node_ratio = clamped;
+                return true;
+            }
+            let child: &mut Node = if contains_pane(first, pane) {
+                first
+            } else {
+                second
+            };
+            set_ratio_at_level(child, pane, level - 1, clamped)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,5 +322,39 @@ mod tests {
         assert_eq!(parent_axis(&single.tabs[0].root, 1), None);
         assert_eq!(parent_ratio(&single.tabs[0].root, 1), None);
         assert!(!set_parent_ratio(&mut single.tabs[0].root, 1, 0.5));
+    }
+
+    #[test]
+    fn set_ratio_at_level_zero_targets_root_split() {
+        let mut tree = three_panes();
+        let root = &mut tree.tabs[0].root;
+        assert!(set_ratio_at_level(root, 1, 0, 0.8));
+        // pane 2 hangs directly off the root split: its parent ratio is
+        // the root horizontal ratio.
+        assert_eq!(parent_ratio(root, 2), Some(0.8));
+        // The inner vertical split around pane 1 is untouched.
+        assert_eq!(parent_ratio(root, 1), Some(0.5));
+    }
+
+    #[test]
+    fn set_ratio_at_level_one_targets_inner_split() {
+        let mut tree = three_panes();
+        let root = &mut tree.tabs[0].root;
+        assert!(set_ratio_at_level(root, 1, 1, 0.3));
+        assert_eq!(parent_ratio(root, 1), Some(0.3)); // inner vertical split
+        assert_eq!(parent_ratio(root, 2), Some(0.5)); // root stays 0.5
+    }
+
+    #[test]
+    fn set_ratio_at_level_beyond_path_fails() {
+        let mut tree = three_panes();
+        let root = &mut tree.tabs[0].root;
+        // pane 2's path only has one split: level 1 does not exist.
+        assert!(!set_ratio_at_level(root, 2, 1, 0.9));
+        assert_eq!(parent_ratio(root, 1), Some(0.5));
+        assert_eq!(parent_ratio(root, 2), Some(0.5));
+        // Missing pane: false and unchanged.
+        assert!(!set_ratio_at_level(root, 99, 0, 0.5));
+        assert_eq!(parent_ratio(root, 2), Some(0.5));
     }
 }

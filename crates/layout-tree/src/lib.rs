@@ -25,6 +25,6 @@ pub use rect::{
 pub use tabs::{alloc_pane_id, close_pane, close_tab, new_tab, new_tree, next_pane_id};
 pub use tree::{
     contains_pane, find_node, find_node_mut, pane_count, pane_ids, parent_axis, parent_ratio,
-    set_parent_ratio, sorted_pane_ids, split_pane, LayoutTree, Node, PaneId, Tab, MAX_RATIO,
-    MIN_RATIO,
+    set_parent_ratio, set_ratio_at_level, sorted_pane_ids, split_pane, LayoutTree, Node, PaneId,
+    Tab, MAX_RATIO, MIN_RATIO,
 };

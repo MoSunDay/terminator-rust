@@ -11,8 +11,21 @@ pub fn to_c32(c: Rgb) -> Color32 {
     Color32::from_rgb(c.r, c.g, c.b)
 }
 
+/// egui Color32 -> theme Rgb (for re-blending with theme helpers).
+pub fn from_c32(c: Color32) -> Rgb {
+    Rgb {
+        r: c.r(),
+        g: c.g(),
+        b: c.b(),
+    }
+}
+
 pub fn vt_rgb(c: VtColor) -> Rgb {
-    Rgb { r: c.r, g: c.g, b: c.b }
+    Rgb {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+    }
 }
 
 fn gray(v: u8) -> Rgb {
@@ -21,19 +34,85 @@ fn gray(v: u8) -> Rgb {
 
 /// Last-resort palette when no builtin resolves (never happens in practice).
 pub fn fallback_palette() -> Palette {
-    let normal = [gray(0), Rgb { r: 205, g: 49, b: 49 }, Rgb { r: 13, g: 188, b: 121 },
-        Rgb { r: 229, g: 229, b: 16 }, Rgb { r: 36, g: 114, b: 200 }, Rgb { r: 188, g: 63, b: 188 },
-        Rgb { r: 17, g: 168, b: 205 }, gray(192)];
-    let bright = [gray(64), Rgb { r: 241, g: 76, b: 76 }, Rgb { r: 23, g: 212, b: 110 },
-        Rgb { r: 245, g: 245, b: 66 }, Rgb { r: 80, g: 150, b: 240 }, Rgb { r: 220, g: 100, b: 220 },
-        Rgb { r: 80, g: 220, b: 240 }, gray(230)];
+    let normal = [
+        gray(0),
+        Rgb {
+            r: 205,
+            g: 49,
+            b: 49,
+        },
+        Rgb {
+            r: 13,
+            g: 188,
+            b: 121,
+        },
+        Rgb {
+            r: 229,
+            g: 229,
+            b: 16,
+        },
+        Rgb {
+            r: 36,
+            g: 114,
+            b: 200,
+        },
+        Rgb {
+            r: 188,
+            g: 63,
+            b: 188,
+        },
+        Rgb {
+            r: 17,
+            g: 168,
+            b: 205,
+        },
+        gray(192),
+    ];
+    let bright = [
+        gray(64),
+        Rgb {
+            r: 241,
+            g: 76,
+            b: 76,
+        },
+        Rgb {
+            r: 23,
+            g: 212,
+            b: 110,
+        },
+        Rgb {
+            r: 245,
+            g: 245,
+            b: 66,
+        },
+        Rgb {
+            r: 80,
+            g: 150,
+            b: 240,
+        },
+        Rgb {
+            r: 220,
+            g: 100,
+            b: 220,
+        },
+        Rgb {
+            r: 80,
+            g: 220,
+            b: 240,
+        },
+        gray(230),
+    ];
     Palette {
         name: "fallback".to_string(),
         foreground: gray(192),
         background: gray(30),
         cursor: gray(220),
         selection_background: gray(60),
-        block_highlight: Rgb { r: 80, g: 80, b: 120 },
+        block_highlight: Rgb {
+            r: 80,
+            g: 80,
+            b: 120,
+        },
         normal,
         bright,
     }
@@ -63,7 +142,11 @@ pub fn palette_hex(p: &Palette) -> [String; 9] {
 
 /// Effective pane background: pane color over theme, blended by transparency.
 pub fn effective_bg(p: &Palette, meta: &PaneMeta) -> Color32 {
-    to_c32(blend_background(p, meta.bg_color, meta.transparency.clamp(0.0, 1.0)))
+    to_c32(blend_background(
+        p,
+        meta.bg_color,
+        meta.transparency.clamp(0.0, 1.0),
+    ))
 }
 
 /// Swatch candidates for the pane color popup: palette 16 colors + basics.
@@ -78,7 +161,11 @@ pub fn swatches(p: &Palette) -> Vec<Rgb> {
 
 /// Resolve a cell's (fg, bg): explicit overrides win, inverse swaps them.
 /// `bg == None` means "paint the pane default background".
-pub fn cell_colors(cell: &CellData, default_fg: Color32, default_bg: Color32) -> (Color32, Option<Color32>) {
+pub fn cell_colors(
+    cell: &CellData,
+    default_fg: Color32,
+    default_bg: Color32,
+) -> (Color32, Option<Color32>) {
     let fg = cell.fg.map(vt_rgb).map_or(default_fg, to_c32);
     let bg = cell.bg.map(vt_rgb).map_or(default_bg, to_c32);
     if cell.inverse {
@@ -98,7 +185,10 @@ mod tests {
     fn palette_of_falls_back() {
         assert_eq!(palette_of("dracula").name.to_lowercase(), "dracula");
         assert_ne!(palette_of("").name, "");
-        assert_eq!(palette_of("no-such-theme").name, palette_of(BUILTIN_NAMES[0]).name);
+        assert_eq!(
+            palette_of("no-such-theme").name,
+            palette_of(BUILTIN_NAMES[0]).name
+        );
     }
 
     #[test]
