@@ -1,0 +1,2 @@
+[env]
+PKG_CONFIG_PATH = { value = "third_party/libghostty-vt/share/pkgconfig", relative = true }

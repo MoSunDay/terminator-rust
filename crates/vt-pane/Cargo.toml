@@ -1,0 +1,16 @@
+[package]
+name = "vt-pane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libghostty-vt = { workspace = true }
+libghostty-vt-sys = { workspace = true }
+libc = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+theme = { workspace = true }
+unicode-width = "0.2"
