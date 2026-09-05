@@ -260,6 +260,7 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "eframe",
  "egui",
  "env_logger",
@@ -2836,6 +2837,7 @@ name = "remote"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libghostty-vt",
  "libghostty-vt-sys",
  "log",
  "serde",

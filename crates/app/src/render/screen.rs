@@ -46,8 +46,14 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     actions::ensure_sessions(&d.st, &mut d.sess);
 
     let area = ui.available_rect_before_wrap();
-    let Data { st, sess, ui: uist, dirty, .. } = d;
-    let dragging = mouse::divider_interaction(ui, st, area, &mut uist.drag);
+    let Data {
+        st,
+        sess,
+        ui: uist,
+        dirty,
+        ..
+    } = d;
+    let dragging = mouse::divider_interaction(ui, st, area, &mut uist.drag, dirty);
     if st.tree.active_tab >= st.tree.tabs.len() {
         st.tree.active_tab = st.tree.tabs.len().saturating_sub(1);
     }
@@ -97,7 +103,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         }
 
         if !dragging {
-            let resp = mouse::pane_interact(ui, content, pane, st);
+            let resp = mouse::pane_interact(ui, content, pane, st, dirty);
             resp.context_menu(|menu| {
                 pane_header::menu(menu, pane, tab, st, sess, uist, dirty);
             });
