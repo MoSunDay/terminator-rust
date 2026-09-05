@@ -6,4 +6,20 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "terminator-rust"
+path = "src/main.rs"
+
 [dependencies]
+eframe = { workspace = true }
+egui = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+layout-tree = { workspace = true }
+vt-pane = { workspace = true }
+theme = { workspace = true }
+remote = { workspace = true }
+libghostty-vt = { workspace = true }

@@ -64,7 +64,7 @@ pub fn move_focus(tree: &mut LayoutTree, tab: usize, dir: FocusDir) -> Option<Pa
             continue;
         }
         if let Some(dist) = dir_distance(dir, from, *r) {
-            if best.map_or(true, |(d, _)| dist < d) {
+            if best.is_none_or(|(d, _)| dist < d) {
                 best = Some((dist, *id));
             }
         }
