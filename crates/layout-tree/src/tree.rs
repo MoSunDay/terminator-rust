@@ -85,7 +85,7 @@ pub fn sorted_pane_ids(node: &Node) -> Vec<PaneId> {
 }
 
 /// First node in tree order whose pane id is `pane`.
-pub fn find_node<'a>(node: &'a Node, pane: PaneId) -> Option<&'a Node> {
+pub fn find_node(node: &Node, pane: PaneId) -> Option<&Node> {
     match node {
         Node::Pane { id } if *id == pane => Some(node),
         Node::Pane { .. } => None,
@@ -96,7 +96,7 @@ pub fn find_node<'a>(node: &'a Node, pane: PaneId) -> Option<&'a Node> {
 }
 
 /// Mutable variant of [`find_node`].
-pub fn find_node_mut<'a>(node: &'a mut Node, pane: PaneId) -> Option<&'a mut Node> {
+pub fn find_node_mut(node: &mut Node, pane: PaneId) -> Option<&mut Node> {
     match node {
         Node::Pane { id } if *id == pane => Some(node),
         Node::Pane { .. } => None,
