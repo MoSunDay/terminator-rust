@@ -102,7 +102,15 @@ pub fn show(
         // egui TextEdit keeps focus on Escape, so react to the keys
         // directly instead of waiting for lost_focus.
         let confirm = ui.input(|i| i.key_pressed(Key::Enter));
-        let cancel = ui.input(|i| i.key_pressed(Key::Escape));
+        // A rejected editor keeps focus (and with it the whole keyboard):
+        // any click outside the field closes it, or the app is stuck.
+        let outside = ui.input(|i| {
+            i.pointer.any_click()
+                && i.pointer
+                    .interact_pos()
+                    .is_none_or(|p| !title_rect.contains(p))
+        });
+        let cancel = ui.input(|i| i.key_pressed(Key::Escape)) || outside;
         if confirm || cancel {
             // Manual titles are the control-socket addressing key: reject
             // duplicates; pure digits would parse as a pane Id in ctl's
@@ -142,8 +150,8 @@ pub fn show(
             to_c32(colors::title_text(pal))
         };
         ui.painter().text(
-            title_rect.min,
-            egui::Align2::LEFT_CENTER,
+            title_rect.center(),
+            egui::Align2::CENTER_CENTER,
             title.as_str(),
             egui::FontId::monospace(12.0),
             fg,

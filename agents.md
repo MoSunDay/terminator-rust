@@ -32,6 +32,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   live socket: bare Ctrl+C ^C echo, cross-pane drag SGR press/motion/
   RELEASE landing in the press-owner pane, Shift+PageUp/End scrollback
   paging, Ctrl+C actually interrupting a foreground job)
+- opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
+  /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
+  binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
+  ~/.opencoder/config.json needed - onboarding form eats ^C; focus navigation
+  via Ctrl+Shift+Right, NEVER clicks into mouse-tracking panes)
 - ui style e2e: `scripts/bin/e2e-ui-style.sh` (Xvfb + scrot/PIL pixel
   assertions: pane bg/theme blend via transparency, gutter two-tone
   (chrome_bg field + 1px divider line), chrome top-bar fill, active-chip
@@ -137,6 +142,30 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   only at its turn boundaries (steer) / idle (queue); a TUI left idle
   strands pending rows until its next interaction (their idle_rekick hook
   exists but nothing polls it; --wait reports timeout honestly).
+- vendored ghostty key encoder silently drops ALL letter keys
+  (plain/shift/ctrl, utf8=None) whenever the terminal pushed ANY kitty
+  keyboard flags (flags=1 alone kills Ctrl+D -> [] instead of [4]);
+  Enter/C0-still-fine keys and Escape (CSI-u) encode, and utf8 text rescues
+  plain/shift letters (send_char sets utf8) -> ONLY Ctrl+letter with utf8=None
+  breaks. Fix in vt-pane/src/task.rs send_key: mods==CTRL + letter + flags
+  non-empty -> set_kitty_flags(empty) on ENCODER OPTIONS ONLY (terminal real
+  state untouched, next key's set_options_from_terminal restores). NEVER "fix"
+  it by setting utf8 on ctrl combos - encoder then emits the letter byte
+  instead of the C0 byte.
+- real opencoder (source /root/opencoder, crossterm 0.28) pushes kitty flags 7
+  (`\x1b[>7u`), NOT 11; accepts BOTH legacy bytes and kitty CSI-u for
+  Ctrl+letter (raw pty: 0x03/0x04/`ESC[99;5u`/`ESC[100;5u` all exit
+  cleanly). Without ~/.opencoder/config.json it sits in the onboarding form
+  where Ctrl+C only cancels (only Esc/Ctrl+D exit); a dummy
+  provider/base_url/api_key/model config passes local validation with no
+  network and gives the idle prompt where ^C exits.
+- shortcuts: Ctrl+Shift+Q = global quit (Action::Quit -> egui
+  ViewportCommand::Close; to_skey must map Key::Q); pane title + top-bar title
+  centering (pane_header.rs draws at title_rect.center() CENTER_CENTER;
+  tabs.rs optical centering subtracts TITLE_ICON_ZONE=41 from the center rect)
+  is pixel-asserted by e2e-ui-style.sh checks G/H; rename editors (pane + tab)
+  cancel on outside click via `i.pointer.any_click() &&
+  interact_pos().is_none_or(...)` so a miss-click cannot strand the editor.
 
 ## Verified end-to-end (2026-09)
 Xvfb: render + catppuccin colors exact px, key echo, ANSI 256 bg exact
@@ -169,3 +198,9 @@ Ctrl+C interrupting a foreground sleep 45 (pty signal reset verified).
   pinned test values: divider(dracula) == (67,69,78), hairline ==
   (59,61,71), tab_active == (67,61,89). egui 0.36 has no ctx.set_style -
   use set_theme(Theme::Dark) + set_style_of.
+opencoder exit + quit (2026-09, scripts/bin/e2e-oc-exit.sh): real opencoder
+panes Ctrl+D/Ctrl+C exit (status 0), Ctrl+Shift+W closes a live TUI pane,
+Ctrl+Shift+Q quits the app; e2e-ui-style.sh G/H assert pane-title and
+top-bar-title pixel centering. Deployed to 192.168.31.196 and verified live
+(ctl list/capture; remote px differ from Xvfb only via wallpaper transparency
+blend).

@@ -22,6 +22,8 @@ pub enum Action {
     Respawn,
     Paste,
     Copy,
+    /// Quit the whole app (Ctrl+Shift+Q); WM-close equivalent.
+    Quit,
 }
 
 /// Context-menu / header actions on a specific pane.
@@ -41,6 +43,7 @@ pub enum SKey {
     E,
     D,
     W,
+    Q,
     R,
     F,
     C,
@@ -73,6 +76,7 @@ pub fn route_shortcut(m: SMods, k: SKey) -> Option<Action> {
         (true, SKey::E) => Some(Action::SplitVertical),
         (true, SKey::D) => Some(Action::SplitDefault),
         (true, SKey::W) => Some(Action::ClosePane),
+        (true, SKey::Q) => Some(Action::Quit),
         (true, SKey::R) => Some(Action::Respawn),
         (true, SKey::F) => Some(Action::ToggleZoom),
         (true, SKey::C) => Some(Action::Copy),
@@ -124,6 +128,12 @@ mod tests {
             route_shortcut(mods(true, true), SKey::W),
             Some(Action::ClosePane)
         );
+        assert_eq!(
+            route_shortcut(mods(true, true), SKey::Q),
+            Some(Action::Quit)
+        );
+        assert_eq!(route_shortcut(mods(true, false), SKey::Q), None);
+        assert_eq!(route_shortcut(mods(false, true), SKey::Q), None);
         assert_eq!(
             route_shortcut(mods(true, true), SKey::F),
             Some(Action::ToggleZoom)

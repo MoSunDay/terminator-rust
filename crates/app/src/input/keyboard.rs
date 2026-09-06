@@ -214,6 +214,12 @@ pub fn handle(
                             }
                             continue;
                         }
+                        if action == Action::Quit {
+                            // Global exit (Ctrl+Shift+Q); the WM-close path
+                            // persists state in ui() before shutdown.
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            continue;
+                        }
                         actions::apply_action(st, sess, ui, action, dirty);
                         continue;
                     }

@@ -354,6 +354,39 @@ pub fn title(sess: &Session) -> String {
     sess.term.title().map(str::to_string).unwrap_or_default()
 }
 
+/// Plain A..Z ghostty keys (the ones that form C0 control bytes with Ctrl).
+fn is_letter_key(k: libghostty_vt::key::Key) -> bool {
+    use libghostty_vt::key::Key as K;
+    matches!(
+        k,
+        K::A | K::B
+            | K::C
+            | K::D
+            | K::E
+            | K::F
+            | K::G
+            | K::H
+            | K::I
+            | K::J
+            | K::K
+            | K::L
+            | K::M
+            | K::N
+            | K::O
+            | K::P
+            | K::Q
+            | K::R
+            | K::S
+            | K::T
+            | K::U
+            | K::V
+            | K::W
+            | K::X
+            | K::Y
+            | K::Z
+    )
+}
+
 /// Send one key event through the ghostty encoder into the pty.
 ///
 /// `configure` fills in action/key/mods/text on the reusable event object.
@@ -370,6 +403,25 @@ where
     configure(&mut sess.key_event);
 
     sess.key_encoder.set_options_from_terminal(&sess.term);
+    // Vendored-encoder workaround: with ANY kitty keyboard flags pushed
+    // (crossterm apps like opencoder push them at startup), the pinned
+    // encoder silently drops plain Ctrl+letter presses (its kitty path
+    // bails when the event carries no text), killing ^C/^D/^Z delivery.
+    // Route exactly those C0 combos through the legacy encoder instead:
+    // clear the flag on the ENCODER OPTIONS only - the terminal's real
+    // flag state (what the child pushed and can query or pop) is never
+    // touched, and the per-key refresh above restores the child's flags
+    // on the very next key.
+    if sess.key_event.mods() == Mods::CTRL
+        && is_letter_key(sess.key_event.key())
+        && sess
+            .term
+            .kitty_keyboard_flags()
+            .is_ok_and(|f| !f.is_empty())
+    {
+        sess.key_encoder
+            .set_kitty_flags(libghostty_vt::key::KittyKeyFlags::empty());
+    }
     let mut out = Vec::with_capacity(32);
     sess.key_encoder.encode_to_vec(&sess.key_event, &mut out)?;
     if !out.is_empty() {
