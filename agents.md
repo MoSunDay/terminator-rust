@@ -1,4 +1,5 @@
-Commit: e80eb094ddb5a4fd777565a24bbf6d3b52ea9b5c
+Commit: 947713b724383b4b4ffb6a3f6e21f29c5662149e
+
 # agents.md - repo memory for terminator-rust
 
 Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
@@ -51,6 +52,32 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - Programs (zellij) stall on "Loading Zellij / Querying terminal emulator"
   until DA1/DA2/DA3 + XTWINOPS size + color-scheme queries are answered:
   vt-pane/src/effects.rs installs the callbacks; resize keeps cell_px live.
+- ghostty mouse: `set_options_from_terminal` AND the `.size` setopt BOTH
+  reset the encoder's `last_cell` (per-cell motion dedup) -> refresh
+  options/size ONLY on change; vt-pane mouse.rs PointerState caches
+  last_modes (mouse DEC-mode bitset: 9/1000/1002/1003 + 1005/1006/1015/1016)
+  + last_size - resync on ANY mode change, not just tracking on/off. vt_write returns (), not Result.
+- pane rect can exceed the whole-cell grid (746px vs 45x16=720px) ->
+  clicks below the last row are OUT of grid and silently null a
+  selection; ALWAYS clamp_grid_px (vt-pane/src/mouse.rs) before
+  encode_mouse/select_*.
+- wheel routing (bash/GNOME-Terminal habit baseline): tracking mode ->
+  button 4/5 press-only per line; alt-screen -> arrows x3; else
+  viewport scroll x3; Shift = local-selection escape hatch even while
+  tracking. WHEEL_STEP_LINES=3; X11 wheel = Line +/-1 per notch.
+- copy path: egui-winit folds ctrl/cmd+C/X/V (shift variants and dedicated
+  keys too) into Event::Copy/Cut/Paste and emits NO Key event; keyboard.rs
+  gates on ctrl&&!shift: bare Ctrl+C/X/V forwards ^C(SIGINT)/^X/^V to the
+  child, other forms -> actions::copy_focused (arboard, skip empty); follow_output(s) after keys/paste so typing snaps
+  scrollback to live. context_menu suppressed while tracking.
+- pointer releases follow the press owner (uist.pointer_pane implicit
+  grab) so SGR children never miss a release; app surface_px multiplies
+  egui points by pixels_per_point (vt-pane cell px are physical).
+- Xvfb smoke ops: launch with `setsid nohup ... </dev/null &` to survive
+  across tool calls; NEVER `pkill -f` a pattern that occurs in your own
+  command line (self-kill, tool exit -1) - kill by PID instead.
+  Ground truth: select text + Ctrl+Shift+C then `xclip -o -selection
+  clipboard`; pixels via scrot + PIL.
 - libghostty default palette green ~(181,189,104) red ~(224,108,117) -
   color tests assert dominance, not VGA values.
 - control socket: $XDG_RUNTIME_DIR/terminator-rust/ipc.sock (fallback
@@ -74,6 +101,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 ## Verified end-to-end (2026-09)
 Xvfb: render + catppuccin colors exact px, key echo, ANSI 256 bg exact
 px, Ctrl+Shift+E split, state.json save/restore across restart, WM close.
+Batch-1 mouse (Xvfb): SGR press/release/motion + wheel press-only
+reports byte-exact, less wheel = arrows x3, viewport scrollback +
+snap-back-on-typing, drag-select highlight + Ctrl+Shift+C == xclip
+readback, Shift+drag escape hatch.
 ssh-localhost: zellij create+attach via bootstrap, exit-42 degrade,
 reconnect to live session. e2e gate: bootstrap config is chrome-free so
 "ZELLIJ" NEVER renders; gate = loading screen cleared + typed marker
