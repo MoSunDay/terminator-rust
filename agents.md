@@ -1,4 +1,4 @@
-Commit: 6f1993a093028b8b968ee6fb1db98c976e6f5476
+Commit: 4d27cb99e767be6da94bbb327b100d377b24a8bc
 
 # agents.md - repo memory for terminator-rust
 
@@ -70,9 +70,14 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   gates on ctrl&&!shift: bare Ctrl+C/X/V forwards ^C(SIGINT)/^X/^V to the
   child, other forms -> actions::copy_focused (arboard, skip empty); follow_output(s) after keys/paste so typing snaps
   scrollback to live. context_menu suppressed while tracking.
-- pointer releases follow the press owner (uist.pointer_pane implicit
-  grab) so SGR children never miss a release; app surface_px multiplies
-  egui points by pixels_per_point (vt-pane cell px are physical).
+- pointer grabs are per-button (uist.pointer_pane owner +
+  pointer_buttons bitmask, pointer_last = lowest bit still held):
+  releases follow the press owner across pane borders, chording holds
+  the grab until the last release, and an owner pane vanishing mid-grab
+  (tab switch / close) drops the whole grab so motion/wheel never target
+  a zombie; buttonless 1003 hover motion stays unforwarded (batch-2
+  gap). app surface_px multiplies egui points by pixels_per_point
+  (vt-pane cell px are physical).
 - Xvfb smoke ops: launch with `setsid nohup ... </dev/null &` to survive
   across tool calls; NEVER `pkill -f` a pattern that occurs in your own
   command line (self-kill, tool exit -1) - kill by PID instead.
