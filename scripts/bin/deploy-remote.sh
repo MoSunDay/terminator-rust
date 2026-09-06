@@ -174,7 +174,17 @@ stage_restart() {
 root=$1; rt=$2
 pids_of() {
     for p in $(pgrep -f "$root/.*/bin/terminator-rust" || true); do
-        exe=$(readlink "/proc/$p/exe" 2>/dev/null || true)
+        # a pgrep hit can surface before execve lands -> empty readlink
+        # (same race e2e-oc-exit.sh K1 guards). Retry only the EMPTY read,
+        # bounded 20x0.25s: wrapper shells carrying this script text never
+        # match $root/*, so break-to-match would burn 5s per wrapper on
+        # every pids_of call (the wait loop calls it ~40x).
+        exe=""
+        for _ in $(seq 1 20); do
+            exe=$(readlink "/proc/$p/exe" 2>/dev/null || true)
+            [ -n "$exe" ] && break
+            sleep 0.25
+        done
         case "$exe" in "$root"/*) echo "$p" ;; esac
     done
 }
