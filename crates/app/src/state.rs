@@ -139,12 +139,6 @@ pub fn tab_anchor(tab: &layout_tree::Tab) -> PaneId {
         .unwrap_or(tab.focused)
 }
 
-/// True when no live tab carries this anchor: a rename edit buffer
-/// targeting it is dead (its anchor pane was closed) and should drop.
-pub fn tab_edit_orphaned(tree: &LayoutTree, anchor: PaneId) -> bool {
-    tree.tabs.iter().all(|t| tab_anchor(t) != anchor)
-}
-
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -307,20 +301,5 @@ mod tests {
         assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
         // Still pane 1 (lowest id), unaffected by new splits.
         assert_eq!(tab_anchor(&st.tree.tabs[0]), 1);
-    }
-
-    #[test]
-    fn tab_edit_orphaned_tracks_anchor_pane_close() {
-        let mut st = fresh_state();
-        assert!(!tab_edit_orphaned(&st.tree, 1));
-        assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
-        assert!(!tab_edit_orphaned(&st.tree, 1));
-        // Closing the anchor pane moves the tab to a new anchor, orphaning
-        // any rename buffer keyed on the old one.
-        layout_tree::close_pane(&mut st.tree, 0, 1);
-        st.panes.remove(&1);
-        assert!(tab_edit_orphaned(&st.tree, 1));
-        assert_eq!(tab_anchor(&st.tree.tabs[0]), 2);
-        assert!(!tab_edit_orphaned(&st.tree, 2));
     }
 }
