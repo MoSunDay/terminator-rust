@@ -39,24 +39,23 @@ fn hex(c: Rgb) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::fresh_state;
+    use crate::state::{fresh_state, split_tree_pane};
     use layout_tree::Axis;
 
     #[test]
     fn reject_reason_blocks_digits_and_duplicates_only() {
         let mut st = fresh_state();
+        st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
         assert_eq!(reject_reason(&st, "", 1), None, "empty clears the title");
-        assert_eq!(reject_reason(&st, "agent", 1), None);
-        assert_eq!(reject_reason(&st, "7", 1).is_some(), true, "digits-only -> id");
+        assert_eq!(reject_reason(&st, "agent", 1), None, "own title is fine");
+        assert!(reject_reason(&st, "7", 1).is_some(), "digits-only -> id");
         assert_eq!(reject_reason(&st, "42x", 1), None, "digits plus text is fine");
-        let split = crate::state::split_tree_pane(&mut st, 0, 1, Axis::Vertical);
-        assert!(split.is_some());
-        st.panes.get_mut(&2).unwrap().manual_title = Some("agent".into());
+        assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
+        // from the new pane's side, pane 1's claim is a conflict
         assert_eq!(
-            reject_reason(&st, "agent", 1),
+            reject_reason(&st, "agent", 2),
             Some("another pane already uses this name")
         );
-        assert_eq!(reject_reason(&st, "agent", 2), Some("another pane already uses this name"));
     }
 }
 
