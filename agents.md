@@ -33,8 +33,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   RELEASE landing in the press-owner pane, Shift+PageUp/End scrollback
   paging, Ctrl+C actually interrupting a foreground job)
 - ui style e2e: `scripts/bin/e2e-ui-style.sh` (Xvfb + scrot/PIL pixel
-  assertions: pane bg/theme blend via transparency, themed divider strip,
-  chrome top-bar fill; presets a dracula Split state.json)
+  assertions: pane bg/theme blend via transparency, gutter two-tone
+  (chrome_bg field + 1px divider line), chrome top-bar fill, active-chip
+  underline + fill; expectations are COMPUTED in-script from dracula
+  constants via a mix() helper - token retunes touch only colors.rs,
+  geometry changes touch the script; presets a dracula Split state.json)
 - deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
   repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
   XDG autostart for the desktop user, pid-kill restart, ctl smoke).
@@ -160,8 +163,9 @@ Ctrl+C interrupting a foreground sleep 45 (pty signal reset verified).
   splits along settings.split_axis; layout-tree split_pane_ratio clamps
   non-finite -> 0.5 -> 0.05..0.95.
 - app chrome colors derive from the palette in render/colors.rs (mix():
-  chrome_bg 7% bg->fg, hover 14%, divider 16%, tab_active bg->highlight
-  35%, title_text fg->bg 30%). ui/style.rs sync() installs a dark egui
-  style ONCE per theme change (UiState.styled_theme guards); pinned test
-  value: divider(dracula) == (73,75,84). egui 0.36 has no ctx.set_style -
+  chrome_bg 4.5% bg->fg, hover 10%, hairline 9%, divider 13%, tab_active
+  bg->highlight 18%, title_text fg->bg 42%). ui/style.rs sync() installs a
+  dark egui style ONCE per theme change (UiState.styled_theme guards);
+  pinned test values: divider(dracula) == (67,69,78), hairline ==
+  (59,61,71), tab_active == (67,61,89). egui 0.36 has no ctx.set_style -
   use set_theme(Theme::Dark) + set_style_of.

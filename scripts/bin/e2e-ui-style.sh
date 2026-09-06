@@ -5,11 +5,18 @@
 #   A: per-pane background blended with transparency - left pane carries
 #      bg #ff0000 + transparency 0.5 -> mix 50/50 with the theme bg
 #      (blend_background / with_alpha_over).
-#   B: the split divider strip renders the palette divider step
-#      (render/colors.rs mix(bg, fg, 0.16) == (73,75,84)).
+#   B: the split gutter is two-tone - chrome_bg field (mix(bg, fg, 0.045))
+#      with one 1px divider line (mix(bg, fg, 0.13)) through the middle.
 #   C: the plain right pane paints the theme background untouched.
-#   D: the chrome top bar paints chrome_bg (mix(bg, fg, 0.07) == (55,56,67));
-#      sampled at 30% width to dodge the centered title text.
+#   D: the chrome top bar paints chrome_bg (mix(bg, fg, 0.045)); sampled at
+#      30% width to dodge the centered title text.
+#   E: the active tab chip carries a 2px accent underline flush at its
+#      bottom edge.
+#   F: the active tab chip fill is the subtle accent tint mix(bg, accent,
+#      0.18).
+# Every expected chrome color below is COMPUTED from the dracula constants
+# with a mix() helper, so token retunes only touch render/colors.rs (this
+# script changes only when geometry changes).
 # Plus a control-socket check that the preset Split state.json really loaded
 # (two panes, the manual_title "red" survives as the ctl addressing key).
 #
@@ -109,6 +116,16 @@ python3 - <<'PY'
 import os, sys
 from PIL import Image
 
+# Dracula constants; all chrome expectations are COMPUTED from these so a
+# token retune in render/colors.rs never requires editing this block.
+FG = (248, 248, 242)
+BG = (40, 42, 54)
+ACCENT = (189, 147, 249)
+
+def mix(a, b, t):
+    """Per-channel lerp a -> b by t, rounded (mirrors colors::mix)."""
+    return tuple(int(round(a[i] + t * (b[i] - a[i]))) for i in range(3))
+
 img = Image.open(os.environ["SCRCAP"]).convert("RGB")
 X, Y, W, H = (int(os.environ[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
 TOL = 3
@@ -127,25 +144,46 @@ def check(name, x, y, exp):
 
 # A: left pane deep area - #ff0000 blended 50/50 over dracula bg
 #    (40+0.5*215, 42-21, 54-27) = (147.5, 21, 27); rounding may give 148.
+#    Kept as a literal: this exercises blend_background, not mix().
 check("A blend-red-over-bg", int(X + W * 0.25), int(Y + H * 0.55), (147, 21, 27))
 
 # C: right pane paints the plain theme background.
-check("C theme-bg", int(X + W * 0.75), int(Y + H * 0.55), (40, 42, 54))
+check("C theme-bg", int(X + W * 0.75), int(Y + H * 0.55), BG)
 
-# D: chrome top bar fill = mix(bg, fg, 0.07); x=30% dodges the title text.
-check("D chrome-bg", int(X + W * 0.30), Y + 4, (55, 56, 67))
+# D: chrome top bar fill = mix(bg, fg, 0.045); x=30% dodges the title text.
+check("D chrome-bg", int(X + W * 0.30), Y + 4, mix(BG, FG, 0.045))
 
-# B: divider strip = mix(bg, fg, 0.16) == (73,75,84); count matching pixels
-#    across the horizontal band around the 50% split line (>=4 of the 6px
-#    strip; tolerance absorbs per-pixel rounding).
-exp = (73, 75, 84)
+# B: gutter two-tone - chrome_bg field mix(bg, fg, 0.045) with a 1px
+#    divider line mix(bg, fg, 0.13) down the strip middle. Scan the band
+#    across the 50% split line: the 6px strip contributes a few chrome
+#    field px and >=1 divider-line px (the rest of the band is pane content).
+exp_div = mix(BG, FG, 0.13)
+exp_fld = mix(BG, FG, 0.045)
 y = int(Y + H * 0.55)
-hits = sum(1 for x in range(int(X + W * 0.45), int(X + W * 0.55))
-           if close(img.getpixel((x, y)), exp))
-ok = hits >= 4
+band = [img.getpixel((x, y)) for x in range(int(X + W * 0.45), int(X + W * 0.55))]
+div_hits = sum(1 for px in band if close(px, exp_div))
+fld_hits = sum(1 for px in band if close(px, exp_fld))
+ok = div_hits >= 1 and fld_hits >= 2
 if not ok:
     rc = 1
-print(f"B divider-strip: {hits} px ~= {exp} in scan band [{'OK' if ok else 'FAIL'}]")
+print(f"B gutter two-tone: {div_hits} px ~= {exp_div}, "
+      f"{fld_hits} px ~= {exp_fld} in scan band [{'OK' if ok else 'FAIL'}]")
+
+# E: active-chip underline = accent, 2px tall at the chip bottom edge.
+#    Geometry: title row 22 + chip gap 3 + item_spacing 6 -> chip row
+#    Y+31..Y+55 (CHIP_H=24), so the underline sits at Y+53..Y+55; the wide
+#    band stops short of the pane area (Y+58), where the focused pane's
+#    accent stroke would false-positive.
+hits = sum(1 for yy in range(Y + 45, Y + 58)
+           for x in range(X, X + 220) if close(img.getpixel((x, yy)), ACCENT))
+ok = hits >= 3
+if not ok:
+    rc = 1
+print(f"E chip-underline: {hits} px ~= {ACCENT} in scan band [{'OK' if ok else 'FAIL'}]")
+
+# F: active-chip fill = mix(bg, accent, 0.18), sampled inside the chip
+#    (spans roughly x X..X+75, y Y+31..Y+55) off the label and close glyphs.
+check("F chip-fill", X + 45, Y + 37, mix(BG, ACCENT, 0.18))
 
 sys.exit(rc)
 PY
