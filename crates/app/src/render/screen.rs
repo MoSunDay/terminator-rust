@@ -137,8 +137,10 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                             &painter,
                             content,
                             geo,
-                            colors::to_c32(pal.block_highlight),
-                            colors::to_c32(colors::divider(&pal)),
+                            // Quiet scrollbar: thumb/track derived from the
+                            // pane background, no accent.
+                            colors::to_c32(colors::mix(pal.background, pal.foreground, 0.22)),
+                            colors::to_c32(colors::mix(pal.background, pal.foreground, 0.06)),
                         );
                     }
                 }
@@ -180,11 +182,22 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         }
     }
 
-    // Divider strips over the background (non-zoom only).
+    // Divider strips over the background (non-zoom only): a quiet chrome
+    // field with a single divider line down the middle. Geometry and
+    // hit-testing live in mouse.rs; this is paint only.
     if !uist.zoom {
         if let Some(tabref) = st.tree.tabs.get(tab) {
             for h in mouse::dividers(tabref, grid::lt_rect(area), DIVIDER_W) {
-                painter.rect_filled(h.strip, 0.0, colors::to_c32(colors::divider(&pal)));
+                let s = h.strip;
+                painter.rect_filled(s, 0.0, colors::to_c32(colors::chrome_bg(&pal)));
+                let line = Stroke::new(1.0, colors::to_c32(colors::divider(&pal)));
+                // Tall strip = vertical split: center the line on x;
+                // otherwise it is a horizontal strip: center on y.
+                if s.height() >= s.width() {
+                    painter.vline(s.center().x, s.y_range(), line);
+                } else {
+                    painter.hline(s.x_range(), s.center().y, line);
+                }
             }
         }
     }

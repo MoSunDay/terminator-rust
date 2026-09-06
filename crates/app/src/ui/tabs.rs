@@ -19,8 +19,15 @@ const CHIP_PAD_X: f32 = 10.0;
 const CHIP_MIN_W: f32 = 44.0;
 const CHIP_GAP: f32 = 5.0;
 const CLOSE_W: f32 = 14.0;
-const ACCENT_H: f32 = 2.0;
+const ACCENT_H: f32 = 2.0; // active-chip underline height
 const ICON: f32 = 16.0; // icon button cell
+/// Chip silhouette: rounded top corners, square where it meets the content.
+const CHIP_RADIUS: CornerRadius = CornerRadius {
+    nw: 5,
+    ne: 5,
+    sw: 0,
+    se: 0,
+};
 
 /// Render the two-row chrome bar. Mutates state via user interactions only.
 pub fn bar(ui: &mut Ui, d: &mut Data) {
@@ -38,7 +45,7 @@ fn dim_text(pal: &Palette) -> Color32 {
 fn hover_fill(ui: &Ui, rect: Rect, hovered: bool, pal: &Palette) {
     if hovered {
         ui.painter()
-            .rect_filled(rect, 3.0, to_c32(colors::chrome_hover(pal)));
+            .rect_filled(rect, 4.0, to_c32(colors::chrome_hover(pal)));
     }
 }
 
@@ -55,7 +62,7 @@ fn title_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             .map(|t| t.title.trim().to_string())
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| "terminator-rust".to_string());
-    let galley = painter.layout_no_wrap(title, FontId::proportional(12.5), dim_text(pal));
+    let galley = painter.layout_no_wrap(title, FontId::proportional(12.0), dim_text(pal));
     let pos = Align2::CENTER_CENTER
         .align_size_within_rect(galley.size(), rect)
         .min;
@@ -73,10 +80,11 @@ fn title_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
 
     let zoom = ui.interact(zoom_rect, Id::new("chrome_zoom"), Sense::click());
     hover_fill(ui, zoom_rect, zoom.hovered(), pal);
+    // Quiet accent hint when idle; full accent once zoomed.
     let zoom_col = if d.ui.zoom {
         to_c32(pal.block_highlight)
     } else {
-        dim_text(pal)
+        to_c32(pal.block_highlight).gamma_multiply(0.7)
     };
     corner_brackets(&painter, zoom_rect.center(), zoom_col);
     if zoom.clicked() {
@@ -103,10 +111,11 @@ fn title_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     }
     insp.on_hover_text("Inspector (settings, hosts)");
 
+    // Hairline under the title row: quieter than the divider strips.
     painter.hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        Stroke::new(1.0, to_c32(colors::divider(pal))),
+        Stroke::new(1.0, to_c32(colors::hairline(pal))),
     );
 }
 
@@ -192,27 +201,20 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
 
             let painter = ui.painter().clone();
             let galley =
-                painter.layout_no_wrap(label, FontId::monospace(11.5), Color32::PLACEHOLDER);
+                painter.layout_no_wrap(label, FontId::proportional(11.5), Color32::PLACEHOLDER);
             let w = (CHIP_PAD_X * 2.0 + galley.size().x + CLOSE_W).max(CHIP_MIN_W);
             let (rect, resp) = ui.allocate_exact_size(vec2(w, CHIP_H), Sense::click());
             if selected {
-                painter.rect_filled(
-                    rect,
-                    CornerRadius {
-                        nw: 4,
-                        ne: 4,
-                        sw: 0,
-                        se: 0,
-                    },
-                    to_c32(colors::tab_active(pal)),
-                );
-                let accent = Rect::from_min_max(
+                painter.rect_filled(rect, CHIP_RADIUS, to_c32(colors::tab_active(pal)));
+                // Underline flush at the chip bottom: this tab owns the
+                // content below.
+                let underline = Rect::from_min_max(
                     pos2(rect.left(), rect.bottom() - ACCENT_H),
                     pos2(rect.right(), rect.bottom()),
                 );
-                painter.rect_filled(accent, 0.0, to_c32(pal.block_highlight));
+                painter.rect_filled(underline, 0.0, to_c32(pal.block_highlight));
             } else if resp.hovered() {
-                painter.rect_filled(rect, 4.0, to_c32(colors::chrome_hover(pal)));
+                painter.rect_filled(rect, CHIP_RADIUS, to_c32(colors::chrome_hover(pal)));
             }
             let text_col = if selected {
                 to_c32(pal.foreground)

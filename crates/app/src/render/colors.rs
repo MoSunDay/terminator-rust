@@ -170,23 +170,27 @@ pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
 
 /// Chrome surface: panel/window fill, one step above the theme bg.
 pub fn chrome_bg(p: &Palette) -> Rgb {
-    mix(p.background, p.foreground, 0.07)
+    mix(p.background, p.foreground, 0.045)
 }
 /// Hovered chrome (chips, icon buttons).
 pub fn chrome_hover(p: &Palette) -> Rgb {
-    mix(p.background, p.foreground, 0.14)
+    mix(p.background, p.foreground, 0.10)
 }
-/// Dividers, hairlines, scrollbar tracks.
+/// Divider strips between panes.
 pub fn divider(p: &Palette) -> Rgb {
-    mix(p.background, p.foreground, 0.16)
+    mix(p.background, p.foreground, 0.13)
 }
-/// Active tab chip fill.
+/// Hairline separators inside chrome (1px, quieter than divider).
+pub fn hairline(p: &Palette) -> Rgb {
+    mix(p.background, p.foreground, 0.09)
+}
+/// Active tab chip fill (subtle accent tint).
 pub fn tab_active(p: &Palette) -> Rgb {
-    mix(p.background, p.block_highlight, 0.35)
+    mix(p.background, p.block_highlight, 0.18)
 }
-/// Dimmed chrome text (window title).
+/// Dimmed chrome text (window title, inactive tab labels).
 pub fn title_text(p: &Palette) -> Rgb {
-    mix(p.foreground, p.background, 0.30)
+    mix(p.foreground, p.background, 0.42)
 }
 
 /// Swatch candidates for the pane color popup: palette 16 colors + basics.
@@ -246,24 +250,50 @@ mod tests {
     #[test]
     fn chrome_mix_derives_expected_values() {
         let p = palette_of("dracula");
-        // Hand-computed: mix((40,42,54), (248,248,242), 0.16) -> (73,75,84).
+        // Hand-computed: mix((40,42,54), (248,248,242), 0.13) -> (67,69,78).
         assert_eq!(
             divider(&p),
             Rgb {
-                r: 73,
-                g: 75,
-                b: 84
+                r: 67,
+                g: 69,
+                b: 78
+            }
+        );
+        // Hand-computed: mix((40,42,54), (248,248,242), 0.09) -> (59,61,71).
+        assert_eq!(
+            hairline(&p),
+            Rgb {
+                r: 59,
+                g: 61,
+                b: 71
+            }
+        );
+        // Hand-computed: mix((40,42,54), (189,147,249), 0.18) -> (67,61,89).
+        assert_eq!(
+            tab_active(&p),
+            Rgb {
+                r: 67,
+                g: 61,
+                b: 89
             }
         );
         let bg = chrome_bg(&p);
         let hover = chrome_hover(&p);
+        let line = hairline(&p);
         let div = divider(&p);
         assert_ne!(bg, hover);
-        assert_ne!(hover, div);
+        assert_ne!(hover, line);
+        assert_ne!(line, div);
         assert_ne!(bg, div);
+        // The chrome ladder must be strictly increasing in red: bg darkest,
+        // then the hairline step, then hover, then the divider step.
         assert!(
-            bg.r < hover.r && bg.r < div.r,
-            "chrome_bg must be the darkest chrome step"
+            bg.r < line.r && line.r < hover.r && hover.r < div.r,
+            "chrome ladder out of order: bg {} hairline {} hover {} divider {}",
+            bg.r,
+            line.r,
+            hover.r,
+            div.r
         );
         let a = Rgb {
             r: 10,

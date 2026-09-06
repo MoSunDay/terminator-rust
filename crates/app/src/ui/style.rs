@@ -1,6 +1,6 @@
 //! Theme-derived egui style, applied once per theme change.
 
-use egui::{Context, CornerRadius, Stroke, Style, Visuals};
+use egui::{vec2, Context, CornerRadius, Stroke, Style, Visuals};
 
 use crate::render::colors::{self, palette_of};
 use crate::state::UiState;
@@ -17,18 +17,28 @@ pub fn sync(ctx: &Context, theme_name: &str, uist: &mut UiState) {
     let hover = colors::to_c32(colors::chrome_hover(&pal));
     let accent = colors::to_c32(pal.block_highlight);
     let text = colors::to_c32(pal.foreground);
+    let line = colors::to_c32(colors::hairline(&pal));
 
     let mut style = Style {
         visuals: Visuals::dark(),
         ..Default::default()
     };
+    style.spacing.item_spacing = vec2(8.0, 6.0);
+    style.spacing.button_padding = vec2(8.0, 4.0);
+    // Slim scrollbars (fields verified present in egui 0.36 ScrollStyle).
+    style.spacing.scroll.bar_width = 8.0;
+    style.spacing.scroll.bar_outer_margin = 2.0;
     style.visuals.panel_fill = chrome;
     style.visuals.window_fill = chrome;
     style.visuals.faint_bg_color = hover;
     style.visuals.extreme_bg_color = colors::to_c32(pal.background);
     style.visuals.hyperlink_color = accent;
-    style.visuals.selection.bg_fill = accent.gamma_multiply(0.4);
+    style.visuals.window_stroke = Stroke::new(1.0, line);
+    style.visuals.selection.bg_fill = accent.gamma_multiply(0.30);
+    style.visuals.selection.stroke = Stroke::NONE;
 
+    // egui Separators paint with the noninteractive bg_stroke.
+    style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, line);
     style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, text.gamma_multiply(0.6));
     style.visuals.widgets.inactive.bg_fill = hover;
     style.visuals.widgets.inactive.weak_bg_fill = hover;
