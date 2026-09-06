@@ -373,6 +373,50 @@ mod mouse_tests {
     }
 
     #[test]
+    fn right_button_drag_reports_its_button() {
+        // 1002 (button-event mouse tracking) + SGR: a right-button drag
+        // reports button 2 for press/motion/release (motion = 32 + 2).
+        let Some(mut s) = session() else { return };
+        s.term.vt_write(b"\x1b[?1002;1006h");
+        assert!(vmouse::is_mouse_tracking(&s));
+        let press = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Press,
+            Some(mouse::Button::Right),
+            GMods::empty(),
+            30.0,
+            112.0,
+            false,
+        )
+        .expect("encode");
+        assert_eq!(press, b"\x1b[<2;4;8M");
+        // Motion in a different cell (px (38,128) -> grid (4,8) -> col 5
+        // row 9) so per-cell dedup does not swallow it.
+        let drag = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Motion,
+            Some(mouse::Button::Right),
+            GMods::empty(),
+            38.0,
+            128.0,
+            true,
+        )
+        .expect("encode");
+        assert_eq!(drag, b"\x1b[<34;5;9M");
+        let release = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Release,
+            Some(mouse::Button::Right),
+            GMods::empty(),
+            30.0,
+            112.0,
+            true,
+        )
+        .expect("encode");
+        assert_eq!(release, b"\x1b[<2;4;8m");
+    }
+
+    #[test]
     fn tracking_format_change_resyncs_encoder() {
         // 1002 alone: legacy bytes for a Left press at grid (3,7).
         let Some(mut s) = session() else { return };

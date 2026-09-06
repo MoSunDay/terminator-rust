@@ -46,6 +46,29 @@ fn gbutton(b: PointerButton) -> mouse::Button {
     }
 }
 
+/// Grab bitmask bit for an egui pointer button.
+fn button_bit(b: PointerButton) -> u8 {
+    match b {
+        PointerButton::Primary => 1 << 0,
+        PointerButton::Secondary => 1 << 1,
+        PointerButton::Middle => 1 << 2,
+        PointerButton::Extra1 => 1 << 3,
+        PointerButton::Extra2 => 1 << 4,
+    }
+}
+
+/// egui button for a grab bitmask bit index (inverse of `button_bit`).
+fn button_at(bit: u8) -> Option<PointerButton> {
+    Some(match bit {
+        0 => PointerButton::Primary,
+        1 => PointerButton::Secondary,
+        2 => PointerButton::Middle,
+        3 => PointerButton::Extra1,
+        4 => PointerButton::Extra2,
+        _ => return None,
+    })
+}
+
 /// Wheel vertical delta in lines (up = positive); 0 for horizontal-only.
 fn wheel_lines(unit: egui::MouseWheelUnit, delta: egui::Vec2, cell_h: f32) -> f32 {
     match unit {
@@ -126,15 +149,24 @@ fn on_button(
     }
 }
 
-/// Motion while a primary drag is active: extend the selection or report
-/// button-motion to the child (position clamped to the owning pane).
-fn on_motion(sess: &mut Session, rect: Rect, pos: Pos2, ppp: f32, mods: &egui::Modifiers) {
+/// Motion while a grab of `button` is active: report button-motion to the
+/// child when it tracks the mouse, else extend the selection drag
+/// (primary button only; other buttons do nothing without tracking).
+/// Position is clamped to the owning pane.
+fn on_motion(
+    sess: &mut Session,
+    rect: Rect,
+    pos: Pos2,
+    ppp: f32,
+    mods: &egui::Modifiers,
+    button: PointerButton,
+) {
     let (x, y) = surface_px(rect, pos, ppp);
     if vmouse::is_mouse_tracking(sess) && !mods.shift {
         if let Err(e) = vmouse::send_mouse(
             sess,
             mouse::Action::Motion,
-            Some(mouse::Button::Left),
+            Some(gbutton(button)),
             gmods(mods),
             x,
             y,
@@ -142,9 +174,10 @@ fn on_motion(sess: &mut Session, rect: Rect, pos: Pos2, ppp: f32, mods: &egui::M
         ) {
             warn!("motion report: {e}");
         }
-    } else if let Err(e) = vmouse::select_drag(sess, x, y, mods.alt && (mods.ctrl || mods.command))
-    {
-        warn!("selection drag: {e}");
+    } else if button == PointerButton::Primary {
+        if let Err(e) = vmouse::select_drag(sess, x, y, mods.alt && (mods.ctrl || mods.command)) {
+            warn!("selection drag: {e}");
+        }
     }
 }
 
@@ -205,16 +238,37 @@ pub fn handle(
                     focus_pane(st, pane, dirty);
                 }
                 let Some((_, rect)) = rects.iter().find(|(p, _)| *p == pane) else {
+                    if uist.pointer_pane == Some(pane) {
+                        // Owner vanished mid-grab (tab switch / relayout):
+                        // drop the grab so motion/wheel stop targeting a
+                        // zombie pane.
+                        uist.pointer_pane = None;
+                        uist.pointer_buttons = 0;
+                        uist.pointer_last = None;
+                    }
                     continue;
                 };
+                let bit = button_bit(button);
                 match sess.map.get_mut(&pane) {
                     Some(s) if s.exit.is_none() => {
                         on_button(s, *rect, pos, ppp, button, pressed, &modifiers);
-                        if button == PointerButton::Primary {
-                            uist.pointer_pane = pressed.then_some(pane);
+                        if pressed {
+                            uist.pointer_pane = Some(pane);
+                            uist.pointer_buttons |= bit;
+                            uist.pointer_last = Some(bit.trailing_zeros() as u8);
+                        } else {
+                            uist.pointer_buttons &= !bit;
+                            if uist.pointer_buttons == 0 {
+                                uist.pointer_pane = None;
+                                uist.pointer_last = None;
+                            }
                         }
                     }
-                    _ if !pressed => uist.pointer_pane = None,
+                    _ if !pressed => {
+                        uist.pointer_pane = None;
+                        uist.pointer_buttons = 0;
+                        uist.pointer_last = None;
+                    }
                     _ => {}
                 }
             }
@@ -223,11 +277,24 @@ pub fn handle(
                     continue;
                 };
                 let Some((_, rect)) = rects.iter().find(|(p, _)| *p == pane) else {
+                    if uist.pointer_pane == Some(pane) {
+                        uist.pointer_pane = None;
+                        uist.pointer_buttons = 0;
+                        uist.pointer_last = None;
+                    }
+                    continue;
+                };
+                // Motion reports the most recent button still held; without
+                // one there is no grab to service.
+                let Some(bit) = uist.pointer_last else {
+                    continue;
+                };
+                let Some(button) = button_at(bit) else {
                     continue;
                 };
                 if let Some(s) = sess.map.get_mut(&pane) {
                     if s.exit.is_none() {
-                        on_motion(s, *rect, pos, ppp, &mods_now);
+                        on_motion(s, *rect, pos, ppp, &mods_now, button);
                     }
                 }
             }
@@ -250,6 +317,11 @@ pub fn handle(
                     continue;
                 }
                 let Some((_, rect)) = rects.iter().find(|(p, _)| *p == pane) else {
+                    if uist.pointer_pane == Some(pane) {
+                        uist.pointer_pane = None;
+                        uist.pointer_buttons = 0;
+                        uist.pointer_last = None;
+                    }
                     continue;
                 };
                 let Some(pos) = hover else {
@@ -262,6 +334,24 @@ pub fn handle(
                 }
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn button_bit_round_trip() {
+        for b in [
+            PointerButton::Primary,
+            PointerButton::Secondary,
+            PointerButton::Middle,
+            PointerButton::Extra1,
+            PointerButton::Extra2,
+        ] {
+            assert_eq!(button_at(button_bit(b).trailing_zeros() as u8), Some(b));
         }
     }
 }
