@@ -115,6 +115,23 @@ pub fn contains_pane(node: &Node, pane: PaneId) -> bool {
 /// and focuses the new pane. Returns its id, or `None` (unchanged tree, no id
 /// consumed) when the tab or pane does not exist.
 pub fn split_pane(tree: &mut LayoutTree, tab: usize, pane: PaneId, axis: Axis) -> Option<PaneId> {
+    split_pane_ratio(tree, tab, pane, axis, 0.5)
+}
+
+/// Like [`split_pane`] but the new pane's share of the split is `ratio`,
+/// clamped to `MIN_RATIO..=MAX_RATIO` (non-finite falls back to 0.5).
+pub fn split_pane_ratio(
+    tree: &mut LayoutTree,
+    tab: usize,
+    pane: PaneId,
+    axis: Axis,
+    ratio: f32,
+) -> Option<PaneId> {
+    let ratio = if ratio.is_finite() {
+        ratio.clamp(MIN_RATIO, MAX_RATIO)
+    } else {
+        0.5
+    };
     if !contains_pane(&tree.tabs.get(tab)?.root, pane) {
         return None;
     }
@@ -124,7 +141,7 @@ pub fn split_pane(tree: &mut LayoutTree, tab: usize, pane: PaneId, axis: Axis) -
     let old = std::mem::replace(target, Node::Pane { id: new_id });
     *target = Node::Split {
         axis,
-        ratio: 0.5,
+        ratio,
         first: Box::new(old),
         second: Box::new(Node::Pane { id: new_id }),
     };
@@ -370,6 +387,20 @@ mod tests {
         assert_eq!(parent_ratio(root, 2), Some(0.5));
         // Missing pane: false and unchanged.
         assert!(!set_ratio_at_level(root, 99, 0, 0.5));
+        assert_eq!(parent_ratio(root, 2), Some(0.5));
+    }
+
+    #[test]
+    fn split_ratio_clamps_to_bounds() {
+        let mut tree = new_tree("main");
+        assert!(split_pane_ratio(&mut tree, 0, 1, Axis::Vertical, 0.0).is_some());
+        let root = &tree.tabs[0].root;
+        assert_eq!(parent_ratio(root, 2), Some(MIN_RATIO));
+        assert!(split_pane_ratio(&mut tree, 0, 2, Axis::Vertical, 2.0).is_some());
+        let root = &tree.tabs[0].root;
+        assert_eq!(parent_ratio(root, 2), Some(MAX_RATIO));
+        assert!(split_pane_ratio(&mut tree, 0, 2, Axis::Vertical, f32::NAN).is_some());
+        let root = &tree.tabs[0].root;
         assert_eq!(parent_ratio(root, 2), Some(0.5));
     }
 }

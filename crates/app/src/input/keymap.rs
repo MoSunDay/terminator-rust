@@ -170,6 +170,7 @@ pub fn to_skey(k: Key) -> Option<SKey> {
         Key::T => SKey::T,
         Key::O => SKey::O,
         Key::E => SKey::E,
+        Key::D => SKey::D,
         Key::W => SKey::W,
         Key::R => SKey::R,
         Key::F => SKey::F,
