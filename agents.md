@@ -76,6 +76,15 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   button 4/5 press-only per line; alt-screen -> arrows x3; else
   viewport scroll x3; Shift = local-selection escape hatch even while
   tracking. WHEEL_STEP_LINES=3; X11 wheel = Line +/-1 per notch.
+- egui-winit folds Copy/Cut/Paste using its INTERNAL modifiers, but ctx
+  i.modifiers is the POST-batch aggregate; a fast ctrl+c whose ctrl-down
+  marks land in an earlier frame than the folded Event::Copy looks
+  modifier-less -> ^C silently rerouted to the clipboard path (e2e T4
+  "echo but no interrupt" shape). keyboard.rs seeds per-event mods from
+  UiState.mods_frame_end (previous frame end, updated on every handle()
+  incl. the text-field early return) then advances over ModifiersChanged
+  marks; batch shapes like [COPY, Key(ControlLeft,false,ctrl), Mods(NONE)]
+  are normal, do not "fix" them by trusting i.modifiers.
 - copy path: egui-winit folds ctrl/cmd+C/X/V (shift variants and dedicated
   keys too) into Event::Copy/Cut/Paste and emits NO Key event; keyboard.rs
   gates on ctrl&&!shift: bare Ctrl+C/X/V forwards ^C(SIGINT)/^X/^V to the
