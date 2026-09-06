@@ -13,7 +13,6 @@ use crate::render::colors::{self, to_c32};
 use crate::session_map::SessionMap;
 use crate::state::{self, AppState, Data};
 
-const TITLE_H: f32 = 22.0;
 const CHIP_H: f32 = 24.0;
 const CHIP_PAD_X: f32 = 10.0;
 const CHIP_MIN_W: f32 = 44.0;
@@ -21,9 +20,6 @@ const CHIP_GAP: f32 = 5.0;
 const CLOSE_W: f32 = 14.0;
 const ACCENT_H: f32 = 2.0; // active-chip underline height
 const ICON: f32 = 16.0; // icon button cell
-/// Right-edge zone (inspector + zoom cells) the window title must not
-/// cover: 5px inset + ICON, 4px gap + ICON.
-const TITLE_ICON_ZONE: f32 = 5.0 + ICON + 4.0 + ICON;
 /// Chip silhouette: rounded top corners, square where it meets the content.
 const CHIP_RADIUS: CornerRadius = CornerRadius {
     nw: 5,
@@ -32,10 +28,11 @@ const CHIP_RADIUS: CornerRadius = CornerRadius {
     se: 0,
 };
 
-/// Render the two-row chrome bar. Mutates state via user interactions only.
+/// Render the single-row chrome bar: tab chips + trailing buttons, with
+/// zoom + inspector cells anchored at the right edge. Mutates state via
+/// user interactions only.
 pub fn bar(ui: &mut Ui, d: &mut Data) {
     let pal = colors::palette_of(&d.st.theme_name);
-    title_row(ui, d, &pal);
     tab_row(ui, d, &pal);
 }
 
@@ -50,80 +47,6 @@ fn hover_fill(ui: &Ui, rect: Rect, hovered: bool, pal: &Palette) {
         ui.painter()
             .rect_filled(rect, 4.0, to_c32(colors::chrome_hover(pal)));
     }
-}
-
-/// Centered window title over a hairline, with zoom + inspector icon cells.
-fn title_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
-    let width = ui.available_width();
-    let (rect, _area) = ui.allocate_exact_size(vec2(width, TITLE_H), Sense::hover());
-    let painter = ui.painter().clone();
-
-    let title =
-        d.st.tree
-            .tabs
-            .get(d.st.tree.active_tab)
-            .map(|t| t.title.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "terminator-rust".to_string());
-    let galley = painter.layout_no_wrap(title, FontId::proportional(12.0), dim_text(pal));
-    // Center over the area left of the icon cells so the title reads
-    // optically centered in the window, not pushed right by them.
-    let center_rect =
-        Rect::from_min_max(rect.min, pos2(rect.right() - TITLE_ICON_ZONE, rect.max.y));
-    let pos = Align2::CENTER_CENTER
-        .align_size_within_rect(galley.size(), center_rect)
-        .min;
-    painter.galley(pos, galley, dim_text(pal));
-
-    // Icon cells hugging the right edge: zoom left of inspector.
-    let insp_rect = Rect::from_min_size(
-        pos2(rect.right() - 5.0 - ICON, rect.center().y - ICON / 2.0),
-        vec2(ICON, ICON),
-    );
-    let zoom_rect = Rect::from_min_size(
-        pos2(insp_rect.left() - 4.0 - ICON, insp_rect.top()),
-        vec2(ICON, ICON),
-    );
-
-    let zoom = ui.interact(zoom_rect, Id::new("chrome_zoom"), Sense::click());
-    hover_fill(ui, zoom_rect, zoom.hovered(), pal);
-    // Quiet accent hint when idle; full accent once zoomed.
-    let zoom_col = if d.ui.zoom {
-        to_c32(pal.block_highlight)
-    } else {
-        to_c32(pal.block_highlight).gamma_multiply(0.7)
-    };
-    corner_brackets(&painter, zoom_rect.center(), zoom_col);
-    if zoom.clicked() {
-        d.ui.zoom = !d.ui.zoom;
-    }
-    zoom.on_hover_text("Zoom focused pane (Ctrl+Shift+F)");
-
-    let insp = ui.interact(insp_rect, Id::new("chrome_inspector"), Sense::click());
-    hover_fill(ui, insp_rect, insp.hovered(), pal);
-    let insp_col = if d.ui.inspector {
-        to_c32(pal.block_highlight)
-    } else {
-        dim_text(pal)
-    };
-    painter.text(
-        insp_rect.center(),
-        Align2::CENTER_CENTER,
-        "i",
-        FontId::proportional(12.5),
-        insp_col,
-    );
-    if insp.clicked() {
-        d.ui.inspector = !d.ui.inspector;
-    }
-    insp.on_hover_text("Inspector (settings, hosts)");
-
-    // Hairline under the title row: quieter than the divider strips.
-    painter.hline(
-        rect.x_range(),
-        rect.bottom() - 0.5,
-        Stroke::new(1.0, to_c32(colors::hairline(pal))),
-    );
 }
 
 /// Corner brackets marking the zoomed (single-pane) view.
@@ -152,6 +75,7 @@ fn chip_label(tab: &Tab) -> String {
 }
 
 fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
+    let row = ui.max_rect();
     ui.add_space(3.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = CHIP_GAP;
@@ -284,8 +208,60 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
 
         ui.add_space(8.0);
         trailing_buttons(ui, st, sess, pal, dirty);
+
+        // Right-edge cells anchored to the row end (old title-row place):
+        // zoom left of inspector. interact() on fixed rects, layout cursor
+        // untouched.
+        let band = ui.min_rect();
+        let iy = (band.top() + band.bottom()) / 2.0 - ICON / 2.0;
+        let insp_rect = Rect::from_min_size(pos2(row.right() - 5.0 - ICON, iy), vec2(ICON, ICON));
+        let zoom_rect = Rect::from_min_size(
+            pos2(insp_rect.left() - 4.0 - ICON, insp_rect.top()),
+            vec2(ICON, ICON),
+        );
+        let painter = ui.painter().clone();
+
+        let zoom = ui.interact(zoom_rect, Id::new("chrome_zoom"), Sense::click());
+        hover_fill(ui, zoom_rect, zoom.hovered(), pal);
+        // Quiet accent hint when idle; full accent once zoomed.
+        let zoom_col = if uist.zoom {
+            to_c32(pal.block_highlight)
+        } else {
+            to_c32(pal.block_highlight).gamma_multiply(0.7)
+        };
+        corner_brackets(&painter, zoom_rect.center(), zoom_col);
+        if zoom.clicked() {
+            uist.zoom = !uist.zoom;
+        }
+        zoom.on_hover_text("Zoom focused pane (Ctrl+Shift+F)");
+
+        let insp = ui.interact(insp_rect, Id::new("chrome_inspector"), Sense::click());
+        hover_fill(ui, insp_rect, insp.hovered(), pal);
+        let insp_col = if uist.inspector {
+            to_c32(pal.block_highlight)
+        } else {
+            dim_text(pal)
+        };
+        painter.text(
+            insp_rect.center(),
+            Align2::CENTER_CENTER,
+            "i",
+            FontId::proportional(12.5),
+            insp_col,
+        );
+        if insp.clicked() {
+            uist.inspector = !uist.inspector;
+        }
+        insp.on_hover_text("Inspector (settings, hosts)");
     });
     ui.add_space(3.0);
+    // Hairline under the merged chrome row (was under the removed title
+    // row): a quiet seam above the pane area.
+    ui.painter().hline(
+        row.x_range(),
+        ui.min_rect().bottom() - 0.5,
+        Stroke::new(1.0, to_c32(colors::hairline(pal))),
+    );
 }
 
 /// End-of-row icon buttons: new tab + explicit-axis splits.
