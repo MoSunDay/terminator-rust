@@ -261,6 +261,11 @@ pub fn handle(
                             if uist.pointer_buttons == 0 {
                                 uist.pointer_pane = None;
                                 uist.pointer_last = None;
+                            } else {
+                                // Keep "most recent press still held" honest
+                                // when a chorded button goes up first.
+                                uist.pointer_last =
+                                    Some(uist.pointer_buttons.trailing_zeros() as u8);
                             }
                         }
                     }
@@ -341,6 +346,10 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_map::session_map;
+    use crate::state::{fresh_state, ui_state};
+    use egui::{Modifiers, Pos2, RawInput};
+    use vt_pane::{task as vtask, SessionOpts};
 
     #[test]
     fn button_bit_round_trip() {
@@ -353,5 +362,142 @@ mod tests {
         ] {
             assert_eq!(button_at(button_bit(b).trailing_zeros() as u8), Some(b));
         }
+    }
+
+    /// Live `cat` session under pane 1; the grab lifecycle needs a live
+    /// session so the press arm runs. Skips when no pty is available.
+    fn pty_harness() -> Option<SessionMap> {
+        let opts = SessionOpts::command(
+            20,
+            5,
+            vec!["sh".to_string(), "-c".to_string(), "cat".to_string()],
+        );
+        match vtask::spawn_session(&opts) {
+            Ok(s) => {
+                let mut m = session_map();
+                m.map.insert(1, s);
+                Some(m)
+            }
+            Err(e) => {
+                eprintln!("skip: {e}");
+                None
+            }
+        }
+    }
+
+    /// One synthetic egui pass carrying `ev`, then pointer dispatch over
+    /// `rects` (same first-pass workaround as keyboard.rs tests).
+    fn dispatch(
+        ctx: &Context,
+        ev: Event,
+        rects: &[(PaneId, Rect)],
+        st: &mut AppState,
+        sess: &mut SessionMap,
+        ui: &mut UiState,
+    ) {
+        let input = RawInput {
+            events: vec![ev],
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        let mut dirty = false;
+        handle(ctx, rects, st, sess, ui, 16.0, &mut dirty);
+        let mut out = ctx.end_pass();
+        out.textures_delta.clear();
+    }
+
+    fn button_ev(button: PointerButton, pressed: bool, pos: Pos2) -> Event {
+        Event::PointerButton {
+            pos,
+            button,
+            pressed,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn vanished_grab_owner_is_dropped() {
+        let Some(mut sess) = pty_harness() else {
+            return;
+        };
+        let (mut st, mut ui) = (fresh_state(), ui_state());
+        let ctx = Context::default();
+        let live = vec![(1, Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0)))];
+        dispatch(
+            &ctx,
+            button_ev(PointerButton::Primary, true, Pos2::new(10.0, 10.0)),
+            &live,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(ui.pointer_pane, Some(1));
+        assert_eq!(ui.pointer_buttons, 1);
+        // Pane 1 vanishes mid-grab (tab switch / close). The stale owner
+        // must be dropped instead of hijacking later motion and wheel.
+        dispatch(
+            &ctx,
+            button_ev(PointerButton::Primary, false, Pos2::new(500.0, 500.0)),
+            &[],
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(ui.pointer_pane, None);
+        assert_eq!(ui.pointer_buttons, 0);
+        assert_eq!(ui.pointer_last, None);
+    }
+
+    #[test]
+    fn chorded_buttons_hold_grab_until_last_release() {
+        let Some(mut sess) = pty_harness() else {
+            return;
+        };
+        let (mut st, mut ui) = (fresh_state(), ui_state());
+        let ctx = Context::default();
+        let live = vec![(1, Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0)))];
+        dispatch(
+            &ctx,
+            button_ev(PointerButton::Primary, true, Pos2::new(10.0, 10.0)),
+            &live,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        dispatch(
+            &ctx,
+            button_ev(PointerButton::Secondary, true, Pos2::new(12.0, 12.0)),
+            &live,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(ui.pointer_pane, Some(1));
+        assert_eq!(ui.pointer_buttons, 0b11);
+        assert_eq!(ui.pointer_last, Some(1));
+        // Releasing one chorded button keeps the grab for the other and
+        // demotes the motion button to a button still held.
+        dispatch(
+            &ctx,
+            button_ev(PointerButton::Secondary, false, Pos2::new(500.0, 500.0)),
+            &live,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(ui.pointer_pane, Some(1));
+        assert_eq!(ui.pointer_buttons, 1);
+        assert_eq!(ui.pointer_last, Some(0));
+        dispatch(
+            &ctx,
+            button_ev(PointerButton::Primary, false, Pos2::new(500.0, 500.0)),
+            &live,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(ui.pointer_pane, None);
+        assert_eq!(ui.pointer_buttons, 0);
+        assert_eq!(ui.pointer_last, None);
     }
 }
