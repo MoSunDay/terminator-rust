@@ -4,11 +4,11 @@
 use std::path::Path;
 
 use egui::{ComboBox, Context, TextEdit, Window};
+use log::warn;
 use remote::{
     default_registry_path, save_registry, suggest_session_name, upsert_target, PaneKind,
     RemoteTarget,
 };
-use log::warn;
 
 use crate::actions;
 use crate::state::Data;
@@ -36,7 +36,11 @@ fn form_target(f: &crate::state::RemoteForm) -> RemoteTarget {
 fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, hint: &str) {
     ui.horizontal(|ui| {
         ui.label(format!("{caption}:"));
-        ui.add(TextEdit::singleline(value).desired_width(150.0).hint_text(hint));
+        ui.add(
+            TextEdit::singleline(value)
+                .desired_width(150.0)
+                .hint_text(hint),
+        );
     });
 }
 
@@ -89,7 +93,13 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
 
 fn form_section(ui: &mut egui::Ui, d: &mut Data, reg_path: &Path) {
     ui.heading("New remote tab");
-    let Data { st, sess, ui: uist, registry, dirty } = d;
+    let Data {
+        st,
+        sess,
+        ui: uist,
+        registry,
+        dirty,
+    } = d;
     let f = &mut uist.form;
     field(ui, "label", &mut f.label, "workstation");
     field(ui, "host", &mut f.host, "host or ip");
@@ -128,29 +138,37 @@ fn registry_section(ui: &mut egui::Ui, d: &mut Data, reg_path: &Path) {
     }
     let mut connect: Option<RemoteTarget> = None;
     let mut forget: Option<usize> = None;
-    egui::ScrollArea::vertical().max_height(140.0).show(ui, |ui| {
-        for (i, t) in d.registry.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let user = t.user.clone().unwrap_or_default();
-                let text = format!(
-                    "{} {}@{}:{} [{}]",
-                    t.label,
-                    user,
-                    t.host,
-                    t.port.map(|p| p.to_string()).unwrap_or_else(|| "22".into()),
-                    t.session_name
-                );
-                ui.label(text);
-                if ui.small_button("connect").clicked() {
-                    connect = Some(t.clone());
-                }
-                if ui.small_button("forget").clicked() {
-                    forget = Some(i);
-                }
-            });
-        }
-    });
-    let Data { st, sess, registry, dirty, .. } = d;
+    egui::ScrollArea::vertical()
+        .max_height(140.0)
+        .show(ui, |ui| {
+            for (i, t) in d.registry.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let user = t.user.clone().unwrap_or_default();
+                    let text = format!(
+                        "{} {}@{}:{} [{}]",
+                        t.label,
+                        user,
+                        t.host,
+                        t.port.map(|p| p.to_string()).unwrap_or_else(|| "22".into()),
+                        t.session_name
+                    );
+                    ui.label(text);
+                    if ui.small_button("connect").clicked() {
+                        connect = Some(t.clone());
+                    }
+                    if ui.small_button("forget").clicked() {
+                        forget = Some(i);
+                    }
+                });
+            }
+        });
+    let Data {
+        st,
+        sess,
+        registry,
+        dirty,
+        ..
+    } = d;
     if let Some(t) = connect {
         actions::do_new_tab(st, sess, PaneKind::Remote(t), dirty);
     }

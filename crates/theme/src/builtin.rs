@@ -23,11 +23,11 @@ const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
 pub fn catppuccin_mocha() -> Palette {
     Palette {
         name: "Catppuccin Mocha".into(),
-        foreground: rgb(0xcd, 0xd6, 0xf4),   // text
-        background: rgb(0x1e, 0x1e, 0x2e),   // base
-        cursor: rgb(0xf5, 0xe0, 0xdc),       // rosewater
+        foreground: rgb(0xcd, 0xd6, 0xf4),           // text
+        background: rgb(0x1e, 0x1e, 0x2e),           // base
+        cursor: rgb(0xf5, 0xe0, 0xdc),               // rosewater
         selection_background: rgb(0x58, 0x5b, 0x70), // surface2
-        block_highlight: rgb(0xcb, 0xa6, 0xf7), // mauve
+        block_highlight: rgb(0xcb, 0xa6, 0xf7),      // mauve
         normal: [
             rgb(0x45, 0x47, 0x5a), // 0 surface1
             rgb(0xf3, 0x8b, 0xa8), // 1 red
@@ -156,7 +156,7 @@ pub fn terminator_classic() -> Palette {
         background: rgb(0x30, 0x0a, 0x24), // gnome-terminator purple
         cursor: rgb(0xff, 0xff, 0xff),
         selection_background: rgb(0x75, 0x50, 0x7b), // Tango plum
-        block_highlight: rgb(0xad, 0x7f, 0xa8),     // Tango bright plum
+        block_highlight: rgb(0xad, 0x7f, 0xa8),      // Tango bright plum
         normal: [
             rgb(0x00, 0x00, 0x00), // 0 black
             rgb(0xcc, 0x00, 0x00), // 1 scarlet red
@@ -234,7 +234,13 @@ mod tests {
 
     fn mixed_case(s: &str) -> String {
         s.char_indices()
-            .map(|(i, c)| if i % 2 == 0 { c.to_ascii_uppercase() } else { c })
+            .map(|(i, c)| {
+                if i % 2 == 0 {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                }
+            })
             .collect()
     }
 
@@ -285,10 +291,7 @@ mod tests {
             crate::palette::rgb_to_hex(gruvbox_dark().background),
             "#282828"
         );
-        assert_eq!(
-            crate::palette::rgb_to_hex(dracula().background),
-            "#282a36"
-        );
+        assert_eq!(crate::palette::rgb_to_hex(dracula().background), "#282a36");
         assert_eq!(
             crate::palette::rgb_to_hex(tokyo_night().foreground),
             "#c0caf5"

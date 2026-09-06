@@ -193,7 +193,10 @@ mod tests {
             Ok(Some(pb("/a/opencoder.db")))
         );
         let err = pick_db(vec![pb("/b/opencoder.db"), pb("/a/opencoder.db")]).unwrap_err();
-        assert!(err.contains("/a/opencoder.db") && err.contains("/b/opencoder.db"), "{err}");
+        assert!(
+            err.contains("/a/opencoder.db") && err.contains("/b/opencoder.db"),
+            "{err}"
+        );
     }
 
     #[test]

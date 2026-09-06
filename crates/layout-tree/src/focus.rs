@@ -18,7 +18,12 @@ pub enum FocusDir {
 }
 
 /// Nominal area for focus geometry: only relative pane positions matter.
-const NOMINAL_AREA: Rect = Rect { x: 0.0, y: 0.0, w: 1024.0, h: 640.0 };
+const NOMINAL_AREA: Rect = Rect {
+    x: 0.0,
+    y: 0.0,
+    w: 1024.0,
+    h: 640.0,
+};
 
 /// Gap between the 1-D ranges `a` and `b` (`0.0` when they overlap).
 fn range_gap(a: (f32, f32), b: (f32, f32)) -> f32 {

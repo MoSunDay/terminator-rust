@@ -227,7 +227,6 @@ pub mod shortcuts;
 
 pub use shortcuts::{route_shortcut, Action, PaneAction, SKey, SMods};
 
-
 // ---------------------------------------------------------------------------
 // Composition root
 // ---------------------------------------------------------------------------

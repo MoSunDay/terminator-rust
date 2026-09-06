@@ -114,12 +114,7 @@ pub fn contains_pane(node: &Node, pane: PaneId) -> bool {
 /// Replaces the pane `pane` of tab `tab` with `Split { axis, 0.5, old, new }`
 /// and focuses the new pane. Returns its id, or `None` (unchanged tree, no id
 /// consumed) when the tab or pane does not exist.
-pub fn split_pane(
-    tree: &mut LayoutTree,
-    tab: usize,
-    pane: PaneId,
-    axis: Axis,
-) -> Option<PaneId> {
+pub fn split_pane(tree: &mut LayoutTree, tab: usize, pane: PaneId, axis: Axis) -> Option<PaneId> {
     if !contains_pane(&tree.tabs.get(tab)?.root, pane) {
         return None;
     }
@@ -142,7 +137,12 @@ pub fn split_pane(
 pub fn parent_axis(node: &Node, pane: PaneId) -> Option<Axis> {
     match node {
         Node::Pane { .. } => None,
-        Node::Split { axis, first, second, .. } => {
+        Node::Split {
+            axis,
+            first,
+            second,
+            ..
+        } => {
             if contains_pane(first, pane) {
                 parent_axis(first, pane).or(Some(*axis))
             } else if contains_pane(second, pane) {
@@ -159,7 +159,12 @@ pub fn parent_axis(node: &Node, pane: PaneId) -> Option<Axis> {
 pub fn parent_ratio(node: &Node, pane: PaneId) -> Option<f32> {
     match node {
         Node::Pane { .. } => None,
-        Node::Split { ratio, first, second, .. } => {
+        Node::Split {
+            ratio,
+            first,
+            second,
+            ..
+        } => {
             if contains_pane(first, pane) {
                 parent_ratio(first, pane).or(Some(*ratio))
             } else if contains_pane(second, pane) {
@@ -178,7 +183,12 @@ pub fn set_parent_ratio(node: &mut Node, pane: PaneId, ratio: f32) -> bool {
     let clamped = ratio.clamp(MIN_RATIO, MAX_RATIO);
     match node {
         Node::Pane { .. } => false,
-        Node::Split { ratio: node_ratio, first, second, .. } => {
+        Node::Split {
+            ratio: node_ratio,
+            first,
+            second,
+            ..
+        } => {
             let child: &mut Node = if contains_pane(first, pane) {
                 first
             } else if contains_pane(second, pane) {
@@ -206,7 +216,12 @@ pub fn set_ratio_at_level(node: &mut Node, pane: PaneId, level: usize, ratio: f3
     let clamped = ratio.clamp(MIN_RATIO, MAX_RATIO);
     match node {
         Node::Pane { .. } => false,
-        Node::Split { ratio: node_ratio, first, second, .. } => {
+        Node::Split {
+            ratio: node_ratio,
+            first,
+            second,
+            ..
+        } => {
             if level == 0 {
                 *node_ratio = clamped;
                 return true;

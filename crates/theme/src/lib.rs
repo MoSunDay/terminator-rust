@@ -7,8 +7,8 @@
 pub mod builtin;
 pub mod palette;
 
-pub use builtin::{BUILTIN_NAMES, builtin_by_name, builtin_names};
+pub use builtin::{builtin_by_name, builtin_names, BUILTIN_NAMES};
 pub use palette::{
-    Palette, ParseHexError, Rgb, blend_background, indexed_color, is_dark, mix, parse_hex,
-    rgb_to_hex, with_alpha_over,
+    blend_background, indexed_color, is_dark, mix, parse_hex, rgb_to_hex, with_alpha_over, Palette,
+    ParseHexError, Rgb,
 };
