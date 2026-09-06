@@ -196,48 +196,60 @@ pub fn to_smods(m: &Modifiers) -> SMods {
 }
 
 
-/// Printable char for a letter/digit key, shift applied.
+/// Printable char for a key, shift applied.
 pub fn key_char(key: Key, shift: bool) -> Option<char> {
-    let c = match key {
-        Key::A => 'a',
-        Key::B => 'b',
-        Key::C => 'c',
-        Key::D => 'd',
-        Key::E => 'e',
-        Key::F => 'f',
-        Key::G => 'g',
-        Key::H => 'h',
-        Key::I => 'i',
-        Key::J => 'j',
-        Key::K => 'k',
-        Key::L => 'l',
-        Key::M => 'm',
-        Key::N => 'n',
-        Key::O => 'o',
-        Key::P => 'p',
-        Key::Q => 'q',
-        Key::R => 'r',
-        Key::S => 's',
-        Key::T => 't',
-        Key::U => 'u',
-        Key::V => 'v',
-        Key::W => 'w',
-        Key::X => 'x',
-        Key::Y => 'y',
-        Key::Z => 'z',
-        Key::Num0 => '0',
-        Key::Num1 => '1',
-        Key::Num2 => '2',
-        Key::Num3 => '3',
-        Key::Num4 => '4',
-        Key::Num5 => '5',
-        Key::Num6 => '6',
-        Key::Num7 => '7',
-        Key::Num8 => '8',
-        Key::Num9 => '9',
+    let (unshifted, shifted) = match key {
+        Key::A => ('a', 'A'),
+        Key::B => ('b', 'B'),
+        Key::C => ('c', 'C'),
+        Key::D => ('d', 'D'),
+        Key::E => ('e', 'E'),
+        Key::F => ('f', 'F'),
+        Key::G => ('g', 'G'),
+        Key::H => ('h', 'H'),
+        Key::I => ('i', 'I'),
+        Key::J => ('j', 'J'),
+        Key::K => ('k', 'K'),
+        Key::L => ('l', 'L'),
+        Key::M => ('m', 'M'),
+        Key::N => ('n', 'N'),
+        Key::O => ('o', 'O'),
+        Key::P => ('p', 'P'),
+        Key::Q => ('q', 'Q'),
+        Key::R => ('r', 'R'),
+        Key::S => ('s', 'S'),
+        Key::T => ('t', 'T'),
+        Key::U => ('u', 'U'),
+        Key::V => ('v', 'V'),
+        Key::W => ('w', 'W'),
+        Key::X => ('x', 'X'),
+        Key::Y => ('y', 'Y'),
+        Key::Z => ('z', 'Z'),
+        Key::Num0 => ('0', '0'),
+        Key::Num1 => ('1', '1'),
+        Key::Num2 => ('2', '2'),
+        Key::Num3 => ('3', '3'),
+        Key::Num4 => ('4', '4'),
+        Key::Num5 => ('5', '5'),
+        Key::Num6 => ('6', '6'),
+        Key::Num7 => ('7', '7'),
+        Key::Num8 => ('8', '8'),
+        Key::Num9 => ('9', '9'),
+        Key::Space => (' ', ' '),
+        Key::Comma => (',', '<'),
+        Key::Minus => ('-', '_'),
+        Key::Period => ('.', '>'),
+        Key::Slash => ('/', '?'),
+        Key::Semicolon => (';', ':'),
+        Key::Quote => ('\'', '"'),
+        Key::Backslash => ('\\', '|'),
+        Key::Backtick => ('`', '~'),
+        Key::OpenBracket => ('[', '{'),
+        Key::CloseBracket => (']', '}'),
+        Key::Equals => ('=', '+'),
         _ => return None,
     };
-    Some(if shift { c.to_ascii_uppercase() } else { c })
+    Some(if shift { shifted } else { unshifted })
 }
 
 /// Lowercased chars of this frame's Alt-modified Key presses. egui-winit
@@ -310,6 +322,19 @@ mod tests {
     }
 
     #[test]
+    fn key_char_prints_punctuation() {
+        assert_eq!(key_char(Key::Space, false), Some(' '));
+        assert_eq!(key_char(Key::Space, true), Some(' '));
+        assert_eq!(key_char(Key::Comma, false), Some(','));
+        assert_eq!(key_char(Key::Comma, true), Some('<'));
+        assert_eq!(key_char(Key::Slash, true), Some('?'));
+        assert_eq!(key_char(Key::Backtick, false), Some('`'));
+        assert_eq!(key_char(Key::Backtick, true), Some('~'));
+        assert_eq!(key_char(Key::Quote, false), Some('\''));
+        assert_eq!(key_char(Key::Quote, true), Some('"'));
+    }
+
+    #[test]
     fn alt_keyed_chars_collects_lowercase() {
         let events = vec![Event::Key {
             key: Key::B,
@@ -319,5 +344,18 @@ mod tests {
             modifiers: Modifiers::ALT,
         }];
         assert_eq!(alt_keyed_chars(&events), vec!['b']);
+    }
+
+    #[test]
+    fn alt_keyed_chars_collects_punctuation() {
+        let events = vec![Event::Key {
+            key: Key::Comma,
+            pressed: true,
+            repeat: false,
+            physical_key: None,
+            modifiers: Modifiers::ALT,
+        }];
+        // to_ascii_lowercase is a no-op for punctuation.
+        assert_eq!(alt_keyed_chars(&events), vec![',']);
     }
 }

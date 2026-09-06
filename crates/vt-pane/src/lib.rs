@@ -7,6 +7,7 @@
 //! (`Frame`) that carries no libghostty types or lifetimes.
 
 pub mod effects;
+pub mod mouse;
 pub mod pty;
 pub mod task;
 pub mod term;

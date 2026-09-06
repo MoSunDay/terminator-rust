@@ -214,6 +214,24 @@ mod tests {
         assert_eq!(builtin_names().len(), 5);
     }
 
+    #[test]
+    fn all_builtins_report_dark() {
+        // Feeds OSC color-scheme answers: every shipped theme has a dark
+        // background by relative luminance.
+        for name in BUILTIN_NAMES {
+            let p = builtin_by_name(name).expect("builtin present");
+            assert!(crate::palette::is_dark(&p), "{name} should be dark");
+        }
+    }
+
+    #[test]
+    fn light_background_palette_reports_light() {
+        // Mutate a builtin into a white-background palette: not dark.
+        let mut p = catppuccin_mocha();
+        p.background = rgb(0xff, 0xff, 0xff);
+        assert!(!crate::palette::is_dark(&p));
+    }
+
     fn mixed_case(s: &str) -> String {
         s.char_indices()
             .map(|(i, c)| if i % 2 == 0 { c.to_ascii_uppercase() } else { c })

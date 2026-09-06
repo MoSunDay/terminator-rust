@@ -21,7 +21,10 @@ pub type CellPx = Arc<Mutex<(u32, u32)>>;
 const NOMINAL_CELL_PX: (u32, u32) = (8, 16);
 
 /// Install the query-response effects on a freshly created terminal.
-pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx) -> Result<()> {
+///
+/// `dark` selects the color-scheme answer (CSI ? 996 n) reported to
+/// programs; wire it to the active theme's background luminance.
+pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx, dark: bool) -> Result<()> {
     term.on_device_attributes(|_| {
         Some(DeviceAttributes {
             primary: PrimaryDeviceAttributes::new(
@@ -48,7 +51,9 @@ pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx) -> Result
         })
     })?;
 
-    term.on_color_scheme(|_| Some(ColorScheme::Dark))?;
+    // Capture the Copy bool (not the enum) so the closure stays trivially
+    // 'static and independent of ColorScheme's derives.
+    term.on_color_scheme(move |_| Some(if dark { ColorScheme::Dark } else { ColorScheme::Light }))?;
     Ok(())
 }
 

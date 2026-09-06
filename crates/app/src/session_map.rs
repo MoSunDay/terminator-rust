@@ -50,13 +50,14 @@ pub fn terminate(sess: &mut SessionMap, id: PaneId) {
     sess.retry_at.remove(&id);
 }
 
-fn opts(plan: &SpawnPlan, cols: u16, rows: u16) -> SessionOpts {
+fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool) -> SessionOpts {
     SessionOpts {
         cols,
         rows,
         argv: plan.argv.clone(),
         env: plan.env.clone(),
         scrollback_lines: 10_000,
+        dark,
     }
 }
 
@@ -66,17 +67,18 @@ fn opts(plan: &SpawnPlan, cols: u16, rows: u16) -> SessionOpts {
 /// with the current theme palette; degraded panes (host without zellij or
 /// after a degraded respawn) get a plain `ssh -tt` shell.
 pub fn spawn_meta(meta: &PaneMeta, theme_name: &str, cols: u16, rows: u16) -> Result<Session> {
+    let dark = colors::is_dark(theme_name);
     match &meta.kind {
-        PaneKind::Local => vtask::spawn_session(&opts(&local_plan(), cols, rows)),
+        PaneKind::Local => vtask::spawn_session(&opts(&local_plan(), cols, rows, dark)),
         PaneKind::Remote(target) => {
             if meta.degraded {
                 let plan = remote_plan(target, remote::DEFAULT_PALETTE_HEX, false);
-                vtask::spawn_session(&opts(&plan, cols, rows))
+                vtask::spawn_session(&opts(&plan, cols, rows, dark))
             } else {
                 let owned = colors::palette_hex(&colors::palette_of(theme_name));
                 let hex: [&str; 9] = std::array::from_fn(|i| owned[i].as_str());
                 let plan = remote_plan(target, hex, true);
-                vtask::spawn_session(&opts(&plan, cols, rows))
+                vtask::spawn_session(&opts(&plan, cols, rows, dark))
             }
         }
     }

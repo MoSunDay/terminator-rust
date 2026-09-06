@@ -7,7 +7,7 @@ use layout_tree::{content_rect, layout_tab, PaneId};
 use remote::PaneKind;
 
 use crate::actions;
-use crate::input::mouse;
+use crate::input::{mouse, pointer};
 use crate::render::{colors, grid};
 use crate::session_map;
 use crate::state::{AppState, Data, UiState, DIVIDER_W, PANE_HEADER_H};
@@ -63,6 +63,16 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let painter = ui.painter().clone();
     let rects = pane_rects(st, uist, area);
 
+    // Raw pointer routing (reporting / selection / wheel) over pane content
+    // rects; suppressed while a divider drag owns the pointer.
+    if !dragging {
+        let content_rects: Vec<(PaneId, Rect)> = rects
+            .iter()
+            .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, PANE_HEADER_H))))
+            .collect();
+        pointer::handle(&ctx, &content_rects, st, sess, uist, cell.h, dirty);
+    }
+
     for (pane, lt) in rects {
         let full = grid::egui_rect(lt);
         if full.width() < 4.0 || full.height() < 4.0 {
@@ -102,11 +112,20 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             }
         }
 
+        // Mouse-grabbing apps own right-clicks; only local panes get the
+        // context menu.
+        let tracking = sess
+            .map
+            .get(&pane)
+            .map(vt_pane::mouse::is_mouse_tracking)
+            .unwrap_or(false);
         if !dragging {
             let resp = mouse::pane_interact(ui, content, pane, st, dirty);
-            resp.context_menu(|menu| {
-                pane_header::menu(menu, pane, tab, st, sess, uist, dirty);
-            });
+            if !tracking {
+                resp.context_menu(|menu| {
+                    pane_header::menu(menu, pane, tab, st, sess, uist, dirty);
+                });
+            }
         }
 
         if Some(pane) == focused && !uist.zoom {
