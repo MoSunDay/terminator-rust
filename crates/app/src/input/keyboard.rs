@@ -71,6 +71,9 @@ fn send_char(pane: PaneId, sess: &mut Session, c: char) {
     });
     if let Err(e) = res {
         warn!("send char to pane {pane}: {e}");
+    } else {
+        // Typing snaps the viewport back to the live area (desktop habit).
+        vt_pane::mouse::follow_output(sess);
     }
 }
 
@@ -89,6 +92,8 @@ fn send_keypress(
     });
     if let Err(e) = res {
         warn!("send key to pane {pane}: {e}");
+    } else {
+        vt_pane::mouse::follow_output(sess);
     }
 }
 
@@ -112,21 +117,51 @@ pub fn handle(
         return; // a text field has focus; let it keep the keys
     }
     let events = ctx.input(|i| i.events.clone());
+    let mods_now = ctx.input(|i| i.modifiers);
     let alt_chars = alt_keyed_chars(&events);
     let tab = st.tree.active_tab.min(st.tree.tabs.len().saturating_sub(1));
     let focused = st.tree.tabs.get(tab).map(|t| t.focused);
     for ev in events {
         match ev {
             Event::Paste(text) => {
-                if let Some(p) = focused {
+                // Bare Ctrl+V is quoted-insert in the child, not a paste
+                // (Ctrl+Shift+V is the terminal paste shortcut).
+                if mods_now.ctrl && !mods_now.shift {
+                    if let Some(p) = focused {
+                        if let Some(s) = sess.map.get_mut(&p) {
+                            if let Some(gk) = key_from_char('v') {
+                                send_keypress(p, s, gk, ghostty_mods(&mods_now), None);
+                            }
+                        }
+                    }
+                } else if let Some(p) = focused {
                     if let Some(s) = sess.map.get_mut(&p) {
                         if let Err(e) = vtask::paste(s, &text) {
                             warn!("paste to pane {p}: {e}");
+                        } else {
+                            vt_pane::mouse::follow_output(s);
                         }
                     }
                 }
             }
-            Event::Copy | Event::Cut => {} // TODO: copy selection once selection exists
+            Event::Copy | Event::Cut => {
+                // egui-winit folds ctrl/cmd+C/X into clipboard events; bare
+                // Ctrl combos must still reach the child (SIGINT, ^X), so
+                // only Shift / dedicated-key / macOS-Cmd forms act on the
+                // clipboard.
+                if mods_now.ctrl && !mods_now.shift {
+                    let c = if matches!(ev, Event::Cut) { 'x' } else { 'c' };
+                    if let Some(p) = focused {
+                        if let Some(s) = sess.map.get_mut(&p) {
+                            if let Some(gk) = key_from_char(c) {
+                                send_keypress(p, s, gk, ghostty_mods(&mods_now), None);
+                            }
+                        }
+                    }
+                } else {
+                    actions::copy_focused(st, sess);
+                }
+            }
             Event::Text(t) => {
                 // Alt+letter also emits a Text event on X11; the encoded Key
                 // event already carried the combo, so drop the raw char.
@@ -157,6 +192,8 @@ pub fn handle(
                                     if let Some(s) = sess.map.get_mut(&p) {
                                         if let Err(e) = vtask::paste(s, &text) {
                                             warn!("paste to pane {p}: {e}");
+                                        } else {
+                                            vt_pane::mouse::follow_output(s);
                                         }
                                     }
                                 }
@@ -186,5 +223,127 @@ pub fn handle(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_map::session_map;
+    use crate::state::{fresh_state, ui_state};
+    use egui::{Modifiers, RawInput};
+    use vt_pane::Session;
+    use vt_pane::SessionOpts;
+
+    /// Pane 1 focused, running `stty -isig; echo READY; cat` on a real
+    /// pty: with ISIG off, ^C reaches cat as a plain byte and the tty
+    /// echoes it in caret notation, so the grid proves what the pty got.
+    /// Skips when no pty is available.
+    fn harness() -> Option<(AppState, SessionMap, UiState)> {
+        let opts = SessionOpts::command(
+            20,
+            5,
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "stty -isig; echo READY; cat".to_string(),
+            ],
+        );
+        match vtask::spawn_session(&opts) {
+            Ok(s) => {
+                let mut sess = session_map();
+                sess.map.insert(1, s);
+                Some((fresh_state(), sess, ui_state()))
+            }
+            Err(e) => {
+                eprintln!("skip: {e}");
+                None
+            }
+        }
+    }
+
+    /// One synthetic egui pass carrying the event + modifiers, then the
+    /// normal frame-level dispatch.
+    fn dispatch(
+        ctx: &Context,
+        mods: Modifiers,
+        ev: Event,
+        st: &mut AppState,
+        sess: &mut SessionMap,
+        ui: &mut UiState,
+    ) {
+        // egui 0.36 has no modifiers field on RawInput; modifier state is
+        // carried by ModifiersChanged events (as egui-winit delivers them).
+        let input = RawInput {
+            events: vec![Event::ModifiersChanged(mods), ev],
+            ..Default::default()
+        };
+        ctx.begin_pass(input);
+        let mut dirty = false;
+        handle(ctx, st, sess, ui, &mut dirty);
+        let mut out = ctx.end_pass();
+        // Nothing paints this context: discard the first-pass font texture
+        // delta instead of tripping its drop-time unapplied-delta assert.
+        out.textures_delta.clear();
+    }
+
+    fn grid_text(s: &mut Session) -> String {
+        let _ = vtask::pump(s);
+        match vtask::frame(s) {
+            Ok(f) => f.cells.iter().flatten().map(|c| c.text.as_str()).collect(),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// Pump until the grid shows the needle (stty settled, echo alive).
+    fn wait_grid(s: &mut Session, needle: &str) -> bool {
+        for _ in 0..100 {
+            if grid_text(s).contains(needle) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn bare_ctrl_copy_sends_interrupt_to_pty() {
+        let Some((mut st, mut sess, mut ui)) = harness() else { return };
+        let ctx = Context::default();
+        {
+            let Some(s) = sess.map.get_mut(&1) else { return };
+            assert!(wait_grid(s, "READY"), "session did not start echoing");
+        }
+        dispatch(&ctx, Modifiers::CTRL, Event::Copy, &mut st, &mut sess, &mut ui);
+        let Some(s) = sess.map.get_mut(&1) else { return };
+        // The tty driver echoes the raw \x03 in caret notation.
+        assert!(wait_grid(s, "^C"), "pty never saw the ^C byte");
+    }
+
+    #[test]
+    fn ctrl_shift_copy_stays_on_clipboard() {
+        let Some((mut st, mut sess, mut ui)) = harness() else { return };
+        let ctx = Context::default();
+        {
+            let Some(s) = sess.map.get_mut(&1) else { return };
+            assert!(wait_grid(s, "READY"), "session did not start echoing");
+        }
+        dispatch(
+            &ctx,
+            Modifiers::CTRL | Modifiers::SHIFT,
+            Event::Copy,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        // Empty selection -> clipboard path is a no-op; nothing may reach
+        // the pty and cat must still be alive.
+        let Some(s) = sess.map.get_mut(&1) else { return };
+        for _ in 0..30 {
+            let text = grid_text(s);
+            assert!(!text.contains("^C"), "ctrl+shift leaked ^C to the pty: {text:?}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(s.exit.is_none(), "cat died without SIGINT");
     }
 }

@@ -167,6 +167,15 @@ pub fn blend_background(p: &Palette, pane_color: Option<Rgb>, transparency: f32)
     with_alpha_over(pane, p.background, alpha)
 }
 
+/// Relative-luminance test on the background; dark palettes report
+/// "dark" to terminal color-scheme queries (CSI ? 996 n).
+pub fn is_dark(p: &Palette) -> bool {
+    let c = p.background;
+    let luminance =
+        (0.2126 * f32::from(c.r) + 0.7152 * f32::from(c.g) + 0.0722 * f32::from(c.b)) / 255.0;
+    luminance < 0.5
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +329,19 @@ mod tests {
         assert_eq!(blend_background(&p, None, 0.0), p.background);
         assert_eq!(blend_background(&p, None, 1.0), p.background);
         assert_eq!(blend_background(&p, None, 0.37), p.background);
+    }
+
+    #[test]
+    fn is_dark_uses_background_luminance() {
+        // test_palette has a black background.
+        assert!(is_dark(&test_palette()));
+        let mut light = test_palette();
+        light.background = rgb(255, 255, 255);
+        assert!(!is_dark(&light));
+        // Mid-gray (128) is just above the 0.5 threshold.
+        light.background = rgb(128, 128, 128);
+        assert!(!is_dark(&light));
+        light.background = rgb(127, 127, 127);
+        assert!(is_dark(&light));
     }
 }

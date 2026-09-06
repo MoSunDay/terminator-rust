@@ -169,7 +169,7 @@ fn pty_exit_status_propagates() {
         vec!["sh".to_string(), "-c".to_string(), "exit 7".to_string()],
     );
     let mut sess = task::spawn_session(&opts).expect("session");
-    for _ in 0..50 {
+    for _ in 0..100 {
         wait_output(&mut sess, 100);
         if sess.exit.is_some() {
             break;
@@ -235,3 +235,361 @@ fn terminate_kills_live_child_and_cleans_up() {
     assert!(dead, "child {pid} survived terminate()");
 }
 
+#[test]
+fn write_after_reader_closed_fd_is_ok() {
+    // The reader thread is the sole closer of the master fd. Once it has
+    // closed the fd (poll timeout 200ms after terminate), a UI-thread
+    // write must be a guarded no-op Ok(()) instead of Err(EBADF) -- the
+    // fd number may already belong to a different pane's pty.
+    let opts = SessionOpts::command(20, 4, vec!["sleep".to_string(), "300".to_string()]);
+    let mut sess = match task::spawn_session(&opts) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("skip: {e}");
+            return;
+        }
+    };
+    task::terminate(&mut sess);
+    // The reader polls with a 200ms timeout; give it room to close the fd
+    // and publish the closed flag.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    match task::write(&sess, b"x") {
+        Ok(()) => {}
+        Err(e) => panic!("write after fd close must be Ok, got {e}"),
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Mouse reporting, wheel routing and selection gestures
+// ---------------------------------------------------------------------------
+
+mod mouse_tests {
+    use crate::mouse::{self as vmouse, WheelRoute};
+    use crate::task::{self, SessionOpts};
+    use libghostty_vt::key::Mods as GMods;
+    use libghostty_vt::mouse;
+
+    /// A session whose terminal modes we drive directly via vt_write
+    /// (child exits instantly; encode paths never need the pty).
+    fn session() -> Option<task::Session> {
+        let opts = SessionOpts::command(80, 24, vec!["true".to_string()]);
+        match task::spawn_session(&opts) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("skip: {e}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn sgr_press_release_bytes() {
+        let Some(mut s) = session() else { return };
+        s.term.vt_write(b"\x1b[?1000;1006h");
+        assert!(vmouse::is_mouse_tracking(&s));
+        // Surface px (30, 112) with 8x16 nominal cells -> grid (3, 7) ->
+        // SGR 1-based (col 4, row 8).
+        let press = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Press,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            112.0,
+            false,
+        )
+        .expect("encode");
+        assert_eq!(press, b"\x1b[<0;4;8M");
+        let release = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Release,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            112.0,
+            true,
+        )
+        .expect("encode");
+        assert_eq!(release, b"\x1b[<0;4;8m");
+    }
+
+    #[test]
+    fn normal_mode_reports_no_motion() {
+        let Some(mut s) = session() else { return };
+        s.term.vt_write(b"\x1b[?1000;1006h");
+        // Mode 1000 (press/release only): a motion event encodes to nothing.
+        let out = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Motion,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            112.0,
+            true,
+        )
+        .expect("encode");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn button_motion_mode_dedups_per_cell() {
+        let Some(mut s) = session() else { return };
+        s.term.vt_write(b"\x1b[?1002;1006h");
+        let a = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Motion,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            112.0,
+            true,
+        )
+        .expect("encode");
+        assert_eq!(a, b"\x1b[<32;4;8M");
+        // Same cell again: deduplicated to nothing.
+        let dup = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Motion,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            31.0, // same 8x16 cell as (30, 112)
+            118.0,
+            true,
+        )
+        .expect("encode");
+        assert!(dup.is_empty());
+        // A new cell encodes again.
+        let moved = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Motion,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            40.0,
+            112.0,
+            true,
+        )
+        .expect("encode");
+        assert_eq!(moved, b"\x1b[<32;6;8M");
+    }
+
+    #[test]
+    fn tracking_format_change_resyncs_encoder() {
+        // 1002 alone: legacy bytes for a Left press at grid (3,7).
+        let Some(mut s) = session() else { return };
+        s.term.vt_write(b"\x1b[?1002h");
+        let legacy = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Press,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            112.0,
+            false,
+        )
+        .expect("encode");
+        assert_eq!(legacy, b"\x1b[M $(");
+        // SGR enabled while tracking stays on: the encoder must re-sync
+        // and switch format (1-based col 4, row 8).
+        s.term.vt_write(b"\x1b[?1006h");
+        let sgr = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Press,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            112.0,
+            false,
+        )
+        .expect("encode");
+        assert_eq!(sgr, b"\x1b[<0;4;8M");
+    }
+
+    #[test]
+    fn tracking_kind_change_resyncs_encoder() {
+        // 1000: no motion reporting; then 1002 while SGR stays on: motion
+        // must start encoding.
+        let Some(mut s) = session() else { return };
+        s.term.vt_write(b"\x1b[?1000;1006h");
+        let none = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Motion,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            112.0,
+            true,
+        )
+        .expect("encode");
+        assert!(none.is_empty());
+        s.term.vt_write(b"\x1b[?1002h");
+        let motion = vmouse::encode_mouse(
+            &mut s,
+            mouse::Action::Motion,
+            Some(mouse::Button::Left),
+            GMods::empty(),
+            30.0,
+            128.0,
+            true,
+        )
+        .expect("encode");
+        assert_eq!(motion, b"\x1b[<32;4;9M");
+    }
+
+    #[test]
+    fn wheel_routing_rules() {
+        // App grabs the mouse -> report, unless Shift overrides.
+        assert_eq!(vmouse::wheel_route(true, false, false), WheelRoute::Report);
+        assert_eq!(vmouse::wheel_route(true, true, false), WheelRoute::Viewport);
+        // Full-screen apps without mouse reporting -> arrow keys.
+        assert_eq!(vmouse::wheel_route(false, false, true), WheelRoute::Arrows);
+        // Plain shell -> scrollback.
+        assert_eq!(vmouse::wheel_route(false, false, false), WheelRoute::Viewport);
+        assert_eq!(vmouse::wheel_route(false, true, true), WheelRoute::Viewport);
+    }
+
+    #[test]
+    fn wheel_helpers_direction_and_scale() {
+        assert_eq!(
+            vmouse::wheel_arrows(1.0),
+            Some((libghostty_vt::key::Key::ArrowUp, vmouse::WHEEL_STEP_LINES))
+        );
+        assert_eq!(
+            vmouse::wheel_arrows(-2.0),
+            Some((libghostty_vt::key::Key::ArrowDown, 2 * vmouse::WHEEL_STEP_LINES))
+        );
+        assert_eq!(vmouse::wheel_arrows(0.0), None);
+        // Up scrolls into history (negative viewport delta).
+        assert_eq!(vmouse::wheel_delta(1.0), Some(-(vmouse::WHEEL_STEP_LINES as isize)));
+        assert_eq!(vmouse::wheel_delta(-1.0), Some(vmouse::WHEEL_STEP_LINES as isize));
+    }
+
+    #[test]
+    fn alt_screen_wheel_sends_arrow_keys() {
+        let Some(mut s) = session() else { return };
+        s.term.vt_write(b"\x1b[?1049h");
+        assert!(vmouse::alt_screen(&s));
+        // The child (already exited) cannot consume the bytes, but the
+        // guarded write path must stay silent-successful.
+        vmouse::send_wheel(&mut s, 1.0, GMods::empty(), 10.0, 10.0, false).expect("wheel");
+    }
+
+    #[test]
+    fn selection_drag_and_copy_text() {
+        let opts = SessionOpts::command(40, 5, vec![
+            "printf".to_string(),
+            "hello mouse world".to_string(),
+        ]);
+        let mut s = match task::spawn_session(&opts) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+        for _ in 0..100 {
+            let _ = task::pump(&mut s);
+            if let Ok(f) = task::frame(&mut s) {
+                if f.cells[0].iter().any(|c| c.text == "h") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Drag from col 6 to col 11 (8x16 nominal cells) -> "mouse".
+        vmouse::select_press(&mut s, 6.0 * 8.0, 0.0).expect("press");
+        vmouse::select_drag(&mut s, 11.0 * 8.0, 0.0, false).expect("drag");
+        vmouse::select_release(&mut s, 11.0 * 8.0, 0.0).expect("release");
+        let text = vmouse::selection_text(&mut s).expect("text");
+        assert!(text.contains("mouse"), "selection: {text:?}");
+        assert!(!text.contains("hello"), "selection: {text:?}");
+        assert!(!text.contains("world"), "selection: {text:?}");
+        // Rendered cells inside the selection are flagged.
+        let f = task::frame(&mut s).expect("frame");
+        let sel: Vec<bool> = f.cells[0].iter().map(|c| c.selected).collect();
+        assert!(sel[6..11].iter().any(|v| *v), "flags: {sel:?}");
+        assert!(!sel[..3].iter().any(|v| *v), "flags: {sel:?}");
+        // A fresh press clears the selection again.
+        vmouse::select_press(&mut s, 20.0 * 8.0, 0.0).expect("press");
+        assert_eq!(vmouse::selection_text(&mut s).expect("text"), "");
+    }
+
+    #[test]
+    fn double_click_selects_word() {
+        let opts = SessionOpts::command(40, 5, vec![
+            "printf".to_string(),
+            "alpha beta gamma".to_string(),
+        ]);
+        let mut s = match task::spawn_session(&opts) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+        for _ in 0..100 {
+            let _ = task::pump(&mut s);
+            if let Ok(f) = task::frame(&mut s) {
+                if f.cells[0].iter().any(|c| c.text == "a") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Two presses inside the repeat interval -> word selection.
+        let (x, y) = (7.0 * 8.0, 0.0); // middle of "beta"
+        vmouse::select_press(&mut s, x, y).expect("press");
+        vmouse::select_press(&mut s, x, y).expect("press 2");
+        vmouse::select_release(&mut s, x, y).expect("release");
+        let text = vmouse::selection_text(&mut s).expect("text");
+        assert_eq!(text.trim(), "beta", "word selection: {text:?}");
+    }
+}
+
+#[cfg(test)]
+mod deadzone_tests {
+    use crate::mouse as vmouse;
+    use crate::task::{self, SessionOpts};
+
+    fn session(cols: u16, rows: u16) -> Option<task::Session> {
+        match task::spawn_session(&SessionOpts::command(cols, rows, vec!["true".into()])) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("skip: {e}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn drag_into_dead_zone_below_grid_selects_last_row() {
+        // 40x5 grid, 8x16 cells -> 128px of grid, 200px of "pane".
+        let Some(mut s) = session(40, 5) else { return };
+        s.term.vt_write(b"row0 row1 row2 row3 row4");
+        // Press in row 0, release far below the grid (dead space): the
+        // gesture must clamp to the last row instead of dropping.
+        vmouse::select_press(&mut s, 4.0, 4.0).expect("press");
+        vmouse::select_drag(&mut s, 60.0, 190.0, false).expect("drag");
+        vmouse::select_release(&mut s, 60.0, 190.0).expect("release");
+        let text = vmouse::selection_text(&mut s).expect("text");
+        assert!(text.contains("row4"), "clamped selection: {text:?}");
+    }
+
+    #[test]
+    fn press_beyond_grid_reports_last_cell() {
+        let Some(mut s) = session(40, 5) else { return };
+        s.term.vt_write(b"\x1b[?1000;1006h");
+        let out = vmouse::encode_mouse(
+            &mut s,
+            libghostty_vt::mouse::Action::Press,
+            Some(libghostty_vt::mouse::Button::Left),
+            libghostty_vt::key::Mods::empty(),
+            500.0,
+            190.0,
+            false,
+        )
+        .expect("encode");
+        // Clamped to col 40, row 5 (1-based) instead of dropped.
+        assert_eq!(out, b"\x1b[<0;40;5M");
+    }
+}

@@ -94,6 +94,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
         };
     let t = meta.transparency.clamp(0.0, 1.0);
     let bg_rgb = from_c32(bg);
+    let sel_bg = blend_cell_bg(to_c32(pal.selection_background), bg_rgb, t);
     let font = FontId::monospace(font_size);
     for (y, row) in fr.cells.iter().enumerate() {
         let mut skip_tail = false;
@@ -102,7 +103,12 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
                 skip_tail = false;
                 // Still paint the tail cell's explicit background.
                 let (_, cbg) = cell_colors(cd, default_fg, bg);
-                if let Some(cbg) = cbg.map(|c| blend_cell_bg(c, bg_rgb, t)) {
+                let cbg = if cd.selected {
+                    Some(sel_bg)
+                } else {
+                    cbg.map(|c| blend_cell_bg(c, bg_rgb, t))
+                };
+                if let Some(cbg) = cbg {
                     let r = cell_rect(rect, x as u16, y as u16, cell, 1);
                     painter.rect_filled(r, 0.0, cbg);
                 }
@@ -115,7 +121,12 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
             let span: u16 = if cd.wide { 2 } else { 1 };
             let r = cell_rect(rect, ux, uy, cell, span);
             let (fg, cbg) = cell_colors(cd, default_fg, bg);
-            if let Some(cbg) = cbg.map(|c| blend_cell_bg(c, bg_rgb, t)) {
+            let cbg = if cd.selected {
+                Some(sel_bg)
+            } else {
+                cbg.map(|c| blend_cell_bg(c, bg_rgb, t))
+            };
+            if let Some(cbg) = cbg {
                 painter.rect_filled(r, 0.0, cbg);
             }
             let is_cursor = cursor_at == Some((ux, uy));

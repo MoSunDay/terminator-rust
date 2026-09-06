@@ -122,6 +122,18 @@ pub fn do_close_pane(
     if st.tree.tabs.is_empty() {
         do_new_tab(st, sess, PaneKind::Local, dirty);
     }
+    prune_tab_edit(st, ui);
+}
+
+/// Drop a tab-rename edit whose anchor pane no longer exists.
+fn prune_tab_edit(st: &AppState, ui: &mut UiState) {
+    if ui
+        .tab_edit
+        .as_ref()
+        .is_some_and(|(anchor, _)| state::tab_edit_orphaned(&st.tree, *anchor))
+    {
+        ui.tab_edit = None;
+    }
 }
 
 pub fn do_close_tab(
@@ -149,11 +161,7 @@ pub fn do_close_tab(
     }
     close_tab(&mut st.tree, tab);
     ui.zoom = false;
-    if let Some((anchor, _)) = ui.tab_edit.as_ref() {
-        if st.tree.tabs.iter().all(|t| state::tab_anchor(t) != *anchor) {
-            ui.tab_edit = None;
-        }
-    }
+    prune_tab_edit(st, ui);
     if st.tree.tabs.is_empty() {
         do_new_tab(st, sess, PaneKind::Local, dirty);
     }
@@ -285,8 +293,28 @@ pub fn apply_action(
                 do_respawn(st, sess, pane, dirty);
             }
         }
-        Action::Paste => {}    // handled in input::keyboard with clipboard access
-        Action::CopyNoop => {} // TODO: selection copy once selection exists
+        Action::Paste => {} // handled in input::keyboard with clipboard access
+        Action::Copy => copy_focused(st, sess),
+    }
+}
+
+/// Copy the focused pane's selection to the system clipboard.
+/// Best-effort: empty selection or clipboard failure is silent.
+pub fn copy_focused(st: &AppState, sess: &mut SessionMap) {
+    let Some(pane) = st.tree.tabs.get(st.tree.active_tab).map(|t| t.focused) else {
+        return;
+    };
+    let Some(s) = sess.map.get_mut(&pane) else {
+        return;
+    };
+    match vt_pane::mouse::selection_text(s) {
+        Ok(text) if !text.is_empty() => {
+            if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
+                warn!("clipboard set: {e}");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => warn!("selection text pane {pane}: {e}"),
     }
 }
 

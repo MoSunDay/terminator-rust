@@ -20,7 +20,7 @@ pub enum Action {
     ToggleZoom,
     Respawn,
     Paste,
-    CopyNoop,
+    Copy,
 }
 
 /// Context-menu / header actions on a specific pane.
@@ -72,7 +72,7 @@ pub fn route_shortcut(m: SMods, k: SKey) -> Option<Action> {
         (true, SKey::W) => Some(Action::ClosePane),
         (true, SKey::R) => Some(Action::Respawn),
         (true, SKey::F) => Some(Action::ToggleZoom),
-        (true, SKey::C) => Some(Action::CopyNoop),
+        (true, SKey::C) => Some(Action::Copy),
         (true, SKey::V) => Some(Action::Paste),
         (true, SKey::Tab) => Some(Action::CycleFocus(false)),
         (false, SKey::Tab) => Some(Action::CycleFocus(true)),
