@@ -79,9 +79,15 @@ pub struct UiState {
     pub inspector: bool,
     pub form: RemoteForm,
     pub drag: Option<DragState>,
-    /// Pane owning an in-progress primary-button drag (selection or motion
-    /// reporting); keeps receiving PointerMoved even outside its rect.
+    /// Pane owning an in-progress pointer drag (selection or motion
+    /// reporting) of ANY button; keeps receiving PointerMoved even
+    /// outside its rect.
     pub pointer_pane: Option<PaneId>,
+    /// Bitmask of held pointer buttons during a grab (bit 0 = Primary,
+    /// 1 = Secondary, 2 = Middle, 3 = Extra1, 4 = Extra2).
+    pub pointer_buttons: u8,
+    /// Bit index of the most recent press still held (motion reports it).
+    pub pointer_last: Option<u8>,
     pub font_size: f32,
 }
 
@@ -98,6 +104,8 @@ pub fn ui_state() -> UiState {
         form: RemoteForm::default(),
         drag: None,
         pointer_pane: None,
+        pointer_buttons: 0,
+        pointer_last: None,
         font_size: 14.0,
     }
 }
