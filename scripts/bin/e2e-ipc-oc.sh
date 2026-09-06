@@ -67,6 +67,8 @@ sleep 0.7
 env DISPLAY="$DISPLAY_N" RUST_LOG=info setsid "$APP" >"$ROOT/app.log" 2>&1 & APP_PID=$!
 for _ in $(seq 1 40); do [ -S "$SOCK" ] && break; sleep 0.25; done
 [ -S "$SOCK" ] || { tail "$ROOT/app.log"; fail "control socket never appeared"; }
+# capture/send is full remote control: the socket must be owner-only.
+[ "$(stat -c %a "$SOCK")" = "600" ] || fail "socket perms $(stat -c %a "$SOCK") != 600"
 sleep 2   # let the pane's shell boot
 
 # --- M1: list / capture / send ------------------------------------------
@@ -139,6 +141,7 @@ sleep 1   # SIGTERM: no destructors, the socket file is reclaimed on next start
 env DISPLAY="$DISPLAY_N" RUST_LOG=info setsid "$APP" >"$ROOT/app2.log" 2>&1 & APP_PID=$!
 for _ in $(seq 1 40); do "$CTL" list >/dev/null 2>&1 && break; sleep 0.25; done
 "$CTL" list | grep -q "agent1" || { tail "$ROOT/app2.log"; fail "second instance could not reclaim the socket"; }
+[ "$(stat -c %a "$SOCK")" = "600" ] || fail "reclaimed socket perms $(stat -c %a "$SOCK") != 600"
 kill "$APP_PID"; APP_PID=""
 
 echo "ALL E2E CHECKS PASSED"

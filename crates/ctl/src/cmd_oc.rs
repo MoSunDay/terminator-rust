@@ -175,6 +175,7 @@ fn resolve(pane: &str, info: &PaneInfo) -> Result<(PathBuf, String)> {
         return Ok((db, session));
     }
     let found = procfs::find_opencoder(info.pid)
+        .map_err(anyhow::Error::msg)?
         .ok_or_else(|| anyhow!("no opencoder process found under pane '{pane}' (pid {}); run `oc link` while its TUI is alive or after spawning it", info.pid))?;
     let store = oc_store::db::open_ro(&found.db)?;
     let session = store
@@ -187,6 +188,7 @@ fn resolve(pane: &str, info: &PaneInfo) -> Result<(PathBuf, String)> {
 fn cmd_link(pane: &str, session: Option<&str>) -> Result<()> {
     let info = pane_info(&PaneSelector::Name(pane.to_string()))?;
     let found = procfs::find_opencoder(info.pid)
+        .map_err(anyhow::Error::msg)?
         .ok_or_else(|| anyhow!("no opencoder process found under pane '{pane}'"))?;
     let pinned = match session {
         Some(id) => {

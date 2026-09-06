@@ -201,6 +201,80 @@ mod tests {
     }
 
     #[test]
+    fn frame_text_joins_wide_char_spacers_invisibly() {
+        // A CJK glyph spans two cells: the leading cell carries the char,
+        // the trailing half is an EMPTY spacer (term.rs cell_data emits no
+        // grapheme there). Flattening must not grow a phantom space
+        // (interior spacer) nor drop the glyph (line-end spacer).
+        let row = |cells: &[&str]| -> Vec<CellData> { cells.iter().map(|t| cell(t)).collect() };
+        let mut f = vt_pane::Frame::default();
+        f.cells.push(row(&["a", "\u{6c49}", "", "b"])); // a 汉 b
+        assert_eq!(frame_text(&f, 5), "a\u{6c49}b");
+        f.cells[0] = row(&["\u{6c49}", ""]); // wide glyph at line end
+        assert_eq!(frame_text(&f, 5), "\u{6c49}");
+        f.cells[0] = row(&["x", "\u{5b57}", "", "  "]);
+        assert_eq!(frame_text(&f, 5), "x\u{5b57}", "EOL spacers/spaces trim");
+        // two wide glyphs back to back: 4 cells -> 2 chars
+        f.cells[0] = row(&["\u{6c49}", "", "\u{5b57}", ""]);
+        assert_eq!(frame_text(&f, 5), "\u{6c49}\u{5b57}");
+    }
+
+    #[test]
+    fn capture_roundtrips_cjk_over_a_real_pty() {
+        let opts = SessionOpts {
+            cols: 80,
+            rows: 6,
+            argv: vec!["cat".into()],
+            env: vec![],
+            scrollback_lines: 100,
+        };
+        let sess = match vtask::spawn_session(&opts) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+        let mut d = data(fresh_state(), vec![]);
+        d.sess.map.insert(1, sess);
+        let _ = execute(
+            Request::Write {
+                pane: PaneSelector::Id(1),
+                text: "\u{6c49}\u{5b57}\n".into(),
+                bracketed: false,
+            },
+            &mut d,
+        );
+        // cat echoes the bytes; poll until the frame shows them, then pin
+        // the exact line: one leading cell + one empty spacer per glyph.
+        let mut text = String::new();
+        for _ in 0..200 {
+            match execute(
+                Request::Capture {
+                    pane: PaneSelector::Id(1),
+                    lines: 6,
+                },
+                &mut d,
+            ) {
+                Response::Capture(out) => {
+                    text = out.text;
+                    if text.contains("\u{6c49}") {
+                        break;
+                    }
+                }
+                other => panic!("capture: {other:?}"),
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert!(
+            text.lines().any(|l| l.trim_end() == "\u{6c49}\u{5b57}"),
+            "exact CJK line missing: {text:?}"
+        );
+        let mut s = d.sess.map.remove(&1).unwrap();
+        vtask::terminate(&mut s);
+    }
+
+    #[test]
     fn write_capture_list_roundtrip() {
         let opts = SessionOpts {
             cols: 80,
