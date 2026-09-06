@@ -1,6 +1,6 @@
 //! Builtin theme registry.
 //!
-//! Five palettes stored as `const` RGB literals (canonical published values
+//! Builtin palettes stored as `const` RGB literals (canonical published values
 //! from each theme's official palette); each constructor is a free function
 //! returning an owned [`Palette`].
 
@@ -8,6 +8,7 @@ use crate::palette::{Palette, Rgb};
 
 /// Registry keys of all builtin themes, in menu display order.
 pub const BUILTIN_NAMES: &[&str] = &[
+    "kanagawa-wave",
     "catppuccin-mocha",
     "tokyo-night",
     "dracula",
@@ -17,6 +18,40 @@ pub const BUILTIN_NAMES: &[&str] = &[
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
     Rgb { r, g, b }
+}
+
+/// Kanagawa Wave — https://github.com/rebelot/kanagawa.nvim (ghostty/kitty
+/// port): sumi-ink background with muted pastel ANSI slots; soft aqua/cyan
+/// accents that keep low-saturation "premium" chrome (mix() derivations).
+pub fn kanagawa_wave() -> Palette {
+    Palette {
+        name: "Kanagawa Wave".into(),
+        foreground: rgb(0xdc, 0xdc, 0xdc),           // fujiWhite
+        background: rgb(0x1f, 0x1f, 0x28),           // sumiInk0
+        cursor: rgb(0xc8, 0xc0, 0x93),               // oldWhite
+        selection_background: rgb(0x2d, 0x4f, 0x67), // waveBlue2
+        block_highlight: rgb(0x95, 0x7f, 0xb8),      // oniViolet
+        normal: [
+            rgb(0x09, 0x06, 0x18), // 0 sumiInk2
+            rgb(0xc3, 0x40, 0x43), // 1 samuraiRed
+            rgb(0x76, 0x94, 0x6a), // 2 autumnGreen
+            rgb(0xc0, 0xa3, 0x6e), // 3 boatYellow2
+            rgb(0x7e, 0x9c, 0xd8), // 4 crystalBlue
+            rgb(0x95, 0x7f, 0xb8), // 5 oniViolet
+            rgb(0x6a, 0x95, 0x89), // 6 waveAqua1
+            rgb(0xc8, 0xc0, 0x93), // 7 oldWhite
+        ],
+        bright: [
+            rgb(0x72, 0x71, 0x69), // 8 fujiGray
+            rgb(0xe8, 0x24, 0x24), // 9 waveRed
+            rgb(0x98, 0xbb, 0x6c), // 10 springGreen
+            rgb(0xff, 0xa0, 0x66), // 11 surimiOrange
+            rgb(0x7a, 0xa2, 0xf7), // 12 springBlue
+            rgb(0xd2, 0x7e, 0x99), // 13 sakuraPink
+            rgb(0x7f, 0xb4, 0xca), // 14 lightBlue
+            rgb(0xdc, 0xdc, 0xdc), // 15 fujiWhite
+        ],
+    }
 }
 
 /// Catppuccin Mocha — https://catppuccin.com (ghostty/kitty ports).
@@ -188,6 +223,7 @@ pub fn builtin_names() -> Vec<&'static str> {
 /// Look up a builtin palette by registry key, case-insensitively.
 pub fn builtin_by_name(name: &str) -> Option<Palette> {
     match name.to_ascii_lowercase().as_str() {
+        "kanagawa-wave" => Some(kanagawa_wave()),
         "catppuccin-mocha" => Some(catppuccin_mocha()),
         "tokyo-night" => Some(tokyo_night()),
         "dracula" => Some(dracula()),
@@ -209,9 +245,9 @@ mod tests {
     }
 
     #[test]
-    fn registry_has_five_entries() {
-        assert_eq!(BUILTIN_NAMES.len(), 5);
-        assert_eq!(builtin_names().len(), 5);
+    fn registry_lists_all_builtins() {
+        assert_eq!(BUILTIN_NAMES.len(), 6);
+        assert_eq!(builtin_names().len(), 6);
     }
 
     #[test]
@@ -287,6 +323,14 @@ mod tests {
 
     #[test]
     fn builtin_hex_values_are_canonical() {
+        assert_eq!(
+            crate::palette::rgb_to_hex(kanagawa_wave().background),
+            "#1f1f28"
+        );
+        assert_eq!(
+            crate::palette::rgb_to_hex(kanagawa_wave().normal[6]),
+            "#6a9589"
+        );
         assert_eq!(
             crate::palette::rgb_to_hex(gruvbox_dark().background),
             "#282828"
