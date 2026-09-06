@@ -107,6 +107,8 @@ pub struct UiState {
     pub pointer_buttons: u8,
     /// Bit index of the most recent press still held (motion reports it).
     pub pointer_last: Option<u8>,
+    /// Last theme name the egui style was derived from (style::sync memo).
+    pub styled_theme: Option<String>,
     pub font_size: f32,
 }
 
@@ -125,6 +127,7 @@ pub fn ui_state() -> UiState {
         pointer_pane: None,
         pointer_buttons: 0,
         pointer_last: None,
+        styled_theme: None,
         font_size: 14.0,
     }
 }

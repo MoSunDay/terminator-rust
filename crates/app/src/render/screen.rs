@@ -34,23 +34,29 @@ fn pane_rects(st: &AppState, uist: &UiState, area: Rect) -> Vec<(PaneId, layout_
 /// Slim scrollbar on the right edge of a pane's content, shown only while
 /// the user reviews scrollback (viewport detached from the live area).
 /// `geo` is `(offset, total, len)` in rows from `viewport::geometry`.
-fn draw_viewport_bar(painter: &egui::Painter, content: Rect, geo: (u64, u64, u64), thumb: Color32) {
+fn draw_viewport_bar(
+    painter: &egui::Painter,
+    content: Rect,
+    geo: (u64, u64, u64),
+    thumb: Color32,
+    track: Color32,
+) {
     let (offset, total, len) = geo;
     if total == 0 || total <= len {
         return; // no history to review
     }
     let h = content.height();
-    let track = Rect::from_min_max(
+    let track_rect = Rect::from_min_max(
         egui::pos2(content.right() - 3.0, content.top()),
         egui::pos2(content.right() - 1.0, content.bottom()),
     );
-    painter.rect_filled(track, 0.0, Color32::from_gray(60));
+    painter.rect_filled(track_rect, 0.0, track);
     let ratio = |v: u64| v as f32 / total as f32;
     let thumb_h = (h * ratio(len)).clamp(12.0, h);
     let top = (h * ratio(offset)).min(h - thumb_h);
     let bar = Rect::from_min_max(
-        egui::pos2(track.left(), content.top() + top),
-        egui::pos2(track.right(), content.top() + top + thumb_h),
+        egui::pos2(track_rect.left(), content.top() + top),
+        egui::pos2(track_rect.right(), content.top() + top + thumb_h),
     );
     painter.rect_filled(bar, 0.0, thumb);
 }
@@ -132,6 +138,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                             content,
                             geo,
                             colors::to_c32(pal.block_highlight),
+                            colors::to_c32(colors::divider(&pal)),
                         );
                     }
                 }
@@ -177,7 +184,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     if !uist.zoom {
         if let Some(tabref) = st.tree.tabs.get(tab) {
             for h in mouse::dividers(tabref, grid::lt_rect(area), DIVIDER_W) {
-                painter.rect_filled(h.strip, 0.0, Color32::from_gray(60));
+                painter.rect_filled(h.strip, 0.0, colors::to_c32(colors::divider(&pal)));
             }
         }
     }

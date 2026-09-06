@@ -157,6 +157,38 @@ pub fn effective_bg(p: &Palette, meta: &PaneMeta) -> Color32 {
     ))
 }
 
+/// Linear channel mix: `a` toward `b` by `t` (0 -> a, 1 -> b), rounded.
+pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (f32::from(x) + t * (f32::from(y) - f32::from(x))).round() as u8;
+    Rgb {
+        r: ch(a.r, b.r),
+        g: ch(a.g, b.g),
+        b: ch(a.b, b.b),
+    }
+}
+
+/// Chrome surface: panel/window fill, one step above the theme bg.
+pub fn chrome_bg(p: &Palette) -> Rgb {
+    mix(p.background, p.foreground, 0.07)
+}
+/// Hovered chrome (chips, icon buttons).
+pub fn chrome_hover(p: &Palette) -> Rgb {
+    mix(p.background, p.foreground, 0.14)
+}
+/// Dividers, hairlines, scrollbar tracks.
+pub fn divider(p: &Palette) -> Rgb {
+    mix(p.background, p.foreground, 0.16)
+}
+/// Active tab chip fill.
+pub fn tab_active(p: &Palette) -> Rgb {
+    mix(p.background, p.block_highlight, 0.35)
+}
+/// Dimmed chrome text (window title).
+pub fn title_text(p: &Palette) -> Rgb {
+    mix(p.foreground, p.background, 0.30)
+}
+
 /// Swatch candidates for the pane color popup: palette 16 colors + basics.
 pub fn swatches(p: &Palette) -> Vec<Rgb> {
     let mut out: Vec<Rgb> = p.normal.to_vec();
@@ -209,6 +241,43 @@ mod tests {
         }
         assert_eq!(hex[0], rgb_to_hex(p.foreground));
         assert_eq!(hex[2], rgb_to_hex(p.normal[0]));
+    }
+
+    #[test]
+    fn chrome_mix_derives_expected_values() {
+        let p = palette_of("dracula");
+        // Hand-computed: mix((40,42,54), (248,248,242), 0.16) -> (73,75,84).
+        assert_eq!(
+            divider(&p),
+            Rgb {
+                r: 73,
+                g: 75,
+                b: 84
+            }
+        );
+        let bg = chrome_bg(&p);
+        let hover = chrome_hover(&p);
+        let div = divider(&p);
+        assert_ne!(bg, hover);
+        assert_ne!(hover, div);
+        assert_ne!(bg, div);
+        assert!(
+            bg.r < hover.r && bg.r < div.r,
+            "chrome_bg must be the darkest chrome step"
+        );
+        let a = Rgb {
+            r: 10,
+            g: 20,
+            b: 30,
+        };
+        let b = Rgb {
+            r: 200,
+            g: 100,
+            b: 0,
+        };
+        assert_eq!(mix(a, b, 0.0), a);
+        assert_eq!(mix(a, b, 1.0), b);
+        assert_eq!(mix(a, b, -1.0), a);
     }
 
     #[test]
