@@ -139,6 +139,12 @@ pub fn tab_anchor(tab: &layout_tree::Tab) -> PaneId {
         .unwrap_or(tab.focused)
 }
 
+/// True when no live tab carries this anchor: a rename edit buffer
+/// targeting it is dead (its anchor pane was closed) and should drop.
+pub fn tab_edit_orphaned(tree: &LayoutTree, anchor: PaneId) -> bool {
+    tree.tabs.iter().all(|t| tab_anchor(t) != anchor)
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -167,6 +173,15 @@ pub fn effective_title(manual: Option<&str>, osc: &str, kind: &PaneKind) -> Stri
         return osc.to_string();
     }
     kind_label(kind)
+}
+
+/// True when a pane other than `except` already claims this exact manual
+/// title: manual titles are the addressing key of the control socket, so
+/// they must stay unique.
+pub fn manual_title_taken(st: &AppState, title: &str, except: PaneId) -> bool {
+    st.panes
+        .iter()
+        .any(|(id, m)| *id != except && m.manual_title.as_deref() == Some(title))
 }
 
 /// Terminal grid size for a content area (floored, at least 1x1).
@@ -250,6 +265,19 @@ mod tests {
     }
 
     #[test]
+    fn manual_title_taken_ignores_self_and_empty_titles() {
+        let mut st = fresh_state();
+        st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
+        assert!(!manual_title_taken(&st, "agent", 1), "own title is fine");
+        assert!(!manual_title_taken(&st, "other", 1));
+        assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
+        st.panes.get_mut(&2).unwrap().manual_title = Some("agent".into());
+        assert!(manual_title_taken(&st, "agent", 1));
+        assert!(manual_title_taken(&st, "agent", 2));
+        assert!(!manual_title_taken(&st, "agent2", 1));
+    }
+
+    #[test]
     fn grid_math_floors_and_clamps() {
         assert_eq!(compute_grid(800.0, 600.0, 8.0, 16.0), (100, 37));
         assert_eq!(compute_grid(7.9, 15.9, 8.0, 16.0), (1, 1));
@@ -279,5 +307,20 @@ mod tests {
         assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
         // Still pane 1 (lowest id), unaffected by new splits.
         assert_eq!(tab_anchor(&st.tree.tabs[0]), 1);
+    }
+
+    #[test]
+    fn tab_edit_orphaned_tracks_anchor_pane_close() {
+        let mut st = fresh_state();
+        assert!(!tab_edit_orphaned(&st.tree, 1));
+        assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
+        assert!(!tab_edit_orphaned(&st.tree, 1));
+        // Closing the anchor pane moves the tab to a new anchor, orphaning
+        // any rename buffer keyed on the old one.
+        layout_tree::close_pane(&mut st.tree, 0, 1);
+        st.panes.remove(&1);
+        assert!(tab_edit_orphaned(&st.tree, 1));
+        assert_eq!(tab_anchor(&st.tree.tabs[0]), 2);
+        assert!(!tab_edit_orphaned(&st.tree, 2));
     }
 }

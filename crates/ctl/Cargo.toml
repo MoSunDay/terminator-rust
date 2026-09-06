@@ -1,0 +1,19 @@
+[package]
+name = "ctl"
+description = "terminator-ctl: external control channel for terminator-rust panes"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "terminator-ctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+ipc-proto = { workspace = true }
+oc-store = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

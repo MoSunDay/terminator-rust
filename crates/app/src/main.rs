@@ -2,6 +2,7 @@
 
 mod actions;
 mod input;
+mod ipc;
 mod persist;
 mod render;
 mod session_map;
@@ -16,6 +17,8 @@ use crate::state::{data, fresh_state, Data};
 struct Terminator {
     data: Data,
     path: std::path::PathBuf,
+    /// Control socket (UDS) when startup succeeded; None = disabled.
+    ipc: Option<ipc::server::Ipc>,
 }
 
 impl Terminator {
@@ -27,6 +30,7 @@ impl Terminator {
         Self {
             data: data(st, registry),
             path,
+            ipc: ipc::server::start(),
         }
     }
 
@@ -55,6 +59,10 @@ impl eframe::App for Terminator {
             &mut self.data.ui,
             &mut self.data.dirty,
         );
+
+        if let Some(i) = self.ipc.as_mut() {
+            ipc::server::drain(i, &mut self.data, &ctx);
+        }
 
         egui::Panel::top("tab_bar").show(ui, |ui| ui::tabs::bar(ui, &mut self.data));
         egui::CentralPanel::default()
