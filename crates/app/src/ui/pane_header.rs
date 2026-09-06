@@ -58,12 +58,16 @@ pub fn show(
         None => "?".to_string(),
     };
 
-    let strip = if focused {
-        to_c32(pal.block_highlight).gamma_multiply(0.55)
-    } else {
-        to_c32(colors::chrome_bg(pal))
-    };
-    ui.painter().rect_filled(rect, 2.0, strip);
+    // Quiet chrome: the header is a flat chrome strip (the focused pane is
+    // already framed by its accent stroke) with a hairline over the
+    // content; focus reads through the title color.
+    ui.painter()
+        .rect_filled(rect, 2.0, to_c32(colors::chrome_bg(pal)));
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        egui::Stroke::new(1.0, to_c32(colors::hairline(pal))),
+    );
 
     // Badges (right of the title area, before the buttons).
     let mut badges: Vec<String> = Vec::new();
@@ -130,7 +134,13 @@ pub fn show(
             );
         }
     } else {
-        let fg = to_c32(pal.foreground);
+        // Focused pane's title is full foreground; the rest dim to the
+        // chrome text step.
+        let fg = if focused {
+            to_c32(pal.foreground)
+        } else {
+            to_c32(colors::title_text(pal))
+        };
         ui.painter().text(
             title_rect.min,
             egui::Align2::LEFT_CENTER,
