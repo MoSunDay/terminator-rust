@@ -21,6 +21,9 @@ const CHIP_GAP: f32 = 5.0;
 const CLOSE_W: f32 = 14.0;
 const ACCENT_H: f32 = 2.0; // active-chip underline height
 const ICON: f32 = 16.0; // icon button cell
+/// Right-edge zone (inspector + zoom cells) the window title must not
+/// cover: 5px inset + ICON, 4px gap + ICON.
+const TITLE_ICON_ZONE: f32 = 5.0 + ICON + 4.0 + ICON;
 /// Chip silhouette: rounded top corners, square where it meets the content.
 const CHIP_RADIUS: CornerRadius = CornerRadius {
     nw: 5,
@@ -63,8 +66,12 @@ fn title_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| "terminator-rust".to_string());
     let galley = painter.layout_no_wrap(title, FontId::proportional(12.0), dim_text(pal));
+    // Center over the area left of the icon cells so the title reads
+    // optically centered in the window, not pushed right by them.
+    let center_rect =
+        Rect::from_min_max(rect.min, pos2(rect.right() - TITLE_ICON_ZONE, rect.max.y));
     let pos = Align2::CENTER_CENTER
-        .align_size_within_rect(galley.size(), rect)
+        .align_size_within_rect(galley.size(), center_rect)
         .min;
     painter.galley(pos, galley, dim_text(pal));
 
@@ -179,7 +186,16 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 );
                 resp.request_focus();
                 let confirm = ui.input(|inp| inp.key_pressed(Key::Enter));
-                let cancel = ui.input(|inp| inp.key_pressed(Key::Escape));
+                // Same trap as the pane rename editor: a click anywhere
+                // outside the field must close it.
+                let outside = ui.input(|inp| {
+                    inp.pointer.any_click()
+                        && inp
+                            .pointer
+                            .interact_pos()
+                            .is_none_or(|p| !resp.rect.contains(p))
+                });
+                let cancel = ui.input(|inp| inp.key_pressed(Key::Escape)) || outside;
                 // egui TextEdit keeps focus on Escape, so react to the keys
                 // directly instead of waiting for lost_focus.
                 if confirm || cancel {
