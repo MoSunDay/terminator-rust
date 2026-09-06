@@ -36,33 +36,6 @@ fn hex(c: Rgb) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::{fresh_state, split_tree_pane};
-    use layout_tree::Axis;
-
-    #[test]
-    fn reject_reason_blocks_digits_and_duplicates_only() {
-        let mut st = fresh_state();
-        st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
-        assert_eq!(reject_reason(&st, "", 1), None, "empty clears the title");
-        assert_eq!(reject_reason(&st, "agent", 1), None, "own title is fine");
-        assert!(reject_reason(&st, "7", 1).is_some(), "digits-only -> id");
-        assert_eq!(
-            reject_reason(&st, "42x", 1),
-            None,
-            "digits plus text is fine"
-        );
-        assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
-        // from the new pane's side, pane 1's claim is a conflict
-        assert_eq!(
-            reject_reason(&st, "agent", 2),
-            Some("another pane already uses this name")
-        );
-    }
-}
-
 /// Draw the header for `pane` in `rect` (full width, PANE_HEADER_H tall).
 #[allow(clippy::too_many_arguments)]
 pub fn show(
@@ -361,5 +334,32 @@ pub fn menu(
     ui.separator();
     if ui.button("Close pane").clicked() {
         actions::apply_pane_action(st, sess, uist, tab, pane, PaneAction::Close, dirty);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{fresh_state, split_tree_pane};
+    use layout_tree::Axis;
+
+    #[test]
+    fn reject_reason_blocks_digits_and_duplicates_only() {
+        let mut st = fresh_state();
+        st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
+        assert_eq!(reject_reason(&st, "", 1), None, "empty clears the title");
+        assert_eq!(reject_reason(&st, "agent", 1), None, "own title is fine");
+        assert!(reject_reason(&st, "7", 1).is_some(), "digits-only -> id");
+        assert_eq!(
+            reject_reason(&st, "42x", 1),
+            None,
+            "digits plus text is fine"
+        );
+        assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
+        // from the new pane's side, pane 1's claim is a conflict
+        assert_eq!(
+            reject_reason(&st, "agent", 2),
+            Some("another pane already uses this name")
+        );
     }
 }
