@@ -109,6 +109,12 @@ pub struct UiState {
     pub pointer_last: Option<u8>,
     /// Last theme name the egui style was derived from (style::sync memo).
     pub styled_theme: Option<String>,
+    /// Modifier state as of the END of the previous frame's input handling;
+    /// seed for reconstructing per-event mods (egui 0.36 aggregates
+    /// ModifiersChanged into a post-batch `i.modifiers`, which is wrong
+    /// for events that landed mid-batch, e.g. a fast ctrl+c whose ctrl
+    /// release shares the frame with the folded Event::Copy).
+    pub mods_frame_end: egui::Modifiers,
     pub font_size: f32,
 }
 
@@ -128,6 +134,7 @@ pub fn ui_state() -> UiState {
         pointer_buttons: 0,
         pointer_last: None,
         styled_theme: None,
+        mods_frame_end: egui::Modifiers::NONE,
         font_size: 14.0,
     }
 }
