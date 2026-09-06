@@ -35,6 +35,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - ui style e2e: `scripts/bin/e2e-ui-style.sh` (Xvfb + scrot/PIL pixel
   assertions: pane bg/theme blend via transparency, themed divider strip,
   chrome top-bar fill; presets a dracula Split state.json)
+- deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
+  repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
+  XDG autostart for the desktop user, pid-kill restart, ctl smoke).
+  Target 192.168.31.196: user m, DISPLAY=:0, XDG_RUNTIME_DIR=/run/user/1000.
 
 ## Hard-won facts (do not relearn)
 - SIG_IGN survives fork+execve: an app started in the background (shell &,
@@ -107,7 +111,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   across tool calls; NEVER `pkill -f` a pattern that occurs in your own
   command line (self-kill, tool exit -1) - kill by PID instead.
   Ground truth: select text + Ctrl+Shift+C then `xclip -o -selection
-  clipboard`; pixels via scrot + PIL.
+  clipboard`; pixels via scrot + PIL. `xdotool --window <id> key/click`
+  sends XSendEvent, which winit DROPS - focus the window
+  (`xdotool windowfocus`) and use the global `xdotool key/click` (XTest)
+  instead; bit us again driving the live app on the deploy target.
 - libghostty default palette green ~(181,189,104) red ~(224,108,117) -
   color tests assert dominance, not VGA values.
 - control socket: $XDG_RUNTIME_DIR/terminator-rust/ipc.sock (fallback
