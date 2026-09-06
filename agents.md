@@ -1,4 +1,4 @@
-Commit: 4d27cb99e767be6da94bbb327b100d377b24a8bc
+Commit: 4ebb8eba52338c50a56abdacc9eed9b37b401f1f
 
 # agents.md - repo memory for terminator-rust
 
@@ -28,8 +28,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - control-channel e2e: `scripts/bin/e2e-ipc-oc.sh` (Xvfb + fake opencoder
   holding a fixture store open in a named pane; covers list/capture/send,
   oc link/submit/status/--wait, stale-socket reclaim after SIGTERM)
+- mouse/key e2e: `scripts/bin/e2e-mouse-key.sh` (Xvfb + xdotool over the
+  live socket: bare Ctrl+C ^C echo, cross-pane drag SGR press/motion/
+  RELEASE landing in the press-owner pane, Shift+PageUp/End scrollback
+  paging, Ctrl+C actually interrupting a foreground job)
 
 ## Hard-won facts (do not relearn)
+- SIG_IGN survives fork+execve: an app started in the background (shell &,
+  desktop launchers) leaves SIGHUP/INT/QUIT/TERM ignored in every pane
+  child, and ^C/^\ then do nothing. vt-pane/src/pty.rs child branch resets
+  HUP/INT/QUIT/TERM/PIPE to SIG_DFL; do not remove.
 - ghostty ABI is exact-revision pinned: libghostty-rs rev 8272abe <->
   ghostty 22d1317 <-> vendored third_party/libghostty-vt (gitignored).
   Rebuild: scripts/fetch-vendor.sh (zig 0.16.0 via `pip install ziglang`,
@@ -70,6 +78,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   gates on ctrl&&!shift: bare Ctrl+C/X/V forwards ^C(SIGINT)/^X/^V to the
   child, other forms -> actions::copy_focused (arboard, skip empty); follow_output(s) after keys/paste so typing snaps
   scrollback to live. context_menu suppressed while tracking.
+- scrollback review (batch 2 slice): Shift+PageUp/PageDown pages the
+  focused pane's local viewport, Shift+Home/End jump top/live (intercepted
+  in app/input/scroll.rs BEFORE child pass-through; ctrl forms stay
+  shortcuts). Focused pane draws a 2px viewport bar while unpinned
+  (vt-pane/src/viewport.rs: page_delta = rows-1, one context line overlap).
 - pointer grabs are per-button (uist.pointer_pane owner +
   pointer_buttons bitmask, pointer_last = lowest bit still held):
   releases follow the press owner across pane borders, chording holds
@@ -119,3 +132,7 @@ over the live socket, TERMINATOR_SOCK present in the pane child env, oc link
 via /proc fd discovery, submit -> pending -> consume -> receipt by seq,
 honest --wait timeout, second instance reclaims a SIGTERM-stale socket
 (socket perms asserted 600 on first bind AND after reclaim).
+Mouse/key review fixes (2026-09, scripts/bin/e2e-mouse-key.sh): ^C echo
+through the egui Copy-fold gate, cross-pane drag RELEASE delivered to the
+press-owner pane's tracker child, Shift+PageUp/End scrollback paging, and
+Ctrl+C interrupting a foreground sleep 45 (pty signal reset verified).
