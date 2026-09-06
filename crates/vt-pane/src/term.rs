@@ -26,6 +26,8 @@ pub struct CellData {
     pub italic: bool,
     pub inverse: bool,
     pub underline: bool,
+    /// Inside the terminal's active selection (render as highlighted).
+    pub selected: bool,
 }
 
 /// Plain RGB color, independent of libghostty.
@@ -92,6 +94,7 @@ fn cell_data(cell: &CellIteration<'_, '_>) -> CellData {
         .chars()
         .next()
         .is_some_and(|c| c.width().unwrap_or(1) > 1);
+    data.selected = cell.is_selected().unwrap_or(false);
     if cell.has_styling().unwrap_or(false) {
         if let Ok(style) = cell.style() {
             data.bold = style.bold;

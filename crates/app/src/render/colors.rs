@@ -1,7 +1,10 @@
 //! Theme + per-pane color resolution to egui Color32.
 
 use egui::Color32;
-use theme::{blend_background, builtin_by_name, rgb_to_hex, Palette, Rgb, BUILTIN_NAMES};
+use theme::{
+    blend_background, builtin_by_name, is_dark as theme_is_dark, rgb_to_hex, Palette, Rgb,
+    BUILTIN_NAMES,
+};
 use vt_pane::term::Color as VtColor;
 use vt_pane::CellData;
 
@@ -123,6 +126,11 @@ pub fn palette_of(name: &str) -> Palette {
     builtin_by_name(name)
         .or_else(|| BUILTIN_NAMES.first().and_then(|n| builtin_by_name(n)))
         .unwrap_or_else(fallback_palette)
+}
+
+/// True when the named theme's background is dark (feeds OSC color-scheme answers).
+pub fn is_dark(name: &str) -> bool {
+    theme_is_dark(&palette_of(name))
 }
 
 /// Nine hex slots for remote bootstrap: fg, bg, red..cyan, orange.

@@ -36,6 +36,9 @@ pub struct SessionOpts {
     pub env: Vec<String>,
     /// Scrollback size in lines.
     pub scrollback_lines: usize,
+    /// Answers light/dark for terminal color-scheme queries
+    /// (CSI ? 996 n); linked to the active theme.
+    pub dark: bool,
 }
 
 impl SessionOpts {
@@ -48,6 +51,7 @@ impl SessionOpts {
             argv: vec![shell, "-i".to_string()],
             env: Vec::new(),
             scrollback_lines: 10_000,
+            dark: true,
         }
     }
 
@@ -59,6 +63,7 @@ impl SessionOpts {
             argv,
             env: Vec::new(),
             scrollback_lines: 10_000,
+            dark: true,
         }
     }
 }
@@ -66,12 +71,18 @@ impl SessionOpts {
 /// One terminal pane: pty + terminal + render helpers.
 ///
 /// The reader thread owns nothing but a pty fd clone; all state lives here
-/// and is only touched from the UI thread.
+/// and is only touched from the UI thread. The reader thread is the sole
+/// closer of the master fd and publishes that fact via `closed` before
+/// closing, so late writers (the pty-write effect, `write`) can bail out
+/// instead of touching a reused fd number.
 pub struct Session {
     handle: PtyHandle,
     events: Receiver<PtyEvent>,
     /// Set by `terminate`; the reader thread polls it between reads.
     stop: Arc<AtomicBool>,
+    /// Set by the reader thread right before it closes the master fd;
+    /// guards the UI-thread write path against the reused fd number.
+    closed: Arc<AtomicBool>,
     pub term: Terminal<'static, 'static>,
     render_state: RenderState<'static>,
     row_it: RowIterator<'static>,
@@ -82,6 +93,8 @@ pub struct Session {
     pub exit: Option<i32>,
     /// Current cell pixel size, shared with the size-query effect.
     cell_px: CellPx,
+    /// Mouse encoder + selection gesture objects (see `mouse`).
+    pub(crate) pointer: crate::mouse::PointerState,
 }
 
 /// Spawn a session for the given options.
@@ -95,22 +108,32 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
     let mut term = Terminal::new(opts.cols, opts.rows)?;
     term.set_scrollback_max_lines(Some(opts.scrollback_lines))?;
 
+    // Closed-guard: the reader thread is the sole closer of the master fd.
+    // It flips `closed` before closing, so query-response writes (issued
+    // synchronously from vt_write effects) skip the fd instead of racing
+    // with a possible fd-number reuse by a newer pane's pty.
+    let closed = Arc::new(AtomicBool::new(false));
     let write_fd = handle.master_fd;
-    // The closure only captures a Copy fd, so 'static holds.
+    let write_closed = Arc::clone(&closed);
+    // Both captures are Copy/Arc, so 'static holds.
     term.on_pty_write(move |_t, data| {
+        if write_closed.load(Ordering::Acquire) {
+            return; // fd already closed by the reader thread
+        }
         let _ = pty::pty_write(write_fd, data);
     })?;
     let cell_px = effects::new_cell_px();
-    effects::install(&mut term, Arc::clone(&cell_px))?;
+    effects::install(&mut term, Arc::clone(&cell_px), opts.dark)?;
 
     let (tx, rx) = channel::<PtyEvent>();
     let read_fd = handle.master_fd;
     let pid = handle.child_pid;
     let stop = Arc::new(AtomicBool::new(false));
     let stop_reader = Arc::clone(&stop);
+    let closed_reader = Arc::clone(&closed);
     let reader = thread::Builder::new()
         .name("pty-reader".to_string())
-        .spawn(move || reader_loop(read_fd, pid, stop_reader, tx));
+        .spawn(move || reader_loop(read_fd, pid, stop_reader, closed_reader, tx));
     match reader {
         Ok(_) => {}
         Err(e) => {
@@ -129,6 +152,7 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
         handle,
         events: rx,
         stop,
+        closed,
         term,
         render_state: RenderState::new()?,
         row_it: RowIterator::new()?,
@@ -137,6 +161,7 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
         key_event: KeyEvent::new()?,
         exit: None,
         cell_px,
+        pointer: crate::mouse::new_pointer_state().context("pointer state")?,
     })
 }
 
@@ -144,8 +169,16 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
 ///
 /// Polls with a bounded timeout so a `terminate` request (stop flag) is
 /// noticed within 200ms; a blocking read could never be woken. This thread
-/// is the sole closer of the master fd.
-fn reader_loop(fd: i32, pid: i32, stop: Arc<AtomicBool>, tx: std::sync::mpsc::Sender<PtyEvent>) {
+/// is the sole closer of the master fd: it stores into `closed` (Release)
+/// immediately before the close so the pty-write guard sees it before the
+/// fd number can be handed out again.
+fn reader_loop(
+    fd: i32,
+    pid: i32,
+    stop: Arc<AtomicBool>,
+    closed: Arc<AtomicBool>,
+    tx: std::sync::mpsc::Sender<PtyEvent>,
+) {
     let mut buf = [0u8; 8192];
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -193,6 +226,9 @@ fn reader_loop(fd: i32, pid: i32, stop: Arc<AtomicBool>, tx: std::sync::mpsc::Se
         let _ = tx.send(PtyEvent::Exit(status));
         break;
     }
+    // Publish the close BEFORE dropping the fd, so guarded writers bail
+    // out instead of racing a possible fd-number reuse.
+    closed.store(true, Ordering::Release);
     // SAFETY: plain C close; this thread is the fd's last owner.
     unsafe { libc::close(fd) };
 }
@@ -291,13 +327,25 @@ pub fn resize(
     pty::pty_resize(sess.handle.master_fd, cols, rows)
 }
 
+/// Current cell pixel metrics (mouse/selection geometry).
+pub fn cell_px(sess: &Session) -> (u32, u32) {
+    *sess.cell_px.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Pid of the session's child (0 when unknown).
 pub fn child_pid(sess: &Session) -> i32 {
     sess.handle.child_pid
 }
 
 /// Write raw bytes to the pty.
+///
+/// A no-op Ok once the reader thread has closed the master fd (the fd
+/// number may have been reused by another pane's pty by then).
+/// `send_key`/`paste` route through here, so they are covered too.
 pub fn write(sess: &Session, data: &[u8]) -> Result<()> {
+    if sess.closed.load(Ordering::Acquire) {
+        return Ok(());
+    }
     pty::pty_write(sess.handle.master_fd, data)
 }
 
