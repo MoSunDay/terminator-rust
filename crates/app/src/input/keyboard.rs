@@ -108,23 +108,22 @@ pub fn handle(
     ui: &mut UiState,
     dirty: &mut bool,
 ) {
-    // Seed per-event mods with the state at the START of this batch: the
-    // previous frame's end. `i.modifiers` alone is the POST-batch state,
-    // so a fast ctrl+c whose press and release events straddle frames (the
-    // ctrl-down marks land in an earlier frame, the folded Event::Copy and
-    // the ctrl-up marks share this one) would look modifier-less and get
-    // silently rerouted from SIGINT to the clipboard path.
+    // Per-event mods start from the state at the START of this batch: the
+    // previous frame's end, captured BEFORE the text-field early return so
+    // it stays current. `i.modifiers` is the POST-batch aggregate and is
+    // never used per-event; mods_at below advances over the batch's
+    // ModifiersChanged marks instead. Why it matters: a fast bare Ctrl+C is
+    // folded by egui-winit into Event::Copy with no Key event, and when the
+    // ctrl-down marks landed in an earlier frame, trusting `i.modifiers`
+    // (or a stale seed) makes the folded Copy look modifier-less and
+    // silently reroutes SIGINT to the clipboard path.
     let mods_at_start = ui.mods_frame_end;
     ui.mods_frame_end = ctx.input(|i| i.modifiers);
     if ctx.egui_wants_keyboard_input() {
         return; // a text field has focus; let it keep the keys
     }
     let events = ctx.input(|i| i.events.clone());
-    // Modifier state per event, reconstructed from ModifiersChanged marks in
-    // the batch: `i.modifiers` alone is the POST-batch state, so a fast
-    // ctrl+c whose press and release land in the same frame would look
-    // modifier-less here (egui-winit folds the combo into Event::Copy and
-    // emits no Key event), silently rerouting ^C to the clipboard path.
+    // advance over ModifiersChanged marks; see the seeding note above
     let mut mods_at = mods_at_start;
     let alt_chars = alt_keyed_chars(&events);
     let tab = st.tree.active_tab.min(st.tree.tabs.len().saturating_sub(1));
