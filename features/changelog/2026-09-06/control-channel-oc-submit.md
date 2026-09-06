@@ -1,4 +1,4 @@
-Commit: 6a2a045b7cd90fb02eb2c8809c1c5214ebe954b3
+Commit: e80eb094ddb5a4fd777565a24bbf6d3b52ea9b5c
 
 # 控制通道与 OpenCoder 提交（terminator-ctl / oc submit）
 
@@ -42,3 +42,17 @@ Commit: 6a2a045b7cd90fb02eb2c8809c1c5214ebe954b3
 ## 相关文档（Related Docs）
 
 - [../../agents.md](../../agents.md)（repo 根，逻辑图与 hard-won facts）
+
+## 评审修复（Review Fixes，e80eb09）
+
+- P2：bind 后 socket 强制 `chmod 0600`（`bind_private` 失败即不启控制面）；
+  e2e 在首次 bind 与 stale 回收后各断言一次 600。
+- P3：`/proc` 发现一个 opencoder 进程持有多个不同 store 时报错列出候选，
+  不再静默取第一个；删除监听线程里无效的 `egui::Context::default()`
+  唤醒（真正的驱动是 screen.rs 的 50ms 自循环重绘）；`TERMINATOR_SOCK`
+  导出移到任何 spawn 之前。
+- P3：pane 重命名新增拒绝纯数字名（untagged PaneSelector 会解析成 pane
+  id），拒绝原因以红色小字显示在编辑框下方（`UiState::pane_edit_note`）。
+- P3：CJK 宽字符 capture 单测：宽字符的尾半格是空 spacer，`frame_text`
+  逐格 join 不得产生幻影空格/丢字；另加真实 pty 上 `cat` 回显 "汉字" 的
+  精确行断言。
