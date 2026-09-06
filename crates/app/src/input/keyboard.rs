@@ -108,24 +108,41 @@ pub fn handle(
     ui: &mut UiState,
     dirty: &mut bool,
 ) {
+    // Seed per-event mods with the state at the START of this batch: the
+    // previous frame's end. `i.modifiers` alone is the POST-batch state,
+    // so a fast ctrl+c whose press and release events straddle frames (the
+    // ctrl-down marks land in an earlier frame, the folded Event::Copy and
+    // the ctrl-up marks share this one) would look modifier-less and get
+    // silently rerouted from SIGINT to the clipboard path.
+    let mods_at_start = ui.mods_frame_end;
+    ui.mods_frame_end = ctx.input(|i| i.modifiers);
     if ctx.egui_wants_keyboard_input() {
         return; // a text field has focus; let it keep the keys
     }
     let events = ctx.input(|i| i.events.clone());
-    let mods_now = ctx.input(|i| i.modifiers);
+    // Modifier state per event, reconstructed from ModifiersChanged marks in
+    // the batch: `i.modifiers` alone is the POST-batch state, so a fast
+    // ctrl+c whose press and release land in the same frame would look
+    // modifier-less here (egui-winit folds the combo into Event::Copy and
+    // emits no Key event), silently rerouting ^C to the clipboard path.
+    let mut mods_at = mods_at_start;
     let alt_chars = alt_keyed_chars(&events);
     let tab = st.tree.active_tab.min(st.tree.tabs.len().saturating_sub(1));
     let focused = st.tree.tabs.get(tab).map(|t| t.focused);
     for ev in events {
+        if let Event::ModifiersChanged(m) = ev {
+            mods_at = m;
+            continue;
+        }
         match ev {
             Event::Paste(text) => {
                 // Bare Ctrl+V is quoted-insert in the child, not a paste
                 // (Ctrl+Shift+V is the terminal paste shortcut).
-                if mods_now.ctrl && !mods_now.shift {
+                if mods_at.ctrl && !mods_at.shift {
                     if let Some(p) = focused {
                         if let Some(s) = sess.map.get_mut(&p) {
                             if let Some(gk) = key_from_char('v') {
-                                send_keypress(p, s, gk, ghostty_mods(&mods_now), None);
+                                send_keypress(p, s, gk, ghostty_mods(&mods_at), None);
                             }
                         }
                     }
@@ -144,12 +161,12 @@ pub fn handle(
                 // Ctrl combos must still reach the child (SIGINT, ^X), so
                 // only Shift / dedicated-key / macOS-Cmd forms act on the
                 // clipboard.
-                if mods_now.ctrl && !mods_now.shift {
+                if mods_at.ctrl && !mods_at.shift {
                     let c = if matches!(ev, Event::Cut) { 'x' } else { 'c' };
                     if let Some(p) = focused {
                         if let Some(s) = sess.map.get_mut(&p) {
                             if let Some(gk) = key_from_char(c) {
-                                send_keypress(p, s, gk, ghostty_mods(&mods_now), None);
+                                send_keypress(p, s, gk, ghostty_mods(&mods_at), None);
                             }
                         }
                     }
