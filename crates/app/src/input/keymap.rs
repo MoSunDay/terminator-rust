@@ -195,7 +195,6 @@ pub fn to_smods(m: &Modifiers) -> SMods {
     }
 }
 
-
 /// Printable char for a key, shift applied.
 pub fn key_char(key: Key, shift: bool) -> Option<char> {
     let (unshifted, shifted) = match key {
@@ -263,9 +262,7 @@ pub fn alt_keyed_chars(events: &[Event]) -> Vec<char> {
                 pressed: true,
                 modifiers,
                 ..
-            } if modifiers.alt => {
-                key_char(*key, modifiers.shift).map(|c| c.to_ascii_lowercase())
-            }
+            } if modifiers.alt => key_char(*key, modifiers.shift).map(|c| c.to_ascii_lowercase()),
             _ => None,
         })
         .collect()

@@ -56,14 +56,22 @@ pub fn split_rect(r: Rect, axis: Axis, ratio: f32) -> (Rect, Rect) {
             let first_h = r.h * ratio;
             (
                 Rect { h: first_h, ..r },
-                Rect { y: r.y + first_h, h: r.h - first_h, ..r },
+                Rect {
+                    y: r.y + first_h,
+                    h: r.h - first_h,
+                    ..r
+                },
             )
         }
         Axis::Vertical => {
             let first_w = r.w * ratio;
             (
                 Rect { w: first_w, ..r },
-                Rect { x: r.x + first_w, w: r.w - first_w, ..r },
+                Rect {
+                    x: r.x + first_w,
+                    w: r.w - first_w,
+                    ..r
+                },
             )
         }
     }
@@ -136,7 +144,12 @@ mod tests {
 
     #[test]
     fn contains_is_closed_on_far_edges() {
-        let r = Rect { x: 1.0, y: 2.0, w: 3.0, h: 4.0 };
+        let r = Rect {
+            x: 1.0,
+            y: 2.0,
+            w: 3.0,
+            h: 4.0,
+        };
         assert!(rect_contains(r, 1.0, 2.0));
         assert!(rect_contains(r, 4.0, 6.0));
         assert!(!rect_contains(r, 4.01, 6.0));
@@ -145,14 +158,24 @@ mod tests {
 
     #[test]
     fn center_and_area() {
-        let r = Rect { x: 0.0, y: 0.0, w: 10.0, h: 6.0 };
+        let r = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 6.0,
+        };
         assert_eq!(rect_center(r), (5.0, 3.0));
         assert!(close(rect_area(r), 60.0));
     }
 
     #[test]
     fn split_horizontal_is_top_bottom() {
-        let r = Rect { x: 0.0, y: 0.0, w: 100.0, h: 90.0 };
+        let r = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 90.0,
+        };
         let (top, bottom) = split_rect(r, Axis::Horizontal, 0.3);
         assert!(close(top.h, 27.0));
         assert!(close(top.w, 100.0));
@@ -162,7 +185,12 @@ mod tests {
 
     #[test]
     fn split_vertical_is_left_right() {
-        let r = Rect { x: 5.0, y: 0.0, w: 90.0, h: 100.0 };
+        let r = Rect {
+            x: 5.0,
+            y: 0.0,
+            w: 90.0,
+            h: 100.0,
+        };
         let (left, right) = split_rect(r, Axis::Vertical, 0.5);
         assert!(close(left.w, 45.0));
         assert!(close(left.x, 5.0));
@@ -172,7 +200,12 @@ mod tests {
 
     #[test]
     fn gapped_split_reserves_divider_room() {
-        let r = Rect { x: 0.0, y: 0.0, w: 100.0, h: 90.0 };
+        let r = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 90.0,
+        };
         let (a, b) = split_rect_gapped(r, Axis::Horizontal, 0.5, 10.0);
         assert!(close(a.h, 40.0));
         assert!(close(b.y, 50.0));
@@ -186,9 +219,33 @@ mod tests {
 
     #[test]
     fn shrink_insets_all_sides() {
-        let r = shrink(Rect { x: 0.0, y: 0.0, w: 10.0, h: 10.0 }, 2.0);
-        assert_eq!(r, Rect { x: 2.0, y: 2.0, w: 6.0, h: 6.0 });
-        let flat = shrink(Rect { x: 0.0, y: 0.0, w: 2.0, h: 5.0 }, 4.0);
+        let r = shrink(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            2.0,
+        );
+        assert_eq!(
+            r,
+            Rect {
+                x: 2.0,
+                y: 2.0,
+                w: 6.0,
+                h: 6.0
+            }
+        );
+        let flat = shrink(
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                w: 2.0,
+                h: 5.0,
+            },
+            4.0,
+        );
         assert!(flat.w <= 0.0);
         assert!(flat.h <= 0.0);
     }

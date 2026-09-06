@@ -45,7 +45,10 @@ fn ssh_bootstrap_creates_zellij_session() {
             }
         }
     }
-    assert!(!rendered.is_empty(), "no content rendered from remote zellij");
+    assert!(
+        !rendered.is_empty(),
+        "no content rendered from remote zellij"
+    );
 
     // Round-trip proof: type a unique marker into the zellij pane and wait
     // for its echo.

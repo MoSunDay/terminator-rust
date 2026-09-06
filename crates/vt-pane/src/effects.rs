@@ -7,11 +7,11 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use libghostty_vt::terminal::SizeReportSize;
 use libghostty_vt::terminal::{
     ColorScheme, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
     PrimaryDeviceAttributes, SecondaryDeviceAttributes, TertiaryDeviceAttributes,
 };
-use libghostty_vt::terminal::SizeReportSize;
 use libghostty_vt::Terminal;
 
 /// Shared current cell pixel size, kept in sync by `task::resize`.
@@ -53,7 +53,13 @@ pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx, dark: boo
 
     // Capture the Copy bool (not the enum) so the closure stays trivially
     // 'static and independent of ColorScheme's derives.
-    term.on_color_scheme(move |_| Some(if dark { ColorScheme::Dark } else { ColorScheme::Light }))?;
+    term.on_color_scheme(move |_| {
+        Some(if dark {
+            ColorScheme::Dark
+        } else {
+            ColorScheme::Light
+        })
+    })?;
     Ok(())
 }
 

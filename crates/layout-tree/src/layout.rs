@@ -37,7 +37,12 @@ pub fn layout_tab(
 fn layout_node(node: &Node, area: Rect, divider_w: f32, out: &mut Vec<(PaneId, Rect)>) {
     match node {
         Node::Pane { id } => out.push((*id, area)),
-        Node::Split { axis, ratio, first, second } => {
+        Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
             let (first_area, second_area) = split_rect_gapped(area, *axis, *ratio, divider_w);
             layout_node(first, first_area, divider_w, out);
             layout_node(second, second_area, divider_w, out);
@@ -93,13 +98,51 @@ mod tests {
     #[test]
     fn layout_partitions_area() {
         let tab = three_panes();
-        let area = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
         let rects = layout_tab(&tab, area, 10.0, 4.0);
         assert_eq!(rects.len(), 3);
         // Exact rects: divider 4px, ratio 0.5 everywhere.
-        assert_eq!(rects[0], (1, Rect { x: 0.0, y: 0.0, w: 48.0, h: 48.0 }));
-        assert_eq!(rects[1], (3, Rect { x: 52.0, y: 0.0, w: 48.0, h: 48.0 }));
-        assert_eq!(rects[2], (2, Rect { x: 0.0, y: 52.0, w: 100.0, h: 48.0 }));
+        assert_eq!(
+            rects[0],
+            (
+                1,
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 48.0,
+                    h: 48.0
+                }
+            )
+        );
+        assert_eq!(
+            rects[1],
+            (
+                3,
+                Rect {
+                    x: 52.0,
+                    y: 0.0,
+                    w: 48.0,
+                    h: 48.0
+                }
+            )
+        );
+        assert_eq!(
+            rects[2],
+            (
+                2,
+                Rect {
+                    x: 0.0,
+                    y: 52.0,
+                    w: 100.0,
+                    h: 48.0
+                }
+            )
+        );
         // Panes stay inside the area and never overlap.
         for (_, r) in &rects {
             assert!(rect_contains(area, r.x, r.y));
@@ -120,26 +163,79 @@ mod tests {
     fn layout_follows_ratio() {
         let mut tab = three_panes();
         assert!(set_parent_ratio(&mut tab.root, 1, 0.75));
-        let area = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
         let rects = layout_tab(&tab, area, 0.0, 4.0);
-        assert_eq!(rects[0], (1, Rect { x: 0.0, y: 0.0, w: 72.0, h: 48.0 }));
-        assert_eq!(rects[1], (3, Rect { x: 76.0, y: 0.0, w: 24.0, h: 48.0 }));
+        assert_eq!(
+            rects[0],
+            (
+                1,
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 72.0,
+                    h: 48.0
+                }
+            )
+        );
+        assert_eq!(
+            rects[1],
+            (
+                3,
+                Rect {
+                    x: 76.0,
+                    y: 0.0,
+                    w: 24.0,
+                    h: 48.0
+                }
+            )
+        );
     }
 
     #[test]
     fn content_rect_insets_header() {
-        let pane = Rect { x: 0.0, y: 52.0, w: 100.0, h: 48.0 };
+        let pane = Rect {
+            x: 0.0,
+            y: 52.0,
+            w: 100.0,
+            h: 48.0,
+        };
         assert_eq!(
             content_rect(pane, 10.0),
-            Rect { x: 0.0, y: 62.0, w: 100.0, h: 38.0 }
+            Rect {
+                x: 0.0,
+                y: 62.0,
+                w: 100.0,
+                h: 38.0
+            }
         );
-        assert!(content_rect(Rect { x: 0.0, y: 0.0, w: 5.0, h: 2.0 }, 10.0).h <= 0.0);
+        assert!(
+            content_rect(
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 5.0,
+                    h: 2.0
+                },
+                10.0
+            )
+            .h <= 0.0
+        );
     }
 
     #[test]
     fn pane_at_hits_panes_and_misses_dividers() {
         let tab = three_panes();
-        let area = Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 };
+        let area = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 100.0,
+            h: 100.0,
+        };
         assert_eq!(pane_at(&tab, area, 10.0, 10.0), Some(1));
         assert_eq!(pane_at(&tab, area, 90.0, 10.0), Some(3));
         assert_eq!(pane_at(&tab, area, 10.0, 90.0), Some(2));
