@@ -10,8 +10,8 @@
 #   T3: Shift+PageUp pages the focused pane's local viewport back and
 #       Shift+End returns to live (capture reflects the viewport).
 #   T4: Ctrl+C must actually INTERRUPT a foreground job (SIGINT, not just
-#       the ^C caret echo). Fails on trees where pane children inherit
-#       SIG_IGN dispositions - see the failure message for the fix.
+#       the ^C caret echo). Guards the pty.rs SIG_DFL reset (the
+#       historical inherited-SIG_IGN bug).
 #
 # Usage: scripts/bin/e2e-mouse-key.sh   (from the repo root; needs Xvfb +
 # xdotool). Set E2E_KEEP=1 to keep the scratch dir for debugging.
@@ -235,7 +235,7 @@ done
 if [ -z "$INTERRUPTED" ]; then
     "$CTL" capture "$PANE2"
     echo "pane-child SigIgn mask: $(awk '/SigIgn/{print $2}' /proc/"$P2"/status 2>/dev/null)"
-    fail "GENUINE APP BUG: Ctrl+C echoed ^C but never interrupted 'sleep 45'. The kernel delivers SIGINT (verified via strace) but pane children inherit SIG_IGN: the app is launched in the background (as here, or by any desktop launcher), bash sets SIGINT/SIGQUIT to SIG_IGN in async children, and vt-pane's pty child (crates/vt-pane/src/pty.rs) only resets SIGPIPE before execve - SIG_IGN survives execve, so the pane's bash keeps SIGINT ignored for every job it runs. Fix: reset SIGHUP/SIGINT/SIGQUIT/SIGTERM to SIG_DFL (next to the existing SIGPIPE reset) in the open_pty child branch."
+    fail "GENUINE APP BUG: Ctrl+C echoed ^C but never interrupted 'sleep 45'. This exact failure shape was the inherited-SIG_IGN bug: apps launched in the background (shell &, desktop launchers) leave SIGHUP/INT/QUIT/TERM ignored, and SIG_IGN survives fork+execve; the fix resets SIGHUP/SIGINT/SIGQUIT/SIGTERM to SIG_DFL in the pty child branch of crates/vt-pane/src/pty.rs (next to the execve). If it recurs now, that reset was removed or bypassed - check the pane-child SigIgn mask printed above (from /proc/<pane-child>/status) and pty.rs."
 fi
 echo "foreground job ended within the poll window"
 
