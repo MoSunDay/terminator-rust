@@ -11,6 +11,7 @@ use crate::input::keymap::{
     alt_keyed_chars, ghostty_key, ghostty_mods, is_command_key, key_char, produces_text, to_skey,
     to_smods,
 };
+use crate::input::scroll;
 use crate::session_map::SessionMap;
 use crate::state::{self, Action, AppState, UiState};
 
@@ -199,6 +200,15 @@ pub fn handle(
                         }
                         actions::apply_action(st, sess, ui, action, dirty);
                         continue;
+                    }
+                }
+                // Shift+PageUp/PageDown/Home/End review local scrollback
+                // (GNOME Terminal habit); all other combos reach the child.
+                if let Some(p) = focused {
+                    if let Some(s) = sess.map.get_mut(&p) {
+                        if scroll::handle_key(s, key, &modifiers) {
+                            continue;
+                        }
                     }
                 }
                 if !is_command_key(&modifiers) && produces_text(key) {

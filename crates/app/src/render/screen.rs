@@ -31,6 +31,30 @@ fn pane_rects(st: &AppState, uist: &UiState, area: Rect) -> Vec<(PaneId, layout_
     layout_tab(tab, lt_area, PANE_HEADER_H, DIVIDER_W)
 }
 
+/// Slim scrollbar on the right edge of a pane's content, shown only while
+/// the user reviews scrollback (viewport detached from the live area).
+/// `geo` is `(offset, total, len)` in rows from `viewport::geometry`.
+fn draw_viewport_bar(painter: &egui::Painter, content: Rect, geo: (u64, u64, u64), thumb: Color32) {
+    let (offset, total, len) = geo;
+    if total == 0 || total <= len {
+        return; // no history to review
+    }
+    let h = content.height();
+    let track = Rect::from_min_max(
+        egui::pos2(content.right() - 3.0, content.top()),
+        egui::pos2(content.right() - 1.0, content.bottom()),
+    );
+    painter.rect_filled(track, 0.0, Color32::from_gray(60));
+    let ratio = |v: u64| v as f32 / total as f32;
+    let thumb_h = (h * ratio(len)).clamp(12.0, h);
+    let top = (h * ratio(offset)).min(h - thumb_h);
+    let bar = Rect::from_min_max(
+        egui::pos2(track.left(), content.top() + top),
+        egui::pos2(track.right(), content.top() + top + thumb_h),
+    );
+    painter.rect_filled(bar, 0.0, thumb);
+}
+
 /// Render the whole terminal area into the central panel ui.
 pub fn screen(ui: &mut Ui, d: &mut Data) {
     let ctx = ui.ctx().clone();
@@ -100,6 +124,17 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         cursor_on: blink && Some(pane) == focused,
                     },
                 );
+                // Scrollback review indicator over the grid, right edge.
+                if Some(pane) == focused && !vt_pane::viewport::pinned(s) {
+                    if let Some(geo) = vt_pane::viewport::geometry(s) {
+                        draw_viewport_bar(
+                            &painter,
+                            content,
+                            geo,
+                            colors::to_c32(pal.block_highlight),
+                        );
+                    }
+                }
             }
             _ => {
                 grid::draw_dead(

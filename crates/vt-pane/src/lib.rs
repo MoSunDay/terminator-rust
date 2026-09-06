@@ -13,6 +13,7 @@ pub mod task;
 pub mod term;
 #[cfg(test)]
 mod tests;
+pub mod viewport;
 
 pub use pty::{pty_resize, pty_wait, pty_write, PtyHandle};
 pub use task::{PtyEvent, Session, SessionOpts};
