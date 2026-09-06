@@ -84,14 +84,22 @@ pub fn show(
         let confirm = ui.input(|i| i.key_pressed(Key::Enter));
         let cancel = ui.input(|i| i.key_pressed(Key::Escape));
         if confirm || cancel {
+            // Reject duplicate manual titles (they are the control-socket
+            // addressing key): keep the editor open so the user can fix it.
+            let mut rejected = false;
             if confirm {
-                if let Some(m) = st.panes.get_mut(&pane) {
-                    let value = buf.trim().to_string();
-                    m.manual_title = if value.is_empty() { None } else { Some(value) };
+                let value = buf.trim().to_string();
+                rejected = !value.is_empty() && crate::state::manual_title_taken(st, &value, pane);
+                if !rejected {
+                    if let Some(m) = st.panes.get_mut(&pane) {
+                        m.manual_title = if value.is_empty() { None } else { Some(value) };
+                    }
+                    *dirty = true;
                 }
-                *dirty = true;
             }
-            uist.pane_edit = None;
+            if !rejected {
+                uist.pane_edit = None;
+            }
         }
     } else {
         let fg = to_c32(pal.foreground);

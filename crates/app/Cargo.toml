@@ -21,6 +21,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 layout-tree = { workspace = true }
 vt-pane = { workspace = true }
+ipc-proto = { workspace = true }
 theme = { workspace = true }
 remote = { workspace = true }
 libghostty-vt = { workspace = true }
