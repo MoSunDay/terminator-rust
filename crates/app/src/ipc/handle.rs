@@ -227,6 +227,7 @@ mod tests {
             argv: vec!["cat".into()],
             env: vec![],
             scrollback_lines: 100,
+            dark: true,
         };
         let sess = match vtask::spawn_session(&opts) {
             Ok(s) => s,
@@ -282,6 +283,7 @@ mod tests {
             argv: vec!["cat".into()],
             env: vec![],
             scrollback_lines: 100,
+            dark: true,
         };
         let sess = match vtask::spawn_session(&opts) {
             Ok(s) => s,
