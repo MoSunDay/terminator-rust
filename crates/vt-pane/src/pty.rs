@@ -98,6 +98,13 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
                     libc::close(slave);
                 }
                 libc::close(master);
+                // SIG_IGN survives fork+execve: a background/desktop
+                // launch leaves INT/QUIT/TERM/HUP ignored, which would make
+                // ^C/^\ and kill useless inside the pane. Reset to default.
+                libc::signal(libc::SIGHUP, libc::SIG_DFL);
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+                libc::signal(libc::SIGTERM, libc::SIG_DFL);
                 libc::signal(libc::SIGPIPE, libc::SIG_DFL);
                 let argvp: Vec<*const libc::c_char> = cargv
                     .iter()
