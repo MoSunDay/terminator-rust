@@ -36,7 +36,7 @@ pub fn bar(ui: &mut Ui, d: &mut Data) {
     tab_row(ui, d, &pal);
 }
 
-/// Chrome text color helper (dimmed) used by both rows.
+/// Chrome text color helper (dimmed).
 fn dim_text(pal: &Palette) -> Color32 {
     to_c32(colors::title_text(pal))
 }
