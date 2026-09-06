@@ -143,7 +143,12 @@ for i in 1 2 3; do
         sleep 0.25
     done
     [ -n "${pid:-}" ] || { "$CTL" list; fail "agent$i has no child pid"; }
-    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    exe=""
+    for _ in $(seq 1 20); do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+        [ "$exe" = "$OC_BIN" ] && break
+        sleep 0.25   # pid can surface before execve lands -> empty readlink
+    done
     [ "$exe" = "$OC_BIN" ] || fail "agent$i runs $exe, not opencoder"
     OC_PIDS+=("$pid")
     eval "P${i}_PID=$pid"
