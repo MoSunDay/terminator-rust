@@ -160,12 +160,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   provider/base_url/api_key/model config passes local validation with no
   network and gives the idle prompt where ^C exits.
 - shortcuts: Ctrl+Shift+Q = global quit (Action::Quit -> egui
-  ViewportCommand::Close; to_skey must map Key::Q); pane title + top-bar title
-  centering (pane_header.rs draws at title_rect.center() CENTER_CENTER;
-  tabs.rs optical centering subtracts TITLE_ICON_ZONE=41 from the center rect)
-  is pixel-asserted by e2e-ui-style.sh checks G/H; rename editors (pane + tab)
-  cancel on outside click via `i.pointer.any_click() &&
-  interact_pos().is_none_or(...)` so a miss-click cannot strand the editor.
+  ViewportCommand::Close; to_skey must map Key::Q); pane title centering
+  (pane_header.rs draws at title_rect.center() CENTER_CENTER) is
+  pixel-asserted by e2e-ui-style.sh check G; the chrome is a SINGLE row -
+  the old centered window-title row is deleted (it duplicated the tab name
+  a third time under the chip and the pane header); zoom/inspector cells
+  are anchored to the chip row's right edge via ui.interact on fixed rects
+  and check H asserts title-text ABSENCE in the bare chrome zone; rename
+  editors (pane + tab) cancel on outside click via `i.pointer.any_click()
+  && interact_pos().is_none_or(...)` so a miss-click cannot strand the
+  editor.
 
 ## Verified end-to-end (2026-09)
 Xvfb: render + catppuccin colors exact px, key echo, ANSI 256 bg exact
@@ -200,7 +204,7 @@ Ctrl+C interrupting a foreground sleep 45 (pty signal reset verified).
   use set_theme(Theme::Dark) + set_style_of.
 opencoder exit + quit (2026-09, scripts/bin/e2e-oc-exit.sh): real opencoder
 panes Ctrl+D/Ctrl+C exit (status 0), Ctrl+Shift+W closes a live TUI pane,
-Ctrl+Shift+Q quits the app; e2e-ui-style.sh G/H assert pane-title and
-top-bar-title pixel centering. Deployed to 192.168.31.196 and verified live
-(ctl list/capture; remote px differ from Xvfb only via wallpaper transparency
-blend).
+Ctrl+Shift+Q quits the app; e2e-ui-style.sh G asserts pane-title pixel
+centering and H the absence of the removed window-title row. Deployed to
+192.168.31.196 and verified live (ctl list/capture; remote px differ from
+Xvfb only via wallpaper transparency blend).
