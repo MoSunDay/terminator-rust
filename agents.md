@@ -1,3 +1,4 @@
+Commit: e80eb094ddb5a4fd777565a24bbf6d3b52ea9b5c
 # agents.md - repo memory for terminator-rust
 
 Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
@@ -55,8 +56,14 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - control socket: $XDG_RUNTIME_DIR/terminator-rust/ipc.sock (fallback
   ~/.config/terminator-rust/); start() live-probes and reclaims stale files
   (SIGTERM runs no destructors, the file survives; next start removes it);
+  bind_private() chmods it 0600 fail-closed (capture/send is full remote
+  control; the ~/.config fallback dir is traversable on common distros);
   pane children inherit TERMINATOR_SOCK; manual pane titles are unique
-  addressing keys - pane rename rejects duplicates.
+  addressing keys - pane rename rejects duplicates AND digits-only names
+  (untagged PaneSelector would parse them as pane ids), refusal reason is
+  shown in red under the editor; /proc db discovery errors listing all
+  candidates when one opencoder process holds several distinct stores
+  (never silently link the wrong workdir).
 - oc submit writes session_inputs (delivery steer|queue) straight into the
   opencoder store (schema guard PRAGMA user_version=18, BEGIN IMMEDIATE,
   admitted_seq = MAX+1); the opencoder TUI is the SOLE runner - rows drain
@@ -74,4 +81,5 @@ reconnect to live session. e2e gate: bootstrap config is chrome-free so
 Control channel (2026-09, scripts/bin/e2e-ipc-oc.sh): ctl list/capture/send
 over the live socket, TERMINATOR_SOCK present in the pane child env, oc link
 via /proc fd discovery, submit -> pending -> consume -> receipt by seq,
-honest --wait timeout, second instance reclaims a SIGTERM-stale socket.
+honest --wait timeout, second instance reclaims a SIGTERM-stale socket
+(socket perms asserted 600 on first bind AND after reclaim).
