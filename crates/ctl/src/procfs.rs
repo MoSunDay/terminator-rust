@@ -1,9 +1,10 @@
-//! /proc walking for the upcoming `oc` subcommands: given a pane's pid,
-//! find the opencoder process in its tree plus the sqlite db it holds open.
+//! /proc walking for the `oc` subcommands: given a pane's pid, find the
+//! opencoder process in its tree plus the sqlite db it holds open.
 //! Std-only and forgiving: any IO hiccup (process exited mid-scan, hidden
-//! fd) is skipped silently.
+//! fd) is skipped silently. The one thing never guessed: which store to
+//! use when a process holds several open (see [`pick_db`]).
 
-// Not wired into a subcommand yet; `cmd_oc` starts here.
+// A few helpers are kept for future subcommands.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, VecDeque};
@@ -48,18 +49,28 @@ pub fn descendants(root_pid: i32) -> Vec<i32> {
 }
 
 /// First opencoder process under `root_pid` (inclusive) that has an
-/// `opencoder.db` file descriptor open.
-pub fn find_opencoder(root_pid: i32) -> Option<OcProc> {
-    descendants(root_pid).into_iter().find_map(|pid| {
-        let comm = read_comm(pid)?;
+/// `opencoder.db` file descriptor open. Err when a candidate process
+/// holds several distinct stores open: we cannot know which one its TUI
+/// is actually driving, and linking the wrong store would submit prompts
+/// into the wrong workdir.
+pub fn find_opencoder(root_pid: i32) -> Result<Option<OcProc>, String> {
+    for pid in descendants(root_pid) {
+        let comm = match read_comm(pid) {
+            Some(c) => c,
+            None => continue,
+        };
         // exact "opencoder" or a wrapper like "opencoder-tui"
         if !comm.starts_with("opencoder") {
-            return None;
+            continue;
         }
-        let db = find_db(pid)?;
+        let db = match find_db(pid)? {
+            Some(db) => db,
+            None => continue,
+        };
         let cwd = std::fs::read_link(format!("/proc/{pid}/cwd")).unwrap_or_default();
-        Some(OcProc { pid, db, cwd })
-    })
+        return Ok(Some(OcProc { pid, db, cwd }));
+    }
+    Ok(None)
 }
 
 fn numeric_pids() -> Vec<i32> {
@@ -90,16 +101,36 @@ fn read_comm(pid: i32) -> Option<String> {
 
 /// First open fd whose link path ends with "opencoder.db" (sorted for
 /// determinism; readdir order is arbitrary).
-fn find_db(pid: i32) -> Option<PathBuf> {
-    let mut links: Vec<PathBuf> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+fn find_db(pid: i32) -> Result<Option<PathBuf>, String> {
+    let links: Vec<PathBuf> = std::fs::read_dir(format!("/proc/{pid}/fd"))
         .into_iter()
         .flatten()
         .filter_map(|e| e.ok())
         .filter_map(|e| std::fs::read_link(e.path()).ok())
         .filter(|p| p.to_string_lossy().ends_with("opencoder.db"))
         .collect();
-    links.sort();
-    links.into_iter().next()
+    Ok(pick_db(links))
+}
+
+/// Reduce one process's fd links to the single store it uses. Repeated
+/// fds of the SAME file (e.g. one read-write + one read-only) collapse;
+/// two distinct paths are an explicit error naming both.
+fn pick_db(paths: Vec<PathBuf>) -> Result<Option<PathBuf>, String> {
+    let mut distinct = paths;
+    distinct.sort();
+    distinct.dedup();
+    match distinct.len() {
+        0 => Ok(None),
+        1 => Ok(distinct.pop()),
+        _ => Err(format!(
+            "opencoder has multiple stores open ({}); close one, or `oc link <pane> <session-id>` to disambiguate",
+            distinct
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 /// Parse the ppid out of one /proc/pid/stat line. The comm field may
@@ -141,8 +172,28 @@ mod tests {
     fn descendants_and_find_reject_bad_roots() {
         assert!(descendants(0).is_empty());
         assert!(descendants(-5).is_empty());
-        assert_eq!(find_opencoder(0), None);
-        assert_eq!(find_opencoder(-5), None);
+        assert_eq!(find_opencoder(0), Ok(None));
+        assert_eq!(find_opencoder(-5), Ok(None));
+    }
+
+    fn pb(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn pick_db_requires_a_single_distinct_store() {
+        assert_eq!(pick_db(vec![]), Ok(None));
+        assert_eq!(
+            pick_db(vec![pb("/a/opencoder.db")]),
+            Ok(Some(pb("/a/opencoder.db")))
+        );
+        // same file held via two fds (rw + ro) is still one store
+        assert_eq!(
+            pick_db(vec![pb("/a/opencoder.db"), pb("/a/opencoder.db")]),
+            Ok(Some(pb("/a/opencoder.db")))
+        );
+        let err = pick_db(vec![pb("/b/opencoder.db"), pb("/a/opencoder.db")]).unwrap_err();
+        assert!(err.contains("/a/opencoder.db") && err.contains("/b/opencoder.db"), "{err}");
     }
 
     #[test]
@@ -156,7 +207,7 @@ mod tests {
         let tree = descendants(pid);
         assert_eq!(tree.first(), Some(&pid), "root included: {tree:?}");
         // sleep has no children and no opencoder.db fd
-        assert_eq!(find_opencoder(pid), None);
+        assert_eq!(find_opencoder(pid), Ok(None));
         let mut info = ipc_proto::PaneInfo {
             id: 1,
             name: None,

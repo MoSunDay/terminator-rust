@@ -70,6 +70,9 @@ pub struct UiState {
     pub tab_edit: Option<(PaneId, String)>,
     /// (pane id, edit buffer) while a pane title is being renamed.
     pub pane_edit: Option<(PaneId, String)>,
+    /// Why the current rename was refused (duplicate / digits-only);
+    /// shown in red under the editor until accepted or cancelled.
+    pub pane_edit_note: Option<&'static str>,
     pub color_open: Option<PaneId>,
     pub color_buf: String,
     pub trans_open: Option<PaneId>,
@@ -84,6 +87,7 @@ pub fn ui_state() -> UiState {
         zoom: false,
         tab_edit: None,
         pane_edit: None,
+        pane_edit_note: None,
         color_open: None,
         color_buf: String::new(),
         trans_open: None,

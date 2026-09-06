@@ -12,12 +12,52 @@ use crate::state::{effective_title, AppState, PaneAction, UiState};
 
 const BTN: f32 = 16.0;
 
+/// None when the candidate manual title is acceptable: names must be
+/// unique (control-socket addressing) and not digits-only (reserved for
+/// pane ids in ctl's untagged PaneSelector).
+fn reject_reason(st: &AppState, value: &str, pane: PaneId) -> Option<&'static str> {
+    if value.is_empty() {
+        return None;
+    }
+    if value.chars().all(|c| c.is_ascii_digit()) {
+        return Some("digits-only names are reserved for pane ids");
+    }
+    if crate::state::manual_title_taken(st, value, pane) {
+        return Some("another pane already uses this name");
+    }
+    None
+}
+
 fn parse_rgb(s: &str) -> Option<Rgb> {
     theme::parse_hex(s.trim()).ok()
 }
 
 fn hex(c: Rgb) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::fresh_state;
+    use layout_tree::Axis;
+
+    #[test]
+    fn reject_reason_blocks_digits_and_duplicates_only() {
+        let mut st = fresh_state();
+        assert_eq!(reject_reason(&st, "", 1), None, "empty clears the title");
+        assert_eq!(reject_reason(&st, "agent", 1), None);
+        assert_eq!(reject_reason(&st, "7", 1).is_some(), true, "digits-only -> id");
+        assert_eq!(reject_reason(&st, "42x", 1), None, "digits plus text is fine");
+        let split = crate::state::split_tree_pane(&mut st, 0, 1, Axis::Vertical);
+        assert!(split.is_some());
+        st.panes.get_mut(&2).unwrap().manual_title = Some("agent".into());
+        assert_eq!(
+            reject_reason(&st, "agent", 1),
+            Some("another pane already uses this name")
+        );
+        assert_eq!(reject_reason(&st, "agent", 2), Some("another pane already uses this name"));
+    }
 }
 
 /// Draw the header for `pane` in `rect` (full width, PANE_HEADER_H tall).
@@ -84,22 +124,34 @@ pub fn show(
         let confirm = ui.input(|i| i.key_pressed(Key::Enter));
         let cancel = ui.input(|i| i.key_pressed(Key::Escape));
         if confirm || cancel {
-            // Reject duplicate manual titles (they are the control-socket
-            // addressing key): keep the editor open so the user can fix it.
-            let mut rejected = false;
-            if confirm {
-                let value = buf.trim().to_string();
-                rejected = !value.is_empty() && crate::state::manual_title_taken(st, &value, pane);
-                if !rejected {
+            // Manual titles are the control-socket addressing key: reject
+            // duplicates; pure digits would parse as a pane Id in ctl's
+            // untagged PaneSelector. Keep the editor open and say why.
+            let reason = if confirm {
+                reject_reason(st, buf.trim(), pane)
+            } else {
+                None
+            };
+            if reason.is_none() {
+                if confirm {
+                    let value = buf.trim().to_string();
                     if let Some(m) = st.panes.get_mut(&pane) {
                         m.manual_title = if value.is_empty() { None } else { Some(value) };
                     }
                     *dirty = true;
                 }
-            }
-            if !rejected {
                 uist.pane_edit = None;
             }
+            uist.pane_edit_note = reason;
+        }
+        if let Some(note) = uist.pane_edit_note {
+            ui.painter().text(
+                rect.left_bottom() + Vec2::new(8.0, 2.0),
+                egui::Align2::LEFT_TOP,
+                note,
+                egui::FontId::proportional(11.0),
+                to_c32(pal.bright[1]),
+            );
         }
     } else {
         let fg = to_c32(pal.foreground);
@@ -128,6 +180,7 @@ pub fn show(
         );
         if hit.double_clicked() {
             uist.pane_edit = Some((pane, title));
+        uist.pane_edit_note = None;
         }
     }
 
@@ -280,6 +333,7 @@ pub fn menu(
         .unwrap_or_default();
     if ui.button("Rename pane").clicked() {
         uist.pane_edit = Some((pane, title));
+        uist.pane_edit_note = None;
     }
     if ui.button("Split horizontally").clicked() {
         actions::apply_pane_action(

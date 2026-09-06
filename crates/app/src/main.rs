@@ -61,7 +61,7 @@ impl eframe::App for Terminator {
         );
 
         if let Some(i) = self.ipc.as_mut() {
-            ipc::server::drain(i, &mut self.data, &ctx);
+            ipc::server::drain(i, &mut self.data);
         }
 
         egui::Panel::top("tab_bar").show(ui, |ui| ui::tabs::bar(ui, &mut self.data));
