@@ -2,4 +2,5 @@
 
 pub mod inspector;
 pub mod pane_header;
+pub mod style;
 pub mod tabs;

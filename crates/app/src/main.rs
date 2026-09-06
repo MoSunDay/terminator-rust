@@ -59,14 +59,21 @@ impl eframe::App for Terminator {
             &mut self.data.ui,
             &mut self.data.dirty,
         );
+        let theme = self.data.st.theme_name.clone();
+        ui::style::sync(&ctx, &theme, &mut self.data.ui);
 
         if let Some(i) = self.ipc.as_mut() {
             ipc::server::drain(i, &mut self.data);
         }
 
-        egui::Panel::top("tab_bar").show(ui, |ui| ui::tabs::bar(ui, &mut self.data));
+        let pal = render::colors::palette_of(&theme);
+        let chrome = render::colors::to_c32(render::colors::chrome_bg(&pal));
+        let page_bg = render::colors::to_c32(pal.background);
+        egui::Panel::top("tab_bar")
+            .frame(egui::Frame::NONE.fill(chrome))
+            .show(ui, |ui| ui::tabs::bar(ui, &mut self.data));
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE)
+            .frame(egui::Frame::NONE.fill(page_bg))
             .show(ui, |panel| render::screen::screen(panel, &mut self.data));
         ui::inspector::show(&ctx, &mut self.data);
 

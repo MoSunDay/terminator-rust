@@ -1,7 +1,7 @@
 //! Per-pane header strip: title, rename, badges, color/transparency popups,
 //! close button and the pane context menu.
 
-use egui::{Button, Color32, Id, Key, Popup, Rect, TextEdit, Ui, Vec2};
+use egui::{Button, Id, Key, Popup, Rect, TextEdit, Ui, Vec2};
 use layout_tree::PaneId;
 use theme::{Palette, Rgb};
 
@@ -61,7 +61,7 @@ pub fn show(
     let strip = if focused {
         to_c32(pal.block_highlight).gamma_multiply(0.55)
     } else {
-        Color32::from_gray(38)
+        to_c32(colors::chrome_bg(pal))
     };
     ui.painter().rect_filled(rect, 2.0, strip);
 
@@ -203,7 +203,7 @@ pub fn show(
     }
 
     color_popup(&color, pane, st, uist, pal, dirty);
-    trans_popup(&trans, pane, st, uist, dirty);
+    trans_popup(&trans, pane, st, uist, pal, dirty);
 }
 
 fn color_popup(
@@ -268,6 +268,7 @@ fn trans_popup(
     pane: PaneId,
     st: &mut AppState,
     uist: &mut UiState,
+    pal: &Palette,
     dirty: &mut bool,
 ) {
     let mut open = uist.trans_open == Some(pane);
@@ -286,6 +287,12 @@ fn trans_popup(
                 *dirty = true;
             }
             p.label("0 = solid pane bg, 1 = theme bg");
+            if st.panes.get(&pane).is_some_and(|m| m.bg_color.is_none()) {
+                p.colored_label(
+                    to_c32(pal.bright[3]),
+                    "no pane bg set: transparency blends the pane bg with the theme bg — set a pane bg color first (C), otherwise the slider has no visual effect",
+                );
+            }
         });
     if !open && uist.trans_open == Some(pane) {
         uist.trans_open = None;
