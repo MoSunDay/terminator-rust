@@ -14,7 +14,7 @@ use log::warn;
 use remote::{PaneKind, RemoteTarget};
 use serde::{Deserialize, Serialize};
 
-use crate::state::{new_pane_meta, fresh_state, AppState, PaneMeta};
+use crate::state::{fresh_state, new_pane_meta, AppState, PaneMeta};
 
 // ---------------------------------------------------------------------------
 // JSON model
@@ -35,7 +35,10 @@ struct PTab {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum PNode {
-    Pane { id: PaneId, meta: PMeta },
+    Pane {
+        id: PaneId,
+        meta: PMeta,
+    },
     Split {
         axis: PAxis,
         ratio: f32,
@@ -102,7 +105,9 @@ fn pm_from(m: &PaneMeta) -> PMeta {
             },
         },
         manual_title: m.manual_title.clone(),
-        bg: m.bg_color.map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)),
+        bg: m
+            .bg_color
+            .map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)),
         transparency: m.transparency,
         degraded: m.degraded,
     }
@@ -111,7 +116,13 @@ fn pm_from(m: &PaneMeta) -> PMeta {
 fn pm_to(p: &PMeta) -> PaneMeta {
     let kind = match &p.kind {
         PKind::Local => PaneKind::Local,
-        PKind::Remote { label, host, user, port, session_name } => PaneKind::Remote(RemoteTarget {
+        PKind::Remote {
+            label,
+            host,
+            user,
+            port,
+            session_name,
+        } => PaneKind::Remote(RemoteTarget {
             label: label.clone(),
             host: host.clone(),
             user: user.clone(),
@@ -140,7 +151,12 @@ fn pn_from(node: &Node, panes: &BTreeMap<PaneId, PaneMeta>) -> PNode {
                 .unwrap_or_else(|| pm_from(&new_pane_meta(PaneKind::Local)));
             PNode::Pane { id: *id, meta }
         }
-        Node::Split { axis, ratio, first, second } => PNode::Split {
+        Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => PNode::Split {
             axis: PAxis::of(*axis),
             ratio: *ratio,
             first: Box::new(pn_from(first, panes)),
@@ -184,7 +200,12 @@ impl Builder {
                 self.panes.insert(anchor, pm_to(meta));
                 anchor
             }
-            PNode::Split { axis, ratio, first, second } => {
+            PNode::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            } => {
                 let Some(new_second) = split_pane(tree, tab, anchor, axis.to_axis()) else {
                     return anchor;
                 };
@@ -203,7 +224,10 @@ fn from_persisted(p: &Persisted) -> AppState {
         return fresh_state();
     }
     let mut tree = new_tree(&p.tabs[0].title);
-    let mut b = Builder { remap: HashMap::new(), panes: BTreeMap::new() };
+    let mut b = Builder {
+        remap: HashMap::new(),
+        panes: BTreeMap::new(),
+    };
     for (i, pt) in p.tabs.iter().enumerate() {
         if i > 0 {
             new_tab(&mut tree, &pt.title);
@@ -307,7 +331,11 @@ mod tests {
         let _ = split_tree_pane(&mut st, 0, 1, Axis::Vertical);
         if let Some(m) = st.panes.get_mut(&1) {
             m.manual_title = Some("editor".to_string());
-            m.bg_color = Some(Rgb { r: 0x20, g: 0x30, b: 0x40 });
+            m.bg_color = Some(Rgb {
+                r: 0x20,
+                g: 0x30,
+                b: 0x40,
+            });
             m.transparency = 0.5;
         }
         st
@@ -339,12 +367,21 @@ mod tests {
         assert_eq!(layout_tree::pane_count(&st2.tree.tabs[0].root), 3);
         assert!(st2.panes.contains_key(&st2.tree.tabs[0].focused));
         let ids = layout_tree::sorted_pane_ids(&st2.tree.tabs[0].root);
-        let m1 = ids.iter().find(|id| st2.panes.get(*id).is_some_and(|m| m.manual_title.is_some()));
+        let m1 = ids
+            .iter()
+            .find(|id| st2.panes.get(*id).is_some_and(|m| m.manual_title.is_some()));
         assert!(m1.is_some(), "manual title survived");
         let m1 = m1.copied().unwrap_or(0);
         let meta = st2.panes.get(&m1).unwrap_or(&st2.panes[&1]);
         assert_eq!(meta.manual_title.as_deref(), Some("editor"));
-        assert_eq!(meta.bg_color, Some(Rgb { r: 0x20, g: 0x30, b: 0x40 }));
+        assert_eq!(
+            meta.bg_color,
+            Some(Rgb {
+                r: 0x20,
+                g: 0x30,
+                b: 0x40
+            })
+        );
         assert!((meta.transparency - 0.5).abs() < 1e-6);
     }
 
@@ -371,7 +408,10 @@ mod tests {
 
     #[test]
     fn empty_tabs_fresh() {
-        let p = Persisted { theme: "x".to_string(), tabs: vec![] };
+        let p = Persisted {
+            theme: "x".to_string(),
+            tabs: vec![],
+        };
         let st = from_persisted(&p);
         assert_eq!(st.tree.tabs.len(), 1);
     }

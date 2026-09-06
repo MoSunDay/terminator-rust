@@ -6,7 +6,7 @@
 //! in a desktop terminal. Shift is the escape hatch: it always selects
 //! locally and never reports.
 
-use egui::{Context, Event, Pos2, PointerButton, Rect};
+use egui::{Context, Event, PointerButton, Pos2, Rect};
 use layout_tree::PaneId;
 use libghostty_vt::key::Mods as GMods;
 use libghostty_vt::mouse;
@@ -57,10 +57,7 @@ fn wheel_lines(unit: egui::MouseWheelUnit, delta: egui::Vec2, cell_h: f32) -> f3
 
 /// Pane whose content rect contains `pos` (headers/dividers excluded).
 fn pane_at(rects: &[(PaneId, Rect)], pos: Pos2) -> Option<PaneId> {
-    rects
-        .iter()
-        .find(|(_, r)| r.contains(pos))
-        .map(|(p, _)| *p)
+    rects.iter().find(|(_, r)| r.contains(pos)).map(|(p, _)| *p)
 }
 
 /// Clamp `pos` into `rect` and return surface (physical) pixels from the
@@ -131,13 +128,7 @@ fn on_button(
 
 /// Motion while a primary drag is active: extend the selection or report
 /// button-motion to the child (position clamped to the owning pane).
-fn on_motion(
-    sess: &mut Session,
-    rect: Rect,
-    pos: Pos2,
-    ppp: f32,
-    mods: &egui::Modifiers,
-) {
+fn on_motion(sess: &mut Session, rect: Rect, pos: Pos2, ppp: f32, mods: &egui::Modifiers) {
     let (x, y) = surface_px(rect, pos, ppp);
     if vmouse::is_mouse_tracking(sess) && !mods.shift {
         if let Err(e) = vmouse::send_mouse(
@@ -248,7 +239,9 @@ pub fn handle(
             } => {
                 // Wheel targets the pane under the pointer (hover), or the
                 // drag owner while a drag is active.
-                let target = uist.pointer_pane.or_else(|| hover.and_then(|p| pane_at(rects, p)));
+                let target = uist
+                    .pointer_pane
+                    .or_else(|| hover.and_then(|p| pane_at(rects, p)));
                 let Some(pane) = target else {
                     continue;
                 };
@@ -272,4 +265,3 @@ pub fn handle(
         }
     }
 }
-

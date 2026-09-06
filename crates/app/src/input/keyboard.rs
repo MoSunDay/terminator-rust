@@ -77,13 +77,7 @@ fn send_char(pane: PaneId, sess: &mut Session, c: char) {
     }
 }
 
-fn send_keypress(
-    pane: PaneId,
-    sess: &mut Session,
-    key: GKey,
-    mods: GMods,
-    utf8: Option<String>,
-) {
+fn send_keypress(pane: PaneId, sess: &mut Session, key: GKey, mods: GMods, utf8: Option<String>) {
     let res = vtask::send_key(sess, |ev| {
         ev.set_action(GAction::Press);
         ev.set_key(key);
@@ -165,7 +159,10 @@ pub fn handle(
             Event::Text(t) => {
                 // Alt+letter also emits a Text event on X11; the encoded Key
                 // event already carried the combo, so drop the raw char.
-                if t.chars().next().is_some_and(|c| alt_chars.contains(&c.to_ascii_lowercase())) {
+                if t.chars()
+                    .next()
+                    .is_some_and(|c| alt_chars.contains(&c.to_ascii_lowercase()))
+                {
                     continue;
                 }
                 if let Some(p) = focused {
@@ -308,24 +305,41 @@ mod tests {
 
     #[test]
     fn bare_ctrl_copy_sends_interrupt_to_pty() {
-        let Some((mut st, mut sess, mut ui)) = harness() else { return };
+        let Some((mut st, mut sess, mut ui)) = harness() else {
+            return;
+        };
         let ctx = Context::default();
         {
-            let Some(s) = sess.map.get_mut(&1) else { return };
+            let Some(s) = sess.map.get_mut(&1) else {
+                return;
+            };
             assert!(wait_grid(s, "READY"), "session did not start echoing");
         }
-        dispatch(&ctx, Modifiers::CTRL, Event::Copy, &mut st, &mut sess, &mut ui);
-        let Some(s) = sess.map.get_mut(&1) else { return };
+        dispatch(
+            &ctx,
+            Modifiers::CTRL,
+            Event::Copy,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        let Some(s) = sess.map.get_mut(&1) else {
+            return;
+        };
         // The tty driver echoes the raw \x03 in caret notation.
         assert!(wait_grid(s, "^C"), "pty never saw the ^C byte");
     }
 
     #[test]
     fn ctrl_shift_copy_stays_on_clipboard() {
-        let Some((mut st, mut sess, mut ui)) = harness() else { return };
+        let Some((mut st, mut sess, mut ui)) = harness() else {
+            return;
+        };
         let ctx = Context::default();
         {
-            let Some(s) = sess.map.get_mut(&1) else { return };
+            let Some(s) = sess.map.get_mut(&1) else {
+                return;
+            };
             assert!(wait_grid(s, "READY"), "session did not start echoing");
         }
         dispatch(
@@ -338,10 +352,15 @@ mod tests {
         );
         // Empty selection -> clipboard path is a no-op; nothing may reach
         // the pty and cat must still be alive.
-        let Some(s) = sess.map.get_mut(&1) else { return };
+        let Some(s) = sess.map.get_mut(&1) else {
+            return;
+        };
         for _ in 0..30 {
             let text = grid_text(s);
-            assert!(!text.contains("^C"), "ctrl+shift leaked ^C to the pty: {text:?}");
+            assert!(
+                !text.contains("^C"),
+                "ctrl+shift leaked ^C to the pty: {text:?}"
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(s.exit.is_none(), "cat died without SIGINT");

@@ -259,7 +259,6 @@ fn write_after_reader_closed_fd_is_ok() {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Mouse reporting, wheel routing and selection gestures
 // ---------------------------------------------------------------------------
@@ -444,7 +443,10 @@ mod mouse_tests {
         // Full-screen apps without mouse reporting -> arrow keys.
         assert_eq!(vmouse::wheel_route(false, false, true), WheelRoute::Arrows);
         // Plain shell -> scrollback.
-        assert_eq!(vmouse::wheel_route(false, false, false), WheelRoute::Viewport);
+        assert_eq!(
+            vmouse::wheel_route(false, false, false),
+            WheelRoute::Viewport
+        );
         assert_eq!(vmouse::wheel_route(false, true, true), WheelRoute::Viewport);
     }
 
@@ -456,12 +458,21 @@ mod mouse_tests {
         );
         assert_eq!(
             vmouse::wheel_arrows(-2.0),
-            Some((libghostty_vt::key::Key::ArrowDown, 2 * vmouse::WHEEL_STEP_LINES))
+            Some((
+                libghostty_vt::key::Key::ArrowDown,
+                2 * vmouse::WHEEL_STEP_LINES
+            ))
         );
         assert_eq!(vmouse::wheel_arrows(0.0), None);
         // Up scrolls into history (negative viewport delta).
-        assert_eq!(vmouse::wheel_delta(1.0), Some(-(vmouse::WHEEL_STEP_LINES as isize)));
-        assert_eq!(vmouse::wheel_delta(-1.0), Some(vmouse::WHEEL_STEP_LINES as isize));
+        assert_eq!(
+            vmouse::wheel_delta(1.0),
+            Some(-(vmouse::WHEEL_STEP_LINES as isize))
+        );
+        assert_eq!(
+            vmouse::wheel_delta(-1.0),
+            Some(vmouse::WHEEL_STEP_LINES as isize)
+        );
     }
 
     #[test]
@@ -476,10 +487,11 @@ mod mouse_tests {
 
     #[test]
     fn selection_drag_and_copy_text() {
-        let opts = SessionOpts::command(40, 5, vec![
-            "printf".to_string(),
-            "hello mouse world".to_string(),
-        ]);
+        let opts = SessionOpts::command(
+            40,
+            5,
+            vec!["printf".to_string(), "hello mouse world".to_string()],
+        );
         let mut s = match task::spawn_session(&opts) {
             Ok(s) => s,
             Err(e) => {
@@ -516,10 +528,11 @@ mod mouse_tests {
 
     #[test]
     fn double_click_selects_word() {
-        let opts = SessionOpts::command(40, 5, vec![
-            "printf".to_string(),
-            "alpha beta gamma".to_string(),
-        ]);
+        let opts = SessionOpts::command(
+            40,
+            5,
+            vec!["printf".to_string(), "alpha beta gamma".to_string()],
+        );
         let mut s = match task::spawn_session(&opts) {
             Ok(s) => s,
             Err(e) => {

@@ -13,8 +13,8 @@ use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::Terminal;
 
-use crate::pty::{self, PtyHandle};
 use crate::effects::{self, CellPx};
+use crate::pty::{self, PtyHandle};
 use crate::term::{snapshot_frame, Frame};
 
 /// Events delivered by the pty reader thread.

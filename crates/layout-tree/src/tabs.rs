@@ -99,19 +99,39 @@ pub fn close_pane(tree: &mut LayoutTree, tab: usize, pane: PaneId) -> Option<()>
 fn remove_pane_node(node: Node, pane: PaneId) -> Option<Node> {
     match node {
         Node::Pane { id } => (id != pane).then_some(node),
-        Node::Split { axis, ratio, first, second } => {
+        Node::Split {
+            axis,
+            ratio,
+            first,
+            second,
+        } => {
             if contains_pane(&first, pane) {
                 match remove_pane_node(*first, pane) {
-                    Some(f) => Some(Node::Split { axis, ratio, first: Box::new(f), second }),
+                    Some(f) => Some(Node::Split {
+                        axis,
+                        ratio,
+                        first: Box::new(f),
+                        second,
+                    }),
                     None => Some(*second),
                 }
             } else if contains_pane(&second, pane) {
                 match remove_pane_node(*second, pane) {
-                    Some(s) => Some(Node::Split { axis, ratio, first, second: Box::new(s) }),
+                    Some(s) => Some(Node::Split {
+                        axis,
+                        ratio,
+                        first,
+                        second: Box::new(s),
+                    }),
                     None => Some(*first),
                 }
             } else {
-                Some(Node::Split { axis, ratio, first, second })
+                Some(Node::Split {
+                    axis,
+                    ratio,
+                    first,
+                    second,
+                })
             }
         }
     }

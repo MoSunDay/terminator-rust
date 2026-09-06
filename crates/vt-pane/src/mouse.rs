@@ -12,8 +12,8 @@ use anyhow::Result;
 use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 use libghostty_vt::key::{Key as GKey, Mods as GMods};
 use libghostty_vt::mouse::{self, EncoderSize};
-use libghostty_vt::selection::gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent};
 use libghostty_vt::screen::Screen;
+use libghostty_vt::selection::gesture::{DragEvent, Geometry, Gesture, PressEvent, ReleaseEvent};
 use libghostty_vt::terminal::{Mode, Point, PointCoordinate, ScrollViewport};
 
 use crate::task as vtask;
@@ -117,7 +117,11 @@ pub fn wheel_arrows(lines: f32) -> Option<(GKey, usize)> {
     if lines.abs() < f32::EPSILON {
         return None;
     }
-    let key = if lines > 0.0 { GKey::ArrowUp } else { GKey::ArrowDown };
+    let key = if lines > 0.0 {
+        GKey::ArrowUp
+    } else {
+        GKey::ArrowDown
+    };
     let steps = (lines.abs().round().max(1.0) as usize).saturating_mul(WHEEL_STEP_LINES);
     Some((key, steps))
 }
@@ -209,7 +213,9 @@ pub fn encode_mouse(
         encoder.set_size(size);
         *last_size = Some(key);
     }
-    encoder.set_any_button_pressed(any_button).set_track_last_cell(true);
+    encoder
+        .set_any_button_pressed(any_button)
+        .set_track_last_cell(true);
     let mut out = Vec::with_capacity(32);
     encoder.encode_to_vec(event, &mut out)?;
     Ok(out)
@@ -255,7 +261,15 @@ pub fn send_wheel(
                 mouse::Button::Five
             };
             for _ in 0..lines.abs().round().max(1.0) as usize {
-                send_mouse(sess, mouse::Action::Press, Some(button), mods, x, y, any_button)?;
+                send_mouse(
+                    sess,
+                    mouse::Action::Press,
+                    Some(button),
+                    mods,
+                    x,
+                    y,
+                    any_button,
+                )?;
             }
         }
         WheelRoute::Arrows => {
