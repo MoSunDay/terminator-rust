@@ -298,6 +298,7 @@ pub fn apply_action(
             }
         }
         Action::Paste => {} // handled in input::keyboard with clipboard access
+        Action::Quit => {}  // handled in input::keyboard (viewport close)
         Action::Copy => copy_focused(st, sess),
     }
 }

@@ -14,6 +14,10 @@
 #      bottom edge.
 #   F: the active tab chip fill is the subtle accent tint mix(bg, accent,
 #      0.18).
+#   G: the pane header title is CENTERED in the space left of the C/T/X
+#      buttons (text bbox midpoint vs computed title_rect center).
+#   H: the top-bar window title is optically centered: centered over the
+#      area LEFT of the 41px inspector/zoom icon zone, not the full width.
 # Every expected chrome color below is COMPUTED from the dracula constants
 # with a mix() helper, so token retunes only touch render/colors.rs (this
 # script changes only when geometry changes).
@@ -150,7 +154,8 @@ check("A blend-red-over-bg", int(X + W * 0.25), int(Y + H * 0.55), (147, 21, 27)
 # C: right pane paints the plain theme background.
 check("C theme-bg", int(X + W * 0.75), int(Y + H * 0.55), BG)
 
-# D: chrome top bar fill = mix(bg, fg, 0.045); x=30% dodges the title text.
+# D: chrome top bar fill = mix(bg, fg, 0.045); x=30% dodges the (now
+#    optically centered, see H) title text.
 check("D chrome-bg", int(X + W * 0.30), Y + 4, mix(BG, FG, 0.045))
 
 # B: gutter two-tone - chrome_bg field mix(bg, fg, 0.045) with a 1px
@@ -184,6 +189,47 @@ print(f"E chip-underline: {hits} px ~= {ACCENT} in scan band [{'OK' if ok else '
 # F: active-chip fill = mix(bg, accent, 0.18), sampled inside the chip
 #    (spans roughly x X..X+75, y Y+31..Y+55) off the label and close glyphs.
 check("F chip-fill", X + 45, Y + 37, mix(BG, ACCENT, 0.18))
+
+# G: pane header title centered. The focused "red" pane's title draws in
+#    FG over chrome_bg in the header strip right below the chrome bar
+#    (pane area starts ~Y+58, header strip is 24px tall -> scan the band).
+#    title_rect = [pane_left+8, pane_right-56(buttons)-8] -> midpoint is
+#    the computed expectation; tolerance 6px for font rounding.
+title_text = mix(FG, BG, 0.42)
+pane_w = (W - 6) / 2.0            # 50/50 split, 6px divider
+scan_lo, scan_hi = X + 10, int(X + pane_w - 80)   # clear of buttons
+hits = []
+for x in range(scan_lo, scan_hi):
+    for yy in range(Y + 62, Y + 78):
+        px = img.getpixel((x, yy))
+        if close(px, FG) or close(px, title_text):
+            hits.append(x)
+            break
+ok = len(hits) >= 3
+if ok:
+    mid = (hits[0] + hits[-1]) / 2.0
+    exp = X + 8 + (pane_w - 64 - 8) / 2.0
+    ok = abs(mid - exp) <= 6
+    print(f"G pane-title-center: text {hits[0]}..{hits[-1]} mid {mid:.0f} want {exp:.0f} [{'OK' if ok else 'FAIL'}]")
+else:
+    print(f"G pane-title-center: no title text found in scan [{'FAIL'}]")
+if not ok:
+    rc = 1
+
+# H: top-bar title optically centered over [left .. right-41] (the 41px
+#    right zone holds the zoom + inspector icon cells).
+hits = [x for x in range(X + 4, X + W - 44)
+        if close(img.getpixel((x, Y + 11)), title_text)]
+ok = len(hits) >= 3
+if ok:
+    mid = (hits[0] + hits[-1]) / 2.0
+    exp = X + (W - 41) / 2.0
+    ok = abs(mid - exp) <= 6
+    print(f"H topbar-title-center: text {hits[0]}..{hits[-1]} mid {mid:.0f} want {exp:.0f} [{'OK' if ok else 'FAIL'}]")
+else:
+    print(f"H topbar-title-center: no title text found in scan [{'FAIL'}]")
+if not ok:
+    rc = 1
 
 sys.exit(rc)
 PY
