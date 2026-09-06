@@ -1,4 +1,4 @@
-Commit: 947713b724383b4b4ffb6a3f6e21f29c5662149e
+Commit: 6f1993a093028b8b968ee6fb1db98c976e6f5476
 
 # agents.md - repo memory for terminator-rust
 
