@@ -2,13 +2,15 @@
 //!
 //! The listener thread never touches app state: requests cross an mpsc
 //! channel as [`Command`]s and are serviced on the UI thread by [`drain`],
-//! which sends the response back over the per-request reply channel. The
-//! thread holds its own `egui::Context` clone so an incoming request can
-//! wake the UI loop (`request_repaint`) even while it is idle.
+//! which sends the response back over the per-request reply channel. No
+//! context wakeup is needed (a detached `egui::Context` cannot wake the
+//! real UI anyway): render/screen.rs repaints unconditionally every 50 ms,
+//! so `drain` runs at >=20 Hz and the 5 s reply timeout is ample.
 
 use std::io::{BufRead, BufReader, Read, Take, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -53,6 +55,22 @@ pub fn socket_path() -> PathBuf {
     dir.join("ipc.sock")
 }
 
+/// Bind the socket locked to the owner (0600): capture/send over it is
+/// full remote control of the terminal, and the `~/.config` fallback dir
+/// is group/world-traversable on common distros. Fail-closed: a chmod
+/// failure leaves no socket behind.
+fn bind_private(path: &Path) -> std::io::Result<UnixListener> {
+    let listener = UnixListener::bind(path)?;
+    match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        Ok(()) => Ok(listener),
+        Err(e) => {
+            drop(listener);
+            let _ = std::fs::remove_file(path);
+            Err(e)
+        }
+    }
+}
+
 /// Bind the control socket and start the listener thread. Best-effort:
 /// returns `None` (and logs) when another instance already owns the socket
 /// or anything else fails; the app runs fine without IPC.
@@ -66,7 +84,7 @@ pub fn start() -> Option<Ipc> {
     if path.exists() {
         let _ = std::fs::remove_file(&path);
     }
-    let listener = match UnixListener::bind(&path) {
+    let listener = match bind_private(&path) {
         Ok(l) => l,
         Err(e) => {
             warn!("ipc: bind {}: {e}, control disabled", path.display());
@@ -79,22 +97,21 @@ pub fn start() -> Option<Ipc> {
     }
     let (tx, rx) = mpsc::channel::<Command>();
     let stop = Arc::new(AtomicBool::new(false));
-    let ctx = egui::Context::default();
+    // Later-spawned local panes inherit the env (pty.rs passes the parent
+    // environment through), so shell helpers can find the control socket.
+    // Set it before anything else spawns so no pane can race past it.
+    std::env::set_var(ipc_proto::ENV_SOCKET, &path);
     let spawned = thread::Builder::new()
         .name("ipc-socket".to_string())
         .spawn({
-            let ctx = ctx.clone();
             let stop = Arc::clone(&stop);
-            move || listen(listener, tx, ctx, stop)
+            move || listen(listener, tx, stop)
         })
         .map_err(|e| warn!("ipc: spawn listener: {e}, control disabled"));
     let thread = match spawned {
         Ok(t) => t,
         Err(()) => return None,
     };
-    // Later-spawned local panes inherit the env (pty.rs passes the parent
-    // environment through), so shell helpers can find the control socket.
-    std::env::set_var(ipc_proto::ENV_SOCKET, &path);
     info!("ipc: control socket at {}", path.display());
     Some(Ipc {
         rx,
@@ -105,10 +122,10 @@ pub fn start() -> Option<Ipc> {
 }
 
 /// Accept loop: parks on `WouldBlock` in 50 ms slices so `Drop` can stop it.
-fn listen(listener: UnixListener, tx: Sender<Command>, ctx: egui::Context, stop: Arc<AtomicBool>) {
+fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, _)) => serve(stream, &tx, &ctx),
+            Ok((stream, _)) => serve(stream, &tx),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(POLL),
             Err(e) => {
                 warn!("ipc: accept: {e}");
@@ -120,14 +137,14 @@ fn listen(listener: UnixListener, tx: Sender<Command>, ctx: egui::Context, stop:
 
 /// Read one capped JSON request line, hand it to the UI thread and write
 /// the response back as one JSON line.
-fn serve(stream: UnixStream, tx: &Sender<Command>, ctx: &egui::Context) {
+fn serve(stream: UnixStream, tx: &Sender<Command>) {
     // Accepted sockets may inherit non-blocking mode; blocking + timeouts
     // is what a request/response exchange wants.
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let resp = match read_request(&stream) {
-        Some(req) => forward(req, tx, ctx),
+        Some(req) => forward(req, tx),
         None => ipc_proto::Response::err("bad request"),
     };
     if let Ok(mut line) = serde_json::to_string(&resp) {
@@ -150,17 +167,13 @@ fn read_request(stream: &UnixStream) -> Option<ipc_proto::Request> {
     serde_json::from_str(line.trim_end()).ok()
 }
 
-/// Send the request to the UI thread, wake it and wait for the answer.
-fn forward(
-    req: ipc_proto::Request,
-    tx: &Sender<Command>,
-    ctx: &egui::Context,
-) -> ipc_proto::Response {
+/// Send the request to the UI thread and wait for the answer (the UI
+/// loop drains continuously; see the module doc).
+fn forward(req: ipc_proto::Request, tx: &Sender<Command>) -> ipc_proto::Response {
     let (reply, rx) = mpsc::channel();
     if tx.send(Command { req, reply }).is_err() {
         return ipc_proto::Response::err("app shutting down");
     }
-    ctx.request_repaint();
     match rx.recv_timeout(REPLY_TIMEOUT) {
         Ok(resp) => resp,
         Err(_) => ipc_proto::Response::err("app not responding"),
@@ -168,7 +181,7 @@ fn forward(
 }
 
 /// Service pending requests on the UI thread; called once per frame.
-pub fn drain(ipc: &mut Ipc, data: &mut crate::state::Data, _ctx: &egui::Context) {
+pub fn drain(ipc: &mut Ipc, data: &mut crate::state::Data) {
     while let Ok(cmd) = ipc.rx.try_recv() {
         let resp = crate::ipc::handle::execute(cmd.req, data);
         let _ = cmd.reply.send(resp);
