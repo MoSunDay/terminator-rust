@@ -251,6 +251,10 @@ pub fn apply_action(
         Action::SplitVertical => {
             do_split(st, sess, tab, None, Axis::Vertical, dirty);
         }
+        Action::SplitDefault => {
+            let axis = st.settings.split_axis;
+            do_split(st, sess, tab, None, axis, dirty);
+        }
         Action::ClosePane => {
             if let Some(pane) = st.tree.tabs.get(tab).map(|t| t.focused) {
                 do_close_pane(st, sess, ui, tab, pane, dirty);

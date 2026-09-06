@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use layout_tree::{
-    new_tab, new_tree, set_parent_ratio, split_pane, Axis, LayoutTree, Node, PaneId,
+    new_tab, new_tree, set_parent_ratio, split_pane, Axis, LayoutTree, Node, PaneId, MAX_RATIO,
+    MIN_RATIO,
 };
 use log::warn;
 use remote::{PaneKind, RemoteTarget};
@@ -24,6 +25,53 @@ use crate::state::{fresh_state, new_pane_meta, AppState, PaneMeta};
 struct Persisted {
     theme: String,
     tabs: Vec<PTab>,
+    #[serde(default)]
+    settings: PSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PSettings {
+    /// "v" = left/right split, "h" = top/bottom.
+    split_axis: String,
+    split_ratio: f32,
+}
+
+impl Default for PSettings {
+    fn default() -> Self {
+        Self {
+            split_axis: "v".to_string(),
+            split_ratio: 0.5,
+        }
+    }
+}
+
+impl PSettings {
+    fn of(s: &crate::state::Settings) -> Self {
+        Self {
+            split_axis: match s.split_axis {
+                Axis::Horizontal => "h".to_string(),
+                Axis::Vertical => "v".to_string(),
+            },
+            split_ratio: s.split_ratio,
+        }
+    }
+
+    fn to_settings(&self) -> crate::state::Settings {
+        let axis = if self.split_axis == "h" {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        };
+        let ratio = if self.split_ratio.is_finite() {
+            self.split_ratio.clamp(MIN_RATIO, MAX_RATIO)
+        } else {
+            0.5
+        };
+        crate::state::Settings {
+            split_axis: axis,
+            split_ratio: ratio,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +216,7 @@ fn pn_from(node: &Node, panes: &BTreeMap<PaneId, PaneMeta>) -> PNode {
 fn to_persisted(st: &AppState) -> Persisted {
     Persisted {
         theme: st.theme_name.clone(),
+        settings: PSettings::of(&st.settings),
         tabs: st
             .tree
             .tabs
@@ -252,6 +301,7 @@ fn from_persisted(p: &Persisted) -> AppState {
         } else {
             p.theme.clone()
         },
+        settings: p.settings.to_settings(),
         panes: b.panes,
     }
 }
@@ -411,6 +461,7 @@ mod tests {
         let p = Persisted {
             theme: "x".to_string(),
             tabs: vec![],
+            settings: PSettings::default(),
         };
         let st = from_persisted(&p);
         assert_eq!(st.tree.tabs.len(), 1);
@@ -429,5 +480,28 @@ mod tests {
         let n1 = layout_tree::pane_count(&back.tree.tabs[1].root);
         assert_eq!((n0, n1), (2, 1));
         assert_ne!(back.tree.tabs[0].root, back.tree.tabs[1].root);
+    }
+
+    #[test]
+    fn settings_roundtrip_and_clamp() {
+        let mut st = fresh_state();
+        st.settings.split_axis = Axis::Horizontal;
+        st.settings.split_ratio = 9.9;
+        let back = from_persisted(&to_persisted(&st));
+        assert_eq!(back.settings.split_axis, Axis::Horizontal);
+        assert_eq!(back.settings.split_ratio, layout_tree::MAX_RATIO);
+    }
+
+    #[test]
+    fn legacy_state_without_settings_uses_defaults() {
+        let mut v = serde_json::to_value(to_persisted(&fresh_state())).unwrap();
+        if let Some(o) = v.as_object_mut() {
+            o.remove("settings");
+        }
+        let p: Persisted = serde_json::from_value(v).unwrap();
+        assert_eq!(
+            from_persisted(&p).settings,
+            crate::state::Settings::default()
+        );
     }
 }

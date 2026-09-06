@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use layout_tree::{new_tree, split_pane, Axis, LayoutTree, PaneId};
+use layout_tree::{new_tree, split_pane_ratio, Axis, LayoutTree, PaneId};
 use remote::{PaneKind, RemoteTarget};
 use theme::Rgb;
 
@@ -27,10 +27,29 @@ pub struct PaneMeta {
     pub degraded: bool,
 }
 
+/// App-wide settings (persisted).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Settings {
+    /// Axis used by the default split action / new split buttons.
+    pub split_axis: Axis,
+    /// New pane's share of the split, clamped to 0.05..=0.95.
+    pub split_ratio: f32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            split_axis: Axis::Vertical,
+            split_ratio: 0.5,
+        }
+    }
+}
+
 /// Persisted app model: layout tree, per-pane config, theme name.
 pub struct AppState {
     pub tree: LayoutTree,
     pub theme_name: String,
+    pub settings: Settings,
     pub panes: BTreeMap<PaneId, PaneMeta>,
 }
 
@@ -132,6 +151,7 @@ pub fn fresh_state() -> AppState {
             .copied()
             .unwrap_or("terminator-classic")
             .to_string(),
+        settings: Settings::default(),
         panes,
     }
 }
@@ -225,7 +245,8 @@ pub fn compute_grid(w: f32, h: f32, cell_w: f32, cell_h: f32) -> (u16, u16) {
 /// Tree/meta half of a split, no process spawning (unit-testable).
 /// Returns the new pane id.
 pub fn split_tree_pane(st: &mut AppState, tab: usize, pane: PaneId, axis: Axis) -> Option<PaneId> {
-    let new_id = split_pane(&mut st.tree, tab, pane, axis)?;
+    let ratio = st.settings.split_ratio;
+    let new_id = split_pane_ratio(&mut st.tree, tab, pane, axis, ratio)?;
     st.panes.insert(new_id, new_pane_meta(PaneKind::Local));
     Some(new_id)
 }

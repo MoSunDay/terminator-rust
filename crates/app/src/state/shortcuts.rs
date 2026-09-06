@@ -9,6 +9,7 @@ pub enum Action {
     NewTab,
     SplitHorizontal,
     SplitVertical,
+    SplitDefault,
     ClosePane,
     CycleFocus(bool),
     PrevTab,
@@ -38,6 +39,7 @@ pub enum SKey {
     T,
     O,
     E,
+    D,
     W,
     R,
     F,
@@ -69,6 +71,7 @@ pub fn route_shortcut(m: SMods, k: SKey) -> Option<Action> {
         (true, SKey::T) => Some(Action::NewTab),
         (true, SKey::O) => Some(Action::SplitHorizontal),
         (true, SKey::E) => Some(Action::SplitVertical),
+        (true, SKey::D) => Some(Action::SplitDefault),
         (true, SKey::W) => Some(Action::ClosePane),
         (true, SKey::R) => Some(Action::Respawn),
         (true, SKey::F) => Some(Action::ToggleZoom),
@@ -112,6 +115,11 @@ mod tests {
             route_shortcut(mods(true, true), SKey::E),
             Some(Action::SplitVertical)
         );
+        assert_eq!(
+            route_shortcut(mods(true, true), SKey::D),
+            Some(Action::SplitDefault)
+        );
+        assert_eq!(route_shortcut(mods(true, false), SKey::D), None);
         assert_eq!(
             route_shortcut(mods(true, true), SKey::W),
             Some(Action::ClosePane)
