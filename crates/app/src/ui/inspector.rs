@@ -57,6 +57,8 @@ pub fn show(ctx: &Context, d: &mut Data) {
         .show(ctx, |ui| {
             theme_section(ui, d);
             ui.separator();
+            splits_section(ui, d);
+            ui.separator();
             form_section(ui, d, &reg_path);
             ui.separator();
             registry_section(ui, d, &reg_path);
@@ -88,6 +90,48 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
         .changed()
     {
         // Font metrics are re-measured every frame; nothing else to do.
+    }
+}
+
+fn splits_section(ui: &mut egui::Ui, d: &mut Data) {
+    ui.heading("Splits");
+    // Settings is Copy: edit a copy, then write back and flag dirty when it
+    // actually changed (borrowck-friendly, covers combo box AND slider).
+    let mut s = d.st.settings;
+    ui.horizontal(|ui| {
+        ui.label("Default direction:");
+        let selected = match s.split_axis {
+            layout_tree::Axis::Vertical => "left | right",
+            layout_tree::Axis::Horizontal => "top / bottom",
+        };
+        egui::ComboBox::from_id_salt("split_axis")
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut s.split_axis,
+                    layout_tree::Axis::Vertical,
+                    "left | right",
+                );
+                ui.selectable_value(
+                    &mut s.split_axis,
+                    layout_tree::Axis::Horizontal,
+                    "top / bottom",
+                );
+            });
+    });
+    let changed = ui
+        .add(
+            egui::Slider::new(
+                &mut s.split_ratio,
+                layout_tree::MIN_RATIO..=layout_tree::MAX_RATIO,
+            )
+            .text("new pane share"),
+        )
+        .changed()
+        || s != d.st.settings;
+    d.st.settings = s;
+    if changed {
+        d.dirty = true;
     }
 }
 
