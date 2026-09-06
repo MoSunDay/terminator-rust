@@ -109,7 +109,7 @@ fn find_db(pid: i32) -> Result<Option<PathBuf>, String> {
         .filter_map(|e| std::fs::read_link(e.path()).ok())
         .filter(|p| p.to_string_lossy().ends_with("opencoder.db"))
         .collect();
-    Ok(pick_db(links))
+    pick_db(links)
 }
 
 /// Reduce one process's fd links to the single store it uses. Repeated
