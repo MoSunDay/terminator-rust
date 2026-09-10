@@ -1,5 +1,6 @@
 //! Chrome UI: tab bar, pane headers and the inspector window.
 
+pub mod fonts;
 pub mod inspector;
 pub mod pane_header;
 pub mod style;

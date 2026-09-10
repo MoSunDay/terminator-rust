@@ -11,12 +11,35 @@ use crate::state::{CellSize, PaneMeta};
 pub fn measure_cells(ctx: &egui::Context, font_size: f32) -> CellSize {
     let font = FontId::monospace(font_size);
     let ppp = ctx.pixels_per_point();
-    let (w, h) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
+    let (w, h, wide_advance) = ctx.fonts_mut(|f| {
+        let (w, h) = (f.glyph_width(&font, 'M'), f.row_height(&font));
+        // Fullwidth probe through the same family fallback chain: with
+        // the embedded CJK font installed this resolves to a Han glyph.
+        let wide = f
+            .layout_no_wrap("\u{6C49}".to_owned(), font.clone(), Color32::WHITE)
+            .rect
+            .width();
+        (w, h, wide)
+    });
     let w = w.max(4.0);
     let h = h.max(6.0);
+    // A wide cell must span exactly two narrow cells: derive the paint
+    // size by scaling the probe advance to 2*w. Degenerate measurements
+    // (no CJK glyph found, zero advance) fall back to a sane 1.2x.
+    let scale = if wide_advance > f32::EPSILON {
+        2.0 * w / wide_advance
+    } else {
+        0.0
+    };
+    let wide_size = if scale.is_finite() && (0.8..=1.8).contains(&scale) {
+        font_size * scale
+    } else {
+        font_size * 1.2
+    };
     CellSize {
         w,
         h,
+        wide_size,
         w_px: (w * ppp).round().max(1.0) as u32,
         h_px: (h * ppp).round().max(1.0) as u32,
     }
@@ -96,6 +119,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     let bg_rgb = from_c32(bg);
     let sel_bg = blend_cell_bg(to_c32(pal.selection_background), bg_rgb, t);
     let font = FontId::monospace(font_size);
+    let wide_font = FontId::monospace(cell.wide_size);
     for (y, row) in fr.cells.iter().enumerate() {
         let mut skip_tail = false;
         for (x, cd) in row.iter().enumerate() {
@@ -135,11 +159,14 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
             }
             if !cd.text.is_empty() {
                 let glyph = if is_cursor { bg } else { fg };
+                // Wide cells paint at the scaled size so the glyph fills
+                // exactly the two-cell span; narrow cells are unchanged.
+                let cell_font = if cd.wide { &wide_font } else { &font };
                 painter.text(
                     Pos2::new(r.min.x, r.center().y),
                     Align2::LEFT_CENTER,
                     cd.text.as_str(),
-                    font.clone(),
+                    cell_font.clone(),
                     glyph,
                 );
             }
@@ -180,5 +207,34 @@ mod tests {
         assert_eq!(lt_rect(egui_rect(lt)), lt);
         let e = Rect::from_min_size(Pos2::new(5.0, 6.0), Vec2::new(7.0, 8.0));
         assert_eq!(egui_rect(lt_rect(e)), e);
+    }
+
+    #[test]
+    fn wide_glyph_at_wide_size_spans_two_cells() {
+        // Headless context: one begin/end pass initializes the font
+        // atlas (fonts_mut panics before the first pass).
+        let ctx = egui::Context::default();
+        crate::ui::fonts::install(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        ctx.end_pass().textures_delta.clear();
+        let cell = measure_cells(&ctx, 14.0);
+        let wide_font = FontId::monospace(cell.wide_size);
+        let advance = ctx.fonts_mut(|f| {
+            f.layout_no_wrap("\u{6C49}".to_owned(), wide_font, Color32::WHITE)
+                .rect
+                .width()
+        });
+        // The invariant that matters: a wide glyph painted at wide_size
+        // fills exactly two narrow cells (embedded font scale ~1.2).
+        assert!(
+            (advance - 2.0 * cell.w).abs() < 0.05,
+            "wide advance {advance} should fill two cells ({}pts)",
+            2.0 * cell.w
+        );
+        assert!(
+            cell.wide_size > 14.0,
+            "wide cells must paint larger than narrow ones: {}",
+            cell.wide_size
+        );
     }
 }

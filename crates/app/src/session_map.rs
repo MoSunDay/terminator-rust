@@ -176,6 +176,7 @@ mod tests {
         let cell = CellSize {
             w: 8.0,
             h: 16.0,
+            wide_size: 0.0,
             w_px: 8,
             h_px: 16,
         };

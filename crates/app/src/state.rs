@@ -58,6 +58,10 @@ pub struct AppState {
 pub struct CellSize {
     pub w: f32,
     pub h: f32,
+    /// Font size wide (double-width CJK) cells are painted at: the CJK
+    /// fallback font draws Han at a ~1.0em advance, so it is scaled until
+    /// one glyph exactly fills two narrow cells.
+    pub wide_size: f32,
     pub w_px: u32,
     pub h_px: u32,
 }
