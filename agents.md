@@ -176,16 +176,21 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   editor.
 
 - CJK display: egui default fonts have ZERO CJK glyphs -> Chinese was tofu.
-  Fix: assets/fonts/NotoSansSC-Regular-subset.otf (8.1MB OFL subset, extracted
-  SC face idx 2 from Debian NotoSansCJK ttc, pyftsubset terminal ranges)
+  Fix: assets/fonts/NotoSansSC-Regular-subset.otf (9.8MB OFL subset, extracted
+  SC face idx 2 from Debian NotoSansCJK ttc, pyftsubset terminal ranges +
+  Hangul AC00-D7AF, 40330 glyphs; the recipe NEEDS --no-layout-closure or
+  GSUB closure inflates it to 47k glyphs; Hangul glyphs are EAW-wide at
+  0.92em advance and paint slightly inside the 2-cell pair)
   include_bytes! + FontDefinitions families[Monospace/Proportional].push
   (family list IS the glyph fallback chain); install once in Terminator::new
   via ctx.set_fonts. TERMINATOR_CJK_FONT=path[:ttc_index] swaps the embedded
   bytes (last ':' + u32-suffix = face index). Han advance is 1.0em vs 'M'
   ~0.6em, so wide cells paint at CellSize.wide_size = font_size * 2w/adv("汉"
   via layout_no_wrap, ~1.204, clamp 0.8..=1.8 else 1.2) - cell PITCH is set by
-  grid geometry either way; a corrupt font panics inside epaint at first
-  layout (app never starts). e2e ink detection: wide-glyph ink overflows the
+  grid geometry either way; env fonts are parse-validated at startup
+  (skrifa FontRef::from_index - epaint's own parser, direct workspace dep):
+  unreadable OR unparseable -> log::warn + embedded fallback, never the
+  epaint first-layout panic (app always starts). e2e ink detection: wide-glyph ink overflows the
   ASCII line height (1.2x) and stacked lines TOUCH -> row-band splitting is
   impossible; use (column-run x row-run) components and expect >=4 wide+>=3
   stroked (a tofu fallback square passes width but has a hollow interior).

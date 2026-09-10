@@ -1,3 +1,5 @@
+Commit: 5f77d36d0be13eedb408c7b1405107f384e87bb6
+
 # 内置 Noto Sans SC 子集，中文/宽字符跨平台正常展示
 
 ## 背景（Context）
