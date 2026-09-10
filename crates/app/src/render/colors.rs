@@ -190,7 +190,18 @@ pub fn tab_active(p: &Palette) -> Rgb {
 }
 /// Dimmed chrome text (window title, inactive tab labels).
 pub fn title_text(p: &Palette) -> Rgb {
-    mix(p.foreground, p.background, 0.42)
+    mix(p.foreground, p.background, 0.38)
+}
+
+/// Apply the window opacity to a chrome/pane base fill. Text, selections
+/// and accents stay opaque for readability; `opacity >= 1.0` is identity so
+/// TERMINATOR_OPAQUE=1 runs (and pixel-asserts) byte-identical.
+pub fn with_opacity(c: Color32, opacity: f32) -> Color32 {
+    let a = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
+    if a == u8::MAX {
+        return c;
+    }
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
 /// Swatch candidates for the pane color popup: palette 16 colors + basics.
@@ -224,6 +235,17 @@ pub fn cell_colors(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_opacity_identity_and_alpha() {
+        let c = Color32::from_rgb(40, 42, 54);
+        assert_eq!(with_opacity(c, 1.0), c, "opacity 1.0 stays byte-identical");
+        assert_eq!(with_opacity(c, 2.0), c, "clamped up = opaque");
+        let a = with_opacity(c, 0.8);
+        // Color32 stores premultiplied channels: they dim with alpha.
+        assert_eq!(a.a(), (0.8f32 * 255.0).round() as u8);
+        assert!(a.r() < c.r() && a.r() > 0, "premultiplied r dims: {}", a.r());
+    }
 
     #[test]
     fn palette_of_falls_back() {

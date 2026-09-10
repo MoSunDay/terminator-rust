@@ -119,6 +119,10 @@ fn splits_section(ui: &mut egui::Ui, d: &mut Data) {
                 );
             });
     });
+    ui.horizontal(|ui| {
+        ui.label("Window opacity:");
+        ui.add(egui::Slider::new(&mut s.opacity, 0.5..=1.0));
+    });
     let changed = ui
         .add(
             egui::Slider::new(

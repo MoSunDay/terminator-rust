@@ -1,7 +1,7 @@
 //! Per-pane header strip: title, rename, badges, color/transparency popups,
 //! close button and the pane context menu.
 
-use egui::{Button, Id, Key, Popup, Rect, TextEdit, Ui, Vec2};
+use egui::{Button, Id, Key, Popup, Rect, Sense, TextEdit, Ui, Vec2};
 use layout_tree::PaneId;
 use theme::{Palette, Rgb};
 
@@ -58,15 +58,30 @@ pub fn show(
         None => "?".to_string(),
     };
 
+    // Borderless window: the header strip doubles as a drag handle.
+    // Registered first so the title/buttons on top keep their clicks
+    // (egui hit-test prefers the topmost widget; drags fall through to
+    // this background).
+    let drag = ui.interact(rect, Id::new("pane_header_drag").with(pane), Sense::drag());
+    if drag.drag_started_by(egui::PointerButton::Primary) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+
     // Quiet chrome: the header is a flat chrome strip (the focused pane is
     // already framed by its accent stroke) with a hairline over the
     // content; focus reads through the title color.
-    ui.painter()
-        .rect_filled(rect, 2.0, to_c32(colors::chrome_bg(pal)));
+    ui.painter().rect_filled(
+        rect,
+        2.0,
+        colors::with_opacity(to_c32(colors::chrome_bg(pal)), st.settings.opacity),
+    );
     ui.painter().hline(
         rect.x_range(),
         rect.bottom() - 0.5,
-        egui::Stroke::new(1.0, to_c32(colors::hairline(pal))),
+        egui::Stroke::new(
+            1.0,
+            colors::with_opacity(to_c32(colors::hairline(pal)), st.settings.opacity),
+        ),
     );
 
     // Badges (right of the title area, before the buttons).
@@ -352,6 +367,11 @@ pub fn menu(
     }
     if ui.button("Zoom pane").clicked() {
         uist.zoom = !uist.zoom;
+    }
+    // Single-tab chrome hides the tab bar (and its inspector cell), so the
+    // pane menu carries the always-available entry point.
+    if ui.button("Inspector").clicked() {
+        uist.inspector = !uist.inspector;
     }
     if ui.button("Respawn pane").clicked() {
         actions::apply_pane_action(st, sess, uist, tab, pane, PaneAction::Respawn, dirty);

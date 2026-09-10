@@ -36,7 +36,9 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
   binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
   ~/.opencoder/config.json needed - onboarding form eats ^C; focus navigation
-  via Ctrl+Shift+Right, NEVER clicks into mouse-tracking panes)
+  via Ctrl+Shift+Right, NEVER clicks into mouse-tracking panes; K4 =
+  Ctrl+Shift+W on a NON-last pane keeps the app alive (quit only on the
+  last close), K6 = a click closes a DEAD pane)
 - cjk font e2e: `scripts/bin/e2e-cjk.sh` (fontTools cmap coverage of the
   embedded subset; Xvfb live app: ctl send `echo 汉字测试` capture round-trip
   + scrot/PIL connected-ink assertions - real Han ink ~15x17px with interior
@@ -46,7 +48,8 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   (chrome_bg field + 1px divider line), chrome top-bar fill, active-chip
   underline + fill; expectations are COMPUTED in-script from dracula
   constants via a mix() helper - token retunes touch only colors.rs,
-  geometry changes touch the script; presets a dracula Split state.json)
+  geometry changes touch the script; presets a dracula Split state.json;
+  checks I1/I2 assert the single-tab zero-chrome layout)
 - deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
   repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
   XDG autostart for the desktop user, pid-kill restart, ctl smoke).
@@ -198,7 +201,34 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   /tmp/.X11-unix sockets make Xvfb refuse to bind) - probe random free
   numbers, and `export DISPLAY` for xdotool/scrot (env DISPLAY=... on the app
   line alone is not enough).
+- window shell (borderless batch): eframe decorations off + transparent
+  viewport (clear_color = TRANSPARENT); Settings.opacity (0.5..=1.0, default
+  1.0 = opaque, persisted via serde default; legacy files load 1.0 too -
+  transparency is OPT-IN because a compositor-less X renders transparent
+  pixels black) multiplies alpha through
+  render/colors.rs::with_opacity on chrome/pane base fills ONLY - Color32 is
+  premultiplied, so text/cursor/selection/focus stroke stay opaque.
+  TERMINATOR_OPAQUE=1 pins 1.0 at startup; every Xvfb e2e script exports it
+  (no compositor -> no blending -> unstable pixels). With no titlebar the
+  tab-bar background (tabs.rs chrome_drag) and the pane header strip are the
+  drag handles: Sense::drag registered BEFORE the chips/buttons (topmost
+  widget wins the click), StartDrag on primary press. Single tab = NO top
+  panel (content starts at y=0; pane header identifies the pane; Inspector
+  lives in the pane context menu); a second tab brings the chip row back.
+- close semantics: closing the LAST pane/tab sets UiState.quitting instead of
+  do_new_tab; screen() skips the empty-tabs respawn while quitting so the
+  frame can land ViewportCommand::Close (main.rs, every frame; save_if_dirty
+  has already persisted). A dead pane (no session yet or exit.is_some())
+  closes on a plain click and `tracking = !dead && ...` - stale DEC mouse
+  modes must not eat the click. persist: per-tab focused containment (the
+  global id remap can resolve a stale focused id into ANOTHER tab -> keys
+  leak cross-tab) and active_tab forced to 0 on restore.
+
 ## Verified end-to-end (2026-09)
+- borderless/quit batch (2026-09-10): e2e-oc-exit.sh K4 (Ctrl+Shift+W on a
+  non-last pane keeps the app alive) + K6 (dead-pane click closes only
+  that pane); e2e-ui-style.sh I1/I2 (single tab = zero chrome, header at
+  y=0); all Xvfb e2e scripts export TERMINATOR_OPAQUE=1.
 Xvfb: render + catppuccin colors exact px, key echo, ANSI 256 bg exact
 px, Ctrl+Shift+E split, state.json save/restore across restart, WM close.
 Batch-1 mouse (Xvfb): SGR press/release/motion + wheel press-only
