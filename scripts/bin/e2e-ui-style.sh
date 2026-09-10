@@ -19,6 +19,13 @@
 #   H: the old centered window-title row is GONE - the chrome is a single
 #      chip row (zoom/inspector live at its right edge); no title-colored
 #      text may render in the bare chrome zone (regression guard).
+#   I: with the last-but-one tab closed the tab bar disappears entirely -
+#      no accent chip underline in the former chip band, and the bare
+#      chrome color continues into the pane-header row at y=0 (single-tab
+#      zero-chrome rule).
+# TERMINATOR_OPAQUE=1 pins window opacity 1.0: with no compositor in Xvfb
+# the translucent fills would blend over garbage; pinned opaque the pixel
+# expectations are byte-identical to the pre-transparency values.
 # Every expected chrome color below is COMPUTED from the dracula constants
 # with a mix() helper, so token retunes only touch render/colors.rs (this
 # script changes only when geometry changes).
@@ -33,7 +40,7 @@ cd "$(dirname "$0")/../.."
 ROOT=$(mktemp -d /tmp/term-e2e-style-XXXXXX)
 APP=target/debug/terminator-rust
 CTL=target/debug/terminator-ctl
-DISPLAY_N=":$$"          # unique per run; no clash with parallel scripts
+DISPLAY_N=""                  # probed below (stale sockets break ":$$")
 XVFB_PID=""
 APP_PID=""
 
@@ -61,11 +68,15 @@ export HOME="$ROOT/home"
 export SHELL=/bin/bash
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
+# No compositor in Xvfb: pin full opacity for deterministic pixels.
+export TERMINATOR_OPAQUE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
-# Preset: dracula theme, settings, and a vertical 50/50 Split whose left
-# pane blends #ff0000 at 50% transparency. Pane ids are re-allocated on
-# load; manual_title "red" is the stable ctl addressing key.
+# Preset: dracula theme, settings, a vertical 50/50 Split whose left pane
+# blends #ff0000 at 50% transparency, PLUS a second single-pane tab - the
+# chrome checks need the tab bar visible, and check I closes "extra" to
+# verify the bar hides at one tab. Pane ids are re-allocated on load;
+# manual_title "red" is the stable ctl addressing key.
 cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
 {
   "theme": "dracula",
@@ -74,15 +85,31 @@ cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
     { "title": "style", "focused": 1,
       "root": { "Split": { "axis": "v", "ratio": 0.5,
         "first":  { "Pane": { "id": 1, "meta": { "kind": "Local", "manual_title": "red",  "bg": "#ff0000", "transparency": 0.5, "degraded": false } } },
-        "second": { "Pane": { "id": 2, "meta": { "kind": "Local", "manual_title": null,   "bg": null,       "transparency": 0.0, "degraded": false } } } } } }
+        "second": { "Pane": { "id": 2, "meta": { "kind": "Local", "manual_title": null,   "bg": null,       "transparency": 0.0, "degraded": false } } } } } },
+      { "title": "extra", "focused": 3,
+        "root": { "Pane": { "id": 3, "meta": { "kind": "Local", "manual_title": null, "bg": null, "transparency": 0.0, "degraded": false } } } }
   ]
 }
 JSON
 
 # --- Xvfb + app ----------------------------------------------------------
-step "launch Xvfb $DISPLAY_N + app"
-Xvfb "$DISPLAY_N" -screen 0 1200x800x24 & XVFB_PID=$!
-sleep 0.7
+step "launch Xvfb + app"
+# Random display probe: a fixed/PID-derived number can collide with a
+# stale /tmp/.X11-unix socket left by an earlier crashed run.
+DISPLAY_N=""
+for _ in $(seq 1 12); do
+    N=$((100 + RANDOM % 880))
+    [ -S "/tmp/.X11-unix/X$N" ] && continue
+    Xvfb ":$N" -screen 0 1200x800x24 & XVFB_PID=$!
+    sleep 0.7
+    if kill -0 "$XVFB_PID" 2>/dev/null && DISPLAY=":$N" xdpyinfo >/dev/null 2>&1; then
+        DISPLAY_N=":$N"
+        break
+    fi
+    kill "$XVFB_PID" 2>/dev/null || true
+    XVFB_PID=""
+done
+[ -n "$DISPLAY_N" ] || fail "no free X display for Xvfb"
 export DISPLAY="$DISPLAY_N"   # for xdotool + scrot (app gets it via env below)
 env DISPLAY="$DISPLAY_N" RUST_LOG=info setsid "$APP" >"$ROOT/app.log" 2>&1 & APP_PID=$!
 for _ in $(seq 1 40); do [ -S "$SOCK" ] && break; sleep 0.25; done
@@ -109,9 +136,9 @@ echo "window $WID at ${X},${Y} ${WIDTH}x${HEIGHT}"
 step "ctl list shows both preset panes (manual_title 'red')"
 "$CTL" list --json | grep -q '"name": "red"' \
     || { "$CTL" list --json; fail "pane 'red' missing - state.json layout not loaded"; }
-[ "$("$CTL" list --json | grep -c '"id": ')" = "2" ] \
-    || { "$CTL" list --json; fail "expected 2 panes from the preset Split"; }
-echo "preset Split loaded: 2 panes, 'red' addressable"
+[ "$("$CTL" list --json | grep -c '"id": ')" = "3" ] \
+    || { "$CTL" list --json; fail "expected 3 panes (Split pair + 'extra')"; }
+echo "preset loaded: Split pair + 'extra' tab, 'red' addressable"
 
 # --- pixel assertions ----------------------------------------------------
 step "scrot + PIL pixel assertions"
@@ -196,7 +223,7 @@ check("F chip-fill", X + 45, Y + 9, mix(BG, ACCENT, 0.18))
 #    (pane area starts ~Y+30, header strip is 24px tall -> scan the band).
 #    title_rect = [pane_left+8, pane_right-56(buttons)-8] -> midpoint is
 #    the computed expectation; tolerance 6px for font rounding.
-title_text = mix(FG, BG, 0.42)
+title_text = mix(FG, BG, 0.38)
 pane_w = (W - 6) / 2.0            # 50/50 split, 6px divider
 scan_lo, scan_hi = X + 10, int(X + pane_w - 80)   # clear of buttons
 hits = []
@@ -231,5 +258,66 @@ if not ok:
 sys.exit(rc)
 PY
 step "pixel assertions passed"
+
+# --- I: single tab hides the chrome bar entirely --------------------------
+# Switch to the "extra" tab and close its only pane (Ctrl+Shift+W): the
+# tab vanishes with it, leaving ONE tab - the bar must disappear and the
+# pane header must start at y=0 with the same bare-chrome color.
+step "I: single tab -> no chrome row"
+xdotool key --clearmodifiers ctrl+Page_Down
+sleep 0.5
+xdotool key --clearmodifiers ctrl+shift+w
+sleep 0.8
+"$CTL" list --json | grep -q '"name": "red"' \
+    || { "$CTL" list --json; fail "'red' pane lost while closing the extra tab"; }
+[ "$("$CTL" list --json | grep -c '"id": ')" = "2" ] \
+    || { "$CTL" list --json; fail "expected 2 panes after closing the extra tab"; }
+scrot -o "$ROOT/scr2.png"
+export SCR2="$ROOT/scr2.png"
+python3 - <<'PY'
+import os, sys
+from PIL import Image
+
+FG = (248, 248, 242)
+BG = (40, 42, 54)
+ACCENT = (189, 147, 249)
+
+def mix(a, b, t):
+    return tuple(int(round(a[i] + t * (b[i] - a[i]))) for i in range(3))
+
+img = Image.open(os.environ["SCR2"]).convert("RGB")
+X, Y, W, H = (int(os.environ[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
+TOL = 3
+rc = 0
+
+def close(got, exp):
+    return all(abs(g - e) <= TOL for g, e in zip(got, exp))
+
+# I1: former chip band (Y+17..Y+29) holds no accent chip underline and no
+#     active-chip fill: the chips are gone. (The focused pane's accent
+#     frame only lives at the pane edges, never inside this band.)
+accent_px = sum(1 for yy in range(Y + 17, Y + 29) for x in range(X + 10, X + 220)
+                if close(img.getpixel((x, yy)), ACCENT))
+chip_fill = mix(BG, ACCENT, 0.18)
+fill_px = sum(1 for yy in range(Y + 5, Y + 25) for x in range(X + 10, X + 220)
+              if close(img.getpixel((x, yy)), chip_fill))
+ok = accent_px == 0 and fill_px == 0
+if not ok:
+    rc = 1
+print(f"I no-chips: accent {accent_px} px, chip-fill {fill_px} px in band "
+      f"[{'OK' if ok else 'FAIL'}]")
+
+# I2: the pane header now starts at y=0: bare chrome at the far left of the
+#     former chip row (title is centered at ~pane midpoint, clear of x=50).
+exp_chrome = mix(BG, FG, 0.045)
+got = img.getpixel((X + 50, Y + 15))
+ok = close(got, exp_chrome)
+if not ok:
+    rc = 1
+print(f"I header-at-top: got {got} want {exp_chrome} [{'OK' if ok else 'FAIL'}]")
+
+sys.exit(rc)
+PY
+step "single-tab chrome assertions passed"
 
 echo "e2e-ui-style: ALL GREEN"

@@ -34,6 +34,9 @@ pub struct Settings {
     pub split_axis: Axis,
     /// New pane's share of the split, clamped to 0.05..=0.95.
     pub split_ratio: f32,
+    /// Window opacity (0.5..=1.0): alpha of the chrome/pane base fills;
+    /// text and selections stay opaque for readability. 1.0 = opaque.
+    pub opacity: f32,
 }
 
 impl Default for Settings {
@@ -41,6 +44,7 @@ impl Default for Settings {
         Self {
             split_axis: Axis::Vertical,
             split_ratio: 0.5,
+            opacity: 1.0,
         }
     }
 }
@@ -120,6 +124,9 @@ pub struct UiState {
     /// release shares the frame with the folded Event::Copy).
     pub mods_frame_end: egui::Modifiers,
     pub font_size: f32,
+    /// The last pane/tab was closed: the app is shutting down. Guards the
+    /// empty-tabs auto-respawn until the ViewportCommand::Close lands.
+    pub quitting: bool,
 }
 
 pub fn ui_state() -> UiState {
@@ -140,6 +147,7 @@ pub fn ui_state() -> UiState {
         styled_theme: None,
         mods_frame_end: egui::Modifiers::NONE,
         font_size: 14.0,
+        quitting: false,
     }
 }
 

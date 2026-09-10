@@ -4,7 +4,7 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use theme::{mix, Palette, Rgb};
 use vt_pane::Frame as VtFrame;
 
-use crate::render::colors::{cell_colors, effective_bg, from_c32, to_c32, vt_rgb};
+use crate::render::colors::{cell_colors, effective_bg, from_c32, to_c32, vt_rgb, with_opacity};
 use crate::state::{CellSize, PaneMeta};
 
 /// Measure the monospace cell metrics from egui fonts.
@@ -78,6 +78,8 @@ pub struct DrawArgs<'a> {
     pub cell: CellSize,
     pub font_size: f32,
     pub cursor_on: bool,
+    /// Window opacity applied to the pane base fill only.
+    pub opacity: f32,
 }
 
 /// Fade explicit cell backgrounds toward the pane background by the
@@ -102,7 +104,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     let cell = a.cell;
     let font_size = a.font_size;
     let cursor_on = a.cursor_on;
-    let bg = effective_bg(pal, meta);
+    let bg = with_opacity(effective_bg(pal, meta), a.opacity);
     painter.rect_filled(rect, 0.0, bg);
     let default_fg = to_c32(pal.foreground);
     let cursor_col = fr

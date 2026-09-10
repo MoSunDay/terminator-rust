@@ -77,6 +77,8 @@ export HOME="$ROOT/home"
 export SHELL=/bin/bash   # pane children must be interactive bash (^C echo, printf \e)
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
+# No compositor in Xvfb: pin full opacity for deterministic rendering.
+export TERMINATOR_OPAQUE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'

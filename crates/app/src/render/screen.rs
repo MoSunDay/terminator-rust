@@ -70,7 +70,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // Lifecycle bookkeeping.
     session_map::pump_all(&mut d.sess);
     actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
-    if d.st.tree.tabs.is_empty() {
+    if d.st.tree.tabs.is_empty() && !d.ui.quitting {
         actions::do_new_tab(&mut d.st, &mut d.sess, PaneKind::Local, &mut d.dirty);
     }
     actions::ensure_sessions(&d.st, &mut d.sess);
@@ -115,6 +115,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
 
         let fallback = crate::state::new_pane_meta(PaneKind::Local);
         let meta = st.panes.get(&pane).unwrap_or(&fallback);
+        // No session at all (spawn backoff) or the child exited.
+        let dead = sess.map.get(&pane).is_none_or(|s| s.exit.is_some());
         match sess.map.get_mut(&pane) {
             Some(s) if s.exit.is_none() => {
                 let fr = session_map::sync_frame(s, content.width(), content.height(), cell);
@@ -128,6 +130,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         cell,
                         font_size: uist.font_size,
                         cursor_on: blink && Some(pane) == focused,
+                        opacity: st.settings.opacity,
                     },
                 );
                 // Scrollback review indicator over the grid, right edge.
@@ -139,32 +142,50 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                             geo,
                             // Quiet scrollbar: thumb/track derived from the
                             // pane background, no accent.
-                            colors::to_c32(colors::mix(pal.background, pal.foreground, 0.22)),
-                            colors::to_c32(colors::mix(pal.background, pal.foreground, 0.06)),
+                            colors::with_opacity(
+                                colors::to_c32(colors::mix(pal.background, pal.foreground, 0.22)),
+                                st.settings.opacity,
+                            ),
+                            colors::with_opacity(
+                                colors::to_c32(colors::mix(pal.background, pal.foreground, 0.06)),
+                                st.settings.opacity,
+                            ),
                         );
                     }
                 }
             }
             _ => {
+                // A corpse without an exit code yet is a spawn in backoff,
+                // not a click-to-close candidate.
+                let msg = match session_map::exit_code(sess, pane) {
+                    Some(code) => format!("process exited (code {code}) - click to close"),
+                    None => "no session - respawn from the context menu".to_string(),
+                };
                 grid::draw_dead(
                     &painter,
                     content,
-                    colors::effective_bg(&pal, meta),
+                    colors::with_opacity(colors::effective_bg(&pal, meta), st.settings.opacity),
                     colors::to_c32(pal.foreground),
-                    "process exited - respawn from the context menu",
+                    &msg,
                 );
             }
         }
 
-        // Mouse-grabbing apps own right-clicks; only local panes get the
-        // context menu.
-        let tracking = sess
-            .map
-            .get(&pane)
-            .map(vt_pane::mouse::is_mouse_tracking)
-            .unwrap_or(false);
+        // A dead pane still carries its child's DEC mouse modes; they must
+        // not suppress interaction with the corpse. Live mouse-grabbing
+        // apps own right-clicks; only then is the context menu hidden.
+        let tracking = !dead
+            && sess
+                .map
+                .get(&pane)
+                .map(vt_pane::mouse::is_mouse_tracking)
+                .unwrap_or(false);
         if !dragging {
             let resp = mouse::pane_interact(ui, content, pane, st, dirty);
+            if dead && resp.clicked() {
+                actions::do_close_pane(st, sess, uist, tab, pane, dirty);
+                continue;
+            }
             if !tracking {
                 resp.context_menu(|menu| {
                     pane_header::menu(menu, pane, tab, st, sess, uist, dirty);
@@ -189,8 +210,21 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         if let Some(tabref) = st.tree.tabs.get(tab) {
             for h in mouse::dividers(tabref, grid::lt_rect(area), DIVIDER_W) {
                 let s = h.strip;
-                painter.rect_filled(s, 0.0, colors::to_c32(colors::chrome_bg(&pal)));
-                let line = Stroke::new(1.0, colors::to_c32(colors::divider(&pal)));
+                painter.rect_filled(
+                    s,
+                    0.0,
+                    colors::with_opacity(
+                        colors::to_c32(colors::chrome_bg(&pal)),
+                        st.settings.opacity,
+                    ),
+                );
+                let line = Stroke::new(
+                    1.0,
+                    colors::with_opacity(
+                        colors::to_c32(colors::divider(&pal)),
+                        st.settings.opacity,
+                    ),
+                );
                 // Tall strip = vertical split: center the line on x;
                 // otherwise it is a horizontal strip: center on y.
                 if s.height() >= s.width() {

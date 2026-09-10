@@ -36,6 +36,8 @@ export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
+# No compositor in Xvfb: pin full opacity for deterministic rendering.
+export TERMINATOR_OPAQUE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # --- world -------------------------------------------------------------
