@@ -22,6 +22,13 @@ pub fn next_pane_id(tree: &LayoutTree) -> PaneId {
     tree.next_pane_id
 }
 
+/// Raise the tree's pane-id allocator so ids stay unique across trees.
+pub fn ensure_next_pane_id(tree: &mut LayoutTree, next: PaneId) {
+    if tree.next_pane_id < next {
+        tree.next_pane_id = next;
+    }
+}
+
 /// Allocates a fresh, unique pane id.
 pub fn alloc_pane_id(tree: &mut LayoutTree) -> PaneId {
     let id = tree.next_pane_id;

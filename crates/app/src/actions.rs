@@ -8,11 +8,13 @@ use log::warn;
 use remote::{PaneKind, EXIT_NO_ZELLIJ};
 
 use crate::session_map::{self, SessionMap};
-use crate::state::{self, new_pane_meta, Action, AppState, PaneAction, UiState};
+use crate::state::{
+    self, new_pane_meta, Action, AppState, PaneAction, UiState, WindowState, WindowUi,
+};
 
 /// Spawn sessions for every pane that lacks one; drop orphaned sessions.
 pub fn ensure_sessions(st: &AppState, sess: &mut SessionMap) {
-    let ids = state::all_pane_ids(&st.tree);
+    let ids = state::all_pane_ids(st);
     let stale: Vec<PaneId> = sess
         .map
         .keys()
@@ -34,7 +36,7 @@ pub fn ensure_sessions(st: &AppState, sess: &mut SessionMap) {
     }
 }
 
-fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
+pub(crate) fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
     if let Some(meta) = st.panes.get(&id) {
         match session_map::spawn_meta(
             meta,
@@ -71,8 +73,18 @@ pub fn do_new_tab(
             }
         }
     };
-    let idx = new_tab(&mut st.tree, &title);
-    let pane = st.tree.tabs.get(idx).map(|t| t.focused).unwrap_or(0);
+    let wi = st.active_idx();
+    st.seed_alloc(wi);
+    let idx = match st.windows.get_mut(wi) {
+        Some(w) => new_tab(&mut w.tree, &title),
+        None => return 0,
+    };
+    st.collect_alloc();
+    let pane = st
+        .windows
+        .get(wi)
+        .and_then(|w| w.tree.tabs.get(idx).map(|t| t.focused))
+        .unwrap_or(0);
     st.panes.insert(pane, new_pane_meta(kind));
     spawn_pane(st, sess, pane);
     *dirty = true;
@@ -89,7 +101,7 @@ pub fn do_split(
     axis: Axis,
     dirty: &mut bool,
 ) -> Option<PaneId> {
-    let target = pane.or_else(|| st.tree.tabs.get(tab).map(|t| t.focused))?;
+    let target = pane.or_else(|| st.win().and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused)))?;
     let new_id = state::split_tree_pane(st, tab, target, axis)?;
     spawn_pane(st, sess, new_id);
     *dirty = true;
@@ -104,38 +116,38 @@ pub fn do_close_pane(
     pane: PaneId,
     dirty: &mut bool,
 ) {
-    if close_pane(&mut st.tree, tab, pane).is_some() {
-        st.panes.remove(&pane);
-        session_map::terminate(sess, pane);
-        ui.zoom = false;
-        if ui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
-            ui.pane_edit = None;
+    let wi = st.active_idx();
+    let state::AppState { panes, windows, .. } = st;
+    if let Some(w) = windows.get_mut(wi) {
+        let state::WindowState { tree, ui: wui, .. } = w;
+        if close_pane(tree, tab, pane).is_some() {
+            panes.remove(&pane);
+            session_map::terminate(sess, pane);
+            wui.zoom = false;
+            if wui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
+                wui.pane_edit = None;
+            }
+            if wui.color_open == Some(pane) {
+                wui.color_open = None;
+            }
+            if wui.trans_open == Some(pane) {
+                wui.trans_open = None;
+            }
+            *dirty = true;
         }
-        if ui.color_open == Some(pane) {
-            ui.color_open = None;
-        }
-        if ui.trans_open == Some(pane) {
-            ui.trans_open = None;
-        }
-        *dirty = true;
+        prune_tab_edit(tree, wui);
     }
-    if st.tree.tabs.is_empty() {
-        // Closing the last pane means the user is done: quit instead of
-        // resurrecting a shell tab (state saves via the WM-close path;
-        // ui.quitting keeps screen() from spawning a new tab first).
-        ui.quitting = true;
-    }
-    prune_tab_edit(st, ui);
+    handle_empty_window(st, ui, dirty);
 }
 
 /// Drop a tab-rename edit whose anchor pane no longer exists.
-fn prune_tab_edit(st: &AppState, ui: &mut UiState) {
-    if ui
+fn prune_tab_edit(tree: &layout_tree::LayoutTree, wui: &mut WindowUi) {
+    if wui
         .tab_edit
         .as_ref()
-        .is_some_and(|(anchor, _)| state::tab_edit_orphaned(&st.tree, *anchor))
+        .is_some_and(|(anchor, _)| state::tab_edit_orphaned(tree, *anchor))
     {
-        ui.tab_edit = None;
+        wui.tab_edit = None;
     }
 }
 
@@ -146,30 +158,52 @@ pub fn do_close_tab(
     tab: usize,
     dirty: &mut bool,
 ) {
-    if let Some(t) = st.tree.tabs.get(tab) {
-        let panes = layout_tree::sorted_pane_ids(&t.root);
-        for pane in panes {
-            st.panes.remove(&pane);
-            session_map::terminate(sess, pane);
-            if ui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
-                ui.pane_edit = None;
-            }
-            if ui.color_open == Some(pane) {
-                ui.color_open = None;
-            }
-            if ui.trans_open == Some(pane) {
-                ui.trans_open = None;
+    let wi = st.active_idx();
+    let AppState { panes, windows, .. } = st;
+    if let Some(w) = windows.get_mut(wi) {
+        let WindowState { tree, ui: wui, .. } = w;
+        if let Some(t) = tree.tabs.get(tab) {
+            let panes_to_close = layout_tree::sorted_pane_ids(&t.root);
+            for pane in panes_to_close {
+                panes.remove(&pane);
+                session_map::terminate(sess, pane);
+                if wui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
+                    wui.pane_edit = None;
+                }
+                if wui.color_open == Some(pane) {
+                    wui.color_open = None;
+                }
+                if wui.trans_open == Some(pane) {
+                    wui.trans_open = None;
+                }
             }
         }
+        close_tab(tree, tab);
+        wui.zoom = false;
+        prune_tab_edit(tree, wui);
     }
-    close_tab(&mut st.tree, tab);
-    ui.zoom = false;
-    prune_tab_edit(st, ui);
-    if st.tree.tabs.is_empty() {
-        // Same semantics as closing the last pane: closing the last tab
-        // quits the app.
-        ui.quitting = true;
+    handle_empty_window(st, ui, dirty);
+    *dirty = true;
+}
+
+/// What an empty ACTIVE tree means: the root respawns a fresh tab (or quits
+/// when it is the only window left); a secondary window removes itself so
+/// its OS window goes away. The caller already closed/terminated all panes
+/// of the closed tab/pane, so only the bookkeeping is left.
+fn handle_empty_window(st: &mut AppState, ui: &mut UiState, dirty: &mut bool) {
+    let wi = st.active_idx();
+    if !st.windows.get(wi).is_some_and(|w| w.tree.tabs.is_empty()) {
+        return;
     }
+    if wi == 0 {
+        // Root never dies while siblings exist; screen() respawns a tab.
+        if st.windows.len() == 1 {
+            ui.quitting = true;
+        }
+        return;
+    }
+    st.windows.remove(wi);
+    st.retarget_after_remove(wi);
     *dirty = true;
 }
 
@@ -245,10 +279,18 @@ pub fn apply_action(
     action: Action,
     dirty: &mut bool,
 ) {
-    let tab = st.tree.active_tab.min(st.tree.tabs.len().saturating_sub(1));
+    let tab = st
+        .win()
+        .map(|w| w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1)))
+        .unwrap_or(0);
     match action {
         Action::NewTab => {
             do_new_tab(st, sess, PaneKind::Local, dirty);
+        }
+        Action::NewWindow => {
+            // Normally intercepted in keyboard.rs; kept here so any other
+            // caller (IPC) gets the same behavior.
+            crate::windows::spawn(st, sess, dirty);
         }
         Action::SplitHorizontal => {
             do_split(st, sess, tab, None, Axis::Horizontal, dirty);
@@ -261,44 +303,60 @@ pub fn apply_action(
             do_split(st, sess, tab, None, axis, dirty);
         }
         Action::ClosePane => {
-            if let Some(pane) = st.tree.tabs.get(tab).map(|t| t.focused) {
+            if let Some(pane) = st.win().and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused)) {
                 do_close_pane(st, sess, ui, tab, pane, dirty);
             }
         }
         Action::CycleFocus(fwd) => {
-            layout_tree::cycle_focus(&mut st.tree, tab, fwd);
+            if let Some(w) = st.win_mut() {
+                layout_tree::cycle_focus(&mut w.tree, tab, fwd);
+            }
         }
         Action::PrevTab => {
             if tab > 0 {
-                st.tree.active_tab = tab - 1;
-                ui.zoom = false; // zoom is per-tab
+                if let Some(w) = st.win_mut() {
+                    w.tree.active_tab = tab - 1;
+                    w.ui.zoom = false; // zoom is per-tab
+                }
                 *dirty = true;
             }
         }
         Action::NextTab => {
-            if tab + 1 < st.tree.tabs.len() {
-                st.tree.active_tab = tab + 1;
-                ui.zoom = false; // zoom is per-tab
+            if tab + 1 < st.win().map_or(0, |w| w.tree.tabs.len()) {
+                if let Some(w) = st.win_mut() {
+                    w.tree.active_tab = tab + 1;
+                    w.ui.zoom = false; // zoom is per-tab
+                }
                 *dirty = true;
             }
         }
         Action::FocusUp => {
-            layout_tree::move_focus(&mut st.tree, tab, layout_tree::FocusDir::Up);
+            if let Some(w) = st.win_mut() {
+                layout_tree::move_focus(&mut w.tree, tab, layout_tree::FocusDir::Up);
+            }
         }
         Action::FocusDown => {
-            layout_tree::move_focus(&mut st.tree, tab, layout_tree::FocusDir::Down);
+            if let Some(w) = st.win_mut() {
+                layout_tree::move_focus(&mut w.tree, tab, layout_tree::FocusDir::Down);
+            }
         }
         Action::FocusLeft => {
-            layout_tree::move_focus(&mut st.tree, tab, layout_tree::FocusDir::Left);
+            if let Some(w) = st.win_mut() {
+                layout_tree::move_focus(&mut w.tree, tab, layout_tree::FocusDir::Left);
+            }
         }
         Action::FocusRight => {
-            layout_tree::move_focus(&mut st.tree, tab, layout_tree::FocusDir::Right);
+            if let Some(w) = st.win_mut() {
+                layout_tree::move_focus(&mut w.tree, tab, layout_tree::FocusDir::Right);
+            }
         }
         Action::ToggleZoom => {
-            ui.zoom = !ui.zoom;
+            if let Some(w) = st.win_mut() {
+                w.ui.zoom = !w.ui.zoom;
+            }
         }
         Action::Respawn => {
-            if let Some(pane) = st.tree.tabs.get(tab).map(|t| t.focused) {
+            if let Some(pane) = st.win().and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused)) {
                 do_respawn(st, sess, pane, dirty);
             }
         }
@@ -311,7 +369,10 @@ pub fn apply_action(
 /// Copy the focused pane's selection to the system clipboard.
 /// Best-effort: empty selection or clipboard failure is silent.
 pub fn copy_focused(st: &AppState, sess: &mut SessionMap) {
-    let Some(pane) = st.tree.tabs.get(st.tree.active_tab).map(|t| t.focused) else {
+    let Some(pane) = st
+        .win()
+        .and_then(|w| w.tree.tabs.get(w.tree.active_tab).map(|t| t.focused))
+    else {
         return;
     };
     let Some(s) = sess.map.get_mut(&pane) else {
@@ -361,8 +422,9 @@ mod close_tab_tests {
     fn two_tab_state() -> (AppState, SessionMap, UiState) {
         let mut st = fresh_state();
         // fresh_state() has one empty tab; shape: tab0 split(1,2), tab1 pane(3)
-        st.tree.tabs.clear();
-        st.tree.tabs.push(layout_tree::Tab {
+        let tree = &mut st.windows[0].tree;
+        tree.tabs.clear();
+        tree.tabs.push(layout_tree::Tab {
             title: "style".into(),
             focused: 2,
             root: layout_tree::Node::Split {
@@ -372,12 +434,12 @@ mod close_tab_tests {
                 second: Box::new(layout_tree::Node::Pane { id: 2 }),
             },
         });
-        st.tree.tabs.push(layout_tree::Tab {
+        tree.tabs.push(layout_tree::Tab {
             title: "extra".into(),
             focused: 3,
             root: layout_tree::Node::Pane { id: 3 },
         });
-        st.tree.active_tab = 1;
+        tree.active_tab = 1;
         (st, session_map::session_map(), crate::state::ui_state())
     }
 
@@ -386,7 +448,11 @@ mod close_tab_tests {
         let (mut st, mut sess, mut ui) = two_tab_state();
         let mut dirty = false;
         apply_action(&mut st, &mut sess, &mut ui, Action::ClosePane, &mut dirty);
-        assert_eq!(st.tree.tabs.len(), 1, "extra tab must be removed");
+        assert_eq!(
+            st.windows[0].tree.tabs.len(),
+            1,
+            "extra tab must be removed"
+        );
         assert!(!ui.quitting, "one tab still remains");
         assert!(!st.panes.contains_key(&3));
     }
@@ -394,11 +460,11 @@ mod close_tab_tests {
     #[test]
     fn close_last_pane_quits() {
         let (mut st, mut sess, mut ui) = two_tab_state();
-        st.tree.tabs.remove(0);
-        st.tree.active_tab = 0;
+        st.windows[0].tree.tabs.remove(0);
+        st.windows[0].tree.active_tab = 0;
         let mut dirty = false;
         apply_action(&mut st, &mut sess, &mut ui, Action::ClosePane, &mut dirty);
-        assert!(st.tree.tabs.is_empty());
+        assert!(st.windows[0].tree.tabs.is_empty());
         assert!(ui.quitting);
     }
 }

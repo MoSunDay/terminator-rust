@@ -81,14 +81,20 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
     if d.st.theme_name != current {
         d.dirty = true;
     }
+    // Font size lives in the (per-window) WindowUi; slider works on a
+    // local copy and writes back on change.
+    let mut size = d.st.win().map(|w| w.ui.font_size).unwrap_or(14.0);
     if ui
         .add(
-            egui::Slider::new(&mut d.ui.font_size, 10.0..=24.0)
+            egui::Slider::new(&mut size, 10.0..=24.0)
                 .fixed_decimals(0)
                 .text("font size"),
         )
         .changed()
     {
+        if let Some(w) = d.st.win_mut() {
+            w.ui.font_size = size;
+        }
         // Font metrics are re-measured every frame; nothing else to do.
     }
 }

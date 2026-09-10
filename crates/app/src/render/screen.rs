@@ -10,7 +10,7 @@ use crate::actions;
 use crate::input::{mouse, pointer};
 use crate::render::{colors, grid};
 use crate::session_map;
-use crate::state::{AppState, Data, UiState, DIVIDER_W, PANE_HEADER_H};
+use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
 use crate::ui::pane_header;
 
 /// Blink duty cycle: visible 1.2s of every 2s.
@@ -20,12 +20,15 @@ fn cursor_on(ctx: &egui::Context) -> bool {
 }
 
 /// Pane rects (screen-space layout_tree rects) for the active tab.
-fn pane_rects(st: &AppState, uist: &UiState, area: Rect) -> Vec<(PaneId, layout_tree::Rect)> {
-    let Some(tab) = st.tree.tabs.get(st.tree.active_tab) else {
+fn pane_rects(st: &AppState, area: Rect) -> Vec<(PaneId, layout_tree::Rect)> {
+    let Some(w) = st.win() else {
+        return Vec::new();
+    };
+    let Some(tab) = w.tree.tabs.get(w.tree.active_tab) else {
         return Vec::new();
     };
     let lt_area = grid::lt_rect(area);
-    if uist.zoom {
+    if w.ui.zoom {
         return vec![(tab.focused, lt_area)];
     }
     layout_tab(tab, lt_area, PANE_HEADER_H, DIVIDER_W)
@@ -65,12 +68,13 @@ fn draw_viewport_bar(
 pub fn screen(ui: &mut Ui, d: &mut Data) {
     let ctx = ui.ctx().clone();
     let pal = colors::palette_of(&d.st.theme_name);
-    let cell = grid::measure_cells(&ctx, d.ui.font_size);
+    let font_size = d.st.win().map(|w| w.ui.font_size).unwrap_or(14.0);
+    let cell = grid::measure_cells(&ctx, font_size);
 
     // Lifecycle bookkeeping.
     session_map::pump_all(&mut d.sess);
     actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
-    if d.st.tree.tabs.is_empty() && !d.ui.quitting {
+    if d.st.win().is_some_and(|w| w.tree.tabs.is_empty()) && !d.ui.quitting {
         actions::do_new_tab(&mut d.st, &mut d.sess, PaneKind::Local, &mut d.dirty);
     }
     actions::ensure_sessions(&d.st, &mut d.sess);
@@ -83,15 +87,15 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         dirty,
         ..
     } = d;
-    let dragging = mouse::divider_interaction(ui, st, area, &mut uist.drag, dirty);
-    if st.tree.active_tab >= st.tree.tabs.len() {
-        st.tree.active_tab = st.tree.tabs.len().saturating_sub(1);
+    let dragging = mouse::divider_interaction(ui, st, area, dirty);
+    if let Some(w) = st.win_mut() {
+        w.tree.active_tab = w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1));
     }
-    let tab = st.tree.active_tab;
-    let focused = st.tree.tabs.get(tab).map(|t| t.focused);
+    let tab = st.win().map(|w| w.tree.active_tab).unwrap_or(0);
+    let focused = st.win().and_then(|w| w.tree.tabs.get(tab)).map(|t| t.focused);
     let blink = cursor_on(&ctx);
     let painter = ui.painter().clone();
-    let rects = pane_rects(st, uist, area);
+    let rects = pane_rects(st, area);
 
     // Raw pointer routing (reporting / selection / wheel) over pane content
     // rects; suppressed while a divider drag owns the pointer.
@@ -100,7 +104,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             .iter()
             .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, PANE_HEADER_H))))
             .collect();
-        pointer::handle(&ctx, &content_rects, st, sess, uist, cell.h, dirty);
+        pointer::handle(&ctx, &content_rects, st, sess, cell.h, dirty);
     }
 
     for (pane, lt) in rects {
@@ -128,7 +132,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         pal: &pal,
                         meta,
                         cell,
-                        font_size: uist.font_size,
+                        font_size,
                         cursor_on: blink && Some(pane) == focused,
                         opacity: st.settings.opacity,
                     },
@@ -193,7 +197,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             }
         }
 
-        if Some(pane) == focused && !uist.zoom {
+        if Some(pane) == focused && !st.win().is_some_and(|w| w.ui.zoom) {
             painter.rect_stroke(
                 full,
                 2.0,
@@ -206,8 +210,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // Divider strips over the background (non-zoom only): a quiet chrome
     // field with a single divider line down the middle. Geometry and
     // hit-testing live in mouse.rs; this is paint only.
-    if !uist.zoom {
-        if let Some(tabref) = st.tree.tabs.get(tab) {
+    if !st.win().is_some_and(|w| w.ui.zoom) {
+        if let Some(tabref) = st.win().and_then(|w| w.tree.tabs.get(tab)) {
             for h in mouse::dividers(tabref, grid::lt_rect(area), DIVIDER_W) {
                 let s = h.strip;
                 painter.rect_filled(
