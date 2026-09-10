@@ -112,10 +112,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 // in the window tree: split WindowState for both.
                 let wi = st.active_idx();
                 let AppState { windows, .. } = st;
-                let Some(WindowState {
-                    tree, ui: wui, ..
-                }) = windows.get_mut(wi)
-                else {
+                let Some(WindowState { tree, ui: wui, .. }) = windows.get_mut(wi) else {
                     continue;
                 };
                 let Some((anchor, buf)) = wui.tab_edit.as_mut() else {
@@ -260,7 +257,8 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
 
         let insp = ui.interact(insp_rect, Id::new("chrome_inspector"), Sense::click());
         hover_fill(ui, insp_rect, insp.hovered(), pal);
-        let insp_col = if uist.inspector {
+        // Per-window flag: the panel opens in the window that clicked.
+        let insp_col = if st.win().is_some_and(|w| w.ui.inspector) {
             to_c32(pal.block_highlight)
         } else {
             dim_text(pal)
@@ -273,7 +271,9 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             insp_col,
         );
         if insp.clicked() {
-            uist.inspector = !uist.inspector;
+            if let Some(w) = st.win_mut() {
+                w.ui.inspector = !w.ui.inspector;
+            }
         }
         insp.on_hover_text("Inspector (settings, hosts)");
     });

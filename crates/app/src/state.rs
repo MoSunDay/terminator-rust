@@ -188,11 +188,13 @@ pub struct WindowUi {
     /// release shares the frame with the folded Event::Copy).
     pub mods_frame_end: egui::Modifiers,
     pub font_size: f32,
+    /// Inspector panel open in THIS window. The panel is drawn in the
+    /// owning window's own render pass, so its slider edits this window.
+    pub inspector: bool,
 }
 
 /// Transient app-global UI state; never persisted.
 pub struct UiState {
-    pub inspector: bool,
     pub form: RemoteForm,
     /// Last theme name the egui style was derived from (style::sync memo).
     pub styled_theme: Option<String>,
@@ -216,12 +218,12 @@ pub fn window_ui() -> WindowUi {
         pointer_last: None,
         mods_frame_end: egui::Modifiers::NONE,
         font_size: 14.0,
+        inspector: false,
     }
 }
 
 pub fn ui_state() -> UiState {
     UiState {
-        inspector: false,
         form: RemoteForm::default(),
         styled_theme: None,
         quitting: false,
@@ -329,11 +331,7 @@ pub fn effective_title(manual: Option<&str>, osc: &str, kind: &PaneKind) -> Stri
 /// True when a pane other than `except` already claims this exact manual
 /// title: manual titles are the addressing key of the control socket, so
 /// they must stay unique.
-pub fn manual_title_taken(
-    panes: &BTreeMap<PaneId, PaneMeta>,
-    title: &str,
-    except: PaneId,
-) -> bool {
+pub fn manual_title_taken(panes: &BTreeMap<PaneId, PaneMeta>, title: &str, except: PaneId) -> bool {
     panes
         .iter()
         .any(|(id, m)| *id != except && m.manual_title.as_deref() == Some(title))
@@ -431,7 +429,10 @@ mod tests {
     fn manual_title_taken_ignores_self_and_empty_titles() {
         let mut st = fresh_state();
         st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
-        assert!(!manual_title_taken(&st.panes, "agent", 1), "own title is fine");
+        assert!(
+            !manual_title_taken(&st.panes, "agent", 1),
+            "own title is fine"
+        );
         assert!(!manual_title_taken(&st.panes, "other", 1));
         assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
         st.panes.get_mut(&2).unwrap().manual_title = Some("agent".into());

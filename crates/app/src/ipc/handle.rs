@@ -41,9 +41,13 @@ pub fn execute(req: Request, data: &mut Data) -> Response {
 /// without a session are still listed (zeros / empty fields).
 fn list(st: &AppState, sess: &mut SessionMap) -> Response {
     let mut ids: Vec<PaneId> = Vec::new();
+    let mut window_of: std::collections::BTreeMap<PaneId, u64> = Default::default();
     for w in &st.windows {
         for tab in &w.tree.tabs {
             layout_tree::pane_ids(&tab.root, &mut ids);
+        }
+        for id in &ids {
+            window_of.entry(*id).or_insert(w.id);
         }
     }
     ids.dedup();
@@ -65,6 +69,7 @@ fn list(st: &AppState, sess: &mut SessionMap) -> Response {
                 pid: 0,
                 alive: false,
                 exit: None,
+                window: window_of.get(id).copied().unwrap_or(0),
             };
             if let Some(s) = sess.map.get_mut(id) {
                 info.osc_title = vtask::title(s);
@@ -359,5 +364,41 @@ mod tests {
 
         let mut s = d.sess.map.remove(&1).unwrap();
         vtask::terminate(&mut s);
+    }
+
+    #[test]
+    fn list_tags_each_pane_with_its_owning_window() {
+        // Two windows, one pane each (ids from the global budget); `list`
+        // must report the owning window id per pane, never a mixed bag.
+        let mut st = fresh_state();
+        st.panes.get_mut(&1).unwrap().manual_title = Some("root".into());
+        let mut aux = layout_tree::new_tree("aux");
+        layout_tree::close_tab(&mut aux, 0);
+        st.windows.push(crate::state::WindowState {
+            id: 2,
+            tree: aux,
+            ui: crate::state::window_ui(),
+        });
+        let wi = st.windows.len() - 1;
+        st.seed_alloc(wi);
+        let tab = layout_tree::new_tab(&mut st.windows[wi].tree, "aux");
+        let pane = st.windows[wi].tree.tabs[tab].focused;
+        st.panes
+            .insert(pane, crate::state::new_pane_meta(PaneKind::Local));
+        st.collect_alloc();
+        let mut d = data(st, vec![]);
+        match execute(Request::List, &mut d) {
+            Response::List { panes } => {
+                assert_eq!(panes.len(), 2);
+                let by_window: Vec<(u64, u64)> = panes
+                    .iter()
+                    .map(|p| (p.id, p.window))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+                    .into_iter()
+                    .collect();
+                assert_eq!(by_window, vec![(1, 1), (2, 2)], "pane -> owning window id");
+            }
+            other => panic!("list: {other:?}"),
+        }
     }
 }

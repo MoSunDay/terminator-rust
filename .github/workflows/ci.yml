@@ -1,0 +1,73 @@
+# CI: workspace build/tests plus the headless multi-window e2e.
+# The ghostty VT engine is vendored per-machine (gitignored): fetch it
+# first with zig from PyPI, exactly like scripts/fetch-vendor.sh expects.
+name: ci
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Install zig 0.16.0 (ghostty vendor build)
+        run: pip install ziglang==0.16.0
+
+      - name: Vendor the ghostty VT engine
+        run: |
+          mkdir -p scripts/bin
+          # fetch-vendor.sh calls scripts/bin/zig; point it at the wheel.
+          printf '#!/bin/sh\nexec python3 -m ziglang "$@"\n' > scripts/bin/zig
+          chmod +x scripts/bin/zig
+          scripts/fetch-vendor.sh
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Unit + integration tests
+        run: cargo test --workspace
+
+  e2e-windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: build-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Install zig 0.16.0 (ghostty vendor build)
+        run: pip install ziglang==0.16.0
+
+      - name: Vendor the ghostty VT engine
+        run: |
+          mkdir -p scripts/bin
+          printf '#!/bin/sh\nexec python3 -m ziglang "$@"\n' > scripts/bin/zig
+          chmod +x scripts/bin/zig
+          scripts/fetch-vendor.sh
+
+      - name: Install Xvfb + xdotool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xdotool
+
+      - name: Multi-window e2e (W1-W6)
+        run: scripts/bin/e2e-windows.sh

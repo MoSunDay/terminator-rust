@@ -73,7 +73,7 @@ impl eframe::App for Terminator {
 
         // Root window: a plain render pass into the root viewport.
         windows::render(ui, &mut self.data, 0);
-        ui::inspector::show(&ctx, &mut self.data);
+        ui::inspector::show(&ctx, &mut self.data, 0);
 
         // Secondary windows: immediate viewports = real OS windows, one
         // render pass each (their keyboard input arrives in their own

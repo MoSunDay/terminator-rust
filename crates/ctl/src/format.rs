@@ -3,7 +3,16 @@
 
 use ipc_proto::{CaptureOut, PaneInfo};
 
-const HEADER: [&str; 7] = ["ID", "NAME", "KIND", "COLSxROWS", "PID", "ALIVE", "EXIT"];
+const HEADER: [&str; 8] = [
+    "ID",
+    "WIN",
+    "NAME",
+    "KIND",
+    "COLSxROWS",
+    "PID",
+    "ALIVE",
+    "EXIT",
+];
 
 pub fn pane_table(panes: &[PaneInfo]) -> String {
     let mut rows: Vec<Vec<String>> = vec![HEADER.iter().map(|h| (*h).to_string()).collect()];
@@ -27,6 +36,7 @@ pub fn pane_table(panes: &[PaneInfo]) -> String {
 fn row_of(p: &PaneInfo) -> Vec<String> {
     vec![
         p.id.to_string(),
+        p.window.to_string(),
         p.name.clone().unwrap_or_else(|| "-".into()),
         p.kind.clone(),
         format!("{}x{}", p.cols, p.rows),
@@ -69,6 +79,7 @@ mod tests {
             pid: 4242,
             alive: true,
             exit: None,
+            window: 2,
         }
     }
 
@@ -77,11 +88,11 @@ mod tests {
         let table = pane_table(&[pane()]);
         let mut lines = table.lines();
         let header = lines.next().unwrap();
-        // widths: ID 2, NAME 9 (agent-one), KIND 5, COLSxROWS 9, PID 4,
-        // ALIVE 5, EXIT 1 (-)
-        assert_eq!(header, "ID NAME      KIND  COLSxROWS PID  ALIVE EXIT");
+        // widths: ID 2, WIN 3, NAME 9 (agent-one), KIND 5, COLSxROWS 9,
+        // PID 4, ALIVE 5, EXIT 1 (-)
+        assert_eq!(header, "ID WIN NAME      KIND  COLSxROWS PID  ALIVE EXIT");
         let row = lines.next().unwrap();
-        assert_eq!(row, "7  agent-one local 120x40    4242 yes   -");
+        assert_eq!(row, "7  2   agent-one local 120x40    4242 yes   -");
         assert!(lines.next().is_none());
     }
 

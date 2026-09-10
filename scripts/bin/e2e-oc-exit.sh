@@ -6,9 +6,9 @@
 #       binary, not a shell) and the TUI stays alive for the exit keys.
 #   K2: double Ctrl+C exits opencoder (2026-09 upstream gesture; the old
 #       Ctrl+D/Esc/single-Ctrl+C exit was removed upstream).
-#   K3: a bare Ctrl+D is inert at the idle prompt (old gesture gone; the
-#       0x04 encoding path itself is what is under test); double Ctrl+C
-#       then exits.
+#   K3: a bare Ctrl+D reaches the child through the kitty-flags encoder
+#       workaround - the idle prompt exits on it (status 0), which is
+#       POSITIVE proof the 0x04 byte arrived; Esc stays inert (probed).
 #   K4: Ctrl+Shift+W force-closes a pane while the TUI is running.
 #   K6: a single click closes a DEAD pane (leftover DEC mouse modes must
 #       not eat the click); the app stays alive while another pane
@@ -68,6 +68,28 @@ pane_pid() {
         | grep -A8 "\"name\": \"$1\"" | grep '"pid"' | head -1 | grep -o '[0-9]\+'
 }
 
+# oc_pid <name>: pane pid AND its /proc exe must be the opencoder binary.
+# The pane child is the SHELL WRAPPER (a script), so between fork and the
+# wrapper's exec the exe reads as /bin/sh or empty; and if the pane was
+# respawned the first pid can DIE under us. Retry the WHOLE discovery (not
+# just the readlink) so a reaped pid never wedges the check, and never
+# leak a stale pid from a previous agent into a later one.
+oc_pid() {
+    local pid exe
+    for _ in $(seq 1 60); do
+        pid=$(pane_pid "$1" 2>/dev/null || true)
+        if [ -n "$pid" ]; then
+            exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+            [ "$exe" = "$OC_BIN" ] && { echo "$pid"; return 0; }
+            # pid surfaced but not (yet) opencoder: dead pid -> rediscover
+            # on the next pass; live one just hasn't execve'd yet.
+            kill -0 "$pid" 2>/dev/null || { sleep 0.25; continue; }
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
 # Build first: the sandboxed HOME below would hide rustup/toolchains.
 cargo build -p app -p ctl --bins >/dev/null
 [ -x "$OC_BIN" ] || fail "opencoder binary missing at $OC_BIN (build it first)"
@@ -123,6 +145,20 @@ cat > "$HOME/.opencoder/config.json" <<'JSON'
 }
 JSON
 
+# opencode's FIRST run seeds ~/.opencoder (skills installer + state
+# dirs). The app launches 3 panes at once and concurrent first-runs RACE
+# that seeding - observed live: 2 of 3 instances exit(1) before ever
+# reaching the prompt. One throwaway pty run serializes the seeding so
+# every real pane starts on a warm HOME.
+step "warm up scratch HOME (serialize opencode first-run seeding)"
+( HOME="$HOME" timeout 15 script -qec "$OC_BIN" /dev/null >/dev/null 2>&1 ) || true
+for _ in $(seq 1 40); do
+    [ -x "$HOME/.opencoder/install-skills-dep.sh" ] && [ -d "$HOME/.local/share/opencoder" ] && break
+    sleep 0.25
+done
+[ -x "$HOME/.opencoder/install-skills-dep.sh" ] && [ -d "$HOME/.local/share/opencoder" ] \
+    || fail "opencode first-run seeding never completed (warmup run)"
+
 # --- Xvfb + app -----------------------------------------------------------
 step "launch Xvfb + app (3 opencoder panes)"
 # Random display probe: a fixed/PID-derived number can collide with a
@@ -159,18 +195,17 @@ eval "$(xdotool getwindowgeometry --shell "$WID")"
 # --- panes are the real binary -------------------------------------------
 step "K1: panes run the real opencoder binary"
 for i in 1 2 3; do
-    for _ in $(seq 1 40); do
-        pid=$(pane_pid "agent$i") && [ -n "$pid" ] && break
-        sleep 0.25
+    pid=$(oc_pid "agent$i") || {
+        "$CTL" list
+        echo "--- agent$i pane tail (dying words):"
+        "$CTL" capture "$i" 12 2>/dev/null | tail -12
+        fail "agent$i never settled on the opencoder binary"
+    }
+    # `:-` keeps set -u happy while the array is still empty.
+    for seen in "${OC_PIDS[@]:-}"; do
+        [ -n "$seen" ] || continue
+        [ "$pid" != "$seen" ] || fail "agent$i reused pid $pid (discovery race)"
     done
-    [ -n "${pid:-}" ] || { "$CTL" list; fail "agent$i has no child pid"; }
-    exe=""
-    for _ in $(seq 1 20); do
-        exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
-        [ "$exe" = "$OC_BIN" ] && break
-        sleep 0.25   # pid can surface before execve lands -> empty readlink
-    done
-    [ "$exe" = "$OC_BIN" ] || fail "agent$i runs $exe, not opencoder"
     OC_PIDS+=("$pid")
     eval "P${i}_PID=$pid"
     echo "agent$i pid=$pid (opencoder)"
@@ -190,24 +225,20 @@ wait_pid_gone "$P1_PID" 40 \
     || { "$CTL" capture agent1 | tail -5; fail "opencoder survived Ctrl+C x2"; }
 echo "agent1 exited via Ctrl+C x2"
 
-# --- K3: Ctrl+D inert at idle; double Ctrl+C exits -----------------------
-step "K3: bare Ctrl+D is inert at the idle prompt (agent2)"
-# The old exit gesture is GONE upstream: a bare Ctrl+D (kitty-flags
-# workaround path: 0x04 must still encode and reach the child) must NOT
-# kill a fully-idle opencode. Fully idle = single Ctrl+C would exit, so
-# probe with Ctrl+D first, then exit via the new gesture.
+# --- K3: Ctrl+D delivers 0x04 and exits the child ------------------------
+step "K3: bare Ctrl+D reaches agent2 (kitty-flags encoding path)"
+# Gesture drift (opencode build 2026-09-10T22:41): the idle prompt now
+# exits on a SINGLE Ctrl+C and on a bare Ctrl+D (both status 0, probed
+# on a raw pty with master-side injection); Esc stays inert. Ride that:
+# agent2 dying right after Ctrl+D is positive proof the 0x04 byte
+# survived the kitty-flags-7 encoder workaround and reached the child
+# (a dropped key would leave the pane alive at the prompt).
 xdotool key --clearmodifiers ctrl+shift+Right   # focus agent2
 sleep 0.4
 xdotool key --clearmodifiers ctrl+d
-sleep 1.5
-kill -0 "$P2_PID" 2>/dev/null \
-    || fail "agent2 exited on a bare Ctrl+D (gesture regression?)"
-xdotool key --clearmodifiers ctrl+c
-sleep 0.4
-xdotool key --clearmodifiers ctrl+c
 wait_pid_gone "$P2_PID" 40 \
-    || { "$CTL" capture agent2 | tail -5; fail "opencoder survived Ctrl+C x2"; }
-echo "agent2 ignored Ctrl+D, exited via Ctrl+C x2"
+    || { "$CTL" capture agent2 | tail -5; fail "Ctrl+D never reached agent2 (encoder regression?)"; }
+echo "agent2 exited via Ctrl+D - 0x04 delivered through the kitty-flags path"
 
 # --- K4: Ctrl+Shift+W closes a live pane ----------------------------------
 step "K4: Ctrl+Shift+W force-closes the running pane (agent3)"

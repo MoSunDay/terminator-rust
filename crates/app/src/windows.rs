@@ -96,13 +96,7 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     if ui.ctx().input(|i| i.viewport().focused == Some(true)) {
         d.st.focus = idx;
     }
-    input::keyboard::handle(
-        ui.ctx(),
-        &mut d.st,
-        &mut d.sess,
-        &mut d.ui,
-        &mut d.dirty,
-    );
+    input::keyboard::handle(ui.ctx(), &mut d.st, &mut d.sess, &mut d.ui, &mut d.dirty);
     // Closing this window's last pane removes the window mid-pass: stop
     // instead of rendering the next window's tree into this viewport.
     if d.st.windows.get(idx).map(|w| w.id) != Some(id) {
@@ -117,12 +111,7 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     let page_bg = render::colors::with_opacity(render::colors::to_c32(pal.background), opacity);
     // Single tab: zero chrome up top - the pane header already identifies
     // the pane, so content starts at y=0; multi-tab brings the bar back.
-    if d
-        .st
-        .windows
-        .get(idx)
-        .is_some_and(|w| w.tree.tabs.len() > 1)
-    {
+    if d.st.windows.get(idx).is_some_and(|w| w.tree.tabs.len() > 1) {
         egui::Panel::top("tab_bar")
             .frame(egui::Frame::NONE.fill(chrome))
             .show(ui, |ui| ui::tabs::bar(ui, d));
@@ -146,6 +135,13 @@ pub fn render_secondaries(ctx: &egui::Context, d: &mut Data) {
                 wm_close = true;
             }
             render(ui, d, i);
+            // This callback runs as the window's own render pass, so the
+            // inspector Window layers into THIS viewport - a panel opened
+            // from a secondary stays in (and edits) that secondary. Skip
+            // when the pass above removed the window mid-frame.
+            if d.st.windows.get(i).map(|w| w.id) == Some(id) {
+                ui::inspector::show(ui.ctx(), d, i);
+            }
         });
         let gone = d.st.windows.get(i).map(|w| w.id) != Some(id);
         if wm_close && !gone {
