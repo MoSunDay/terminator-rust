@@ -34,6 +34,16 @@ struct PSettings {
     /// "v" = left/right split, "h" = top/bottom.
     split_axis: String,
     split_ratio: f32,
+    /// Window opacity; absent in pre-transparency state.json files.
+    #[serde(default = "default_opacity")]
+    opacity: f32,
+}
+
+fn default_opacity() -> f32 {
+    // Fully opaque by default: without a compositor (bare X sessions)
+    // transparent pixels render BLACK; transparency is opt-in via the
+    // inspector slider (clamped 0.5..=1.0).
+    1.0
 }
 
 impl Default for PSettings {
@@ -41,6 +51,7 @@ impl Default for PSettings {
         Self {
             split_axis: "v".to_string(),
             split_ratio: 0.5,
+            opacity: default_opacity(),
         }
     }
 }
@@ -53,6 +64,7 @@ impl PSettings {
                 Axis::Vertical => "v".to_string(),
             },
             split_ratio: s.split_ratio,
+            opacity: s.opacity,
         }
     }
 
@@ -67,9 +79,15 @@ impl PSettings {
         } else {
             0.5
         };
+        let opacity = if self.opacity.is_finite() {
+            self.opacity.clamp(0.5, 1.0)
+        } else {
+            default_opacity()
+        };
         crate::state::Settings {
             split_axis: axis,
             split_ratio: ratio,
+            opacity,
         }
     }
 }
@@ -285,15 +303,26 @@ fn from_persisted(p: &Persisted) -> AppState {
             continue;
         };
         b.build(&mut tree, i, &pt.root, anchor);
+        // The id remap is global across tabs: a stale focused id that
+        // names a pane in ANOTHER tab still resolves and would leak keys
+        // cross-tab, so only accept ids this tab actually contains.
         let focused = pt
             .focused
             .and_then(|old| b.remap.get(&old).copied())
+            .filter(|id| {
+                tree.tabs
+                    .get(i)
+                    .is_some_and(|t| layout_tree::contains_pane(&t.root, *id))
+            })
             .or_else(|| first_leaf(&tree, i))
             .unwrap_or(anchor);
         if let Some(t) = tree.tabs.get_mut(i) {
             t.focused = focused;
         }
     }
+    // new_tab() leaves the LAST tab active while rebuilding; a restored
+    // session should open on the first one.
+    tree.active_tab = 0;
     AppState {
         tree,
         theme_name: if p.theme.is_empty() {
@@ -487,9 +516,54 @@ mod tests {
         let mut st = fresh_state();
         st.settings.split_axis = Axis::Horizontal;
         st.settings.split_ratio = 9.9;
+        st.settings.opacity = 0.9;
         let back = from_persisted(&to_persisted(&st));
         assert_eq!(back.settings.split_axis, Axis::Horizontal);
         assert_eq!(back.settings.split_ratio, layout_tree::MAX_RATIO);
+        assert_eq!(back.settings.opacity, 0.9);
+        // Out-of-range opacity clamps into the slider's bounds.
+        let mut p = to_persisted(&st);
+        p.settings.opacity = 0.1;
+        assert_eq!(from_persisted(&p).settings.opacity, 0.5);
+    }
+
+    #[test]
+    fn stale_cross_tab_focus_resolves_to_own_leaf() {
+        // Tab "extra" is a lone pane(3) but claims focused=1, which only
+        // exists in tab 0. The global id remap still resolves 1 -> 1, so
+        // only a per-tab containment check keeps keys from leaking into
+        // the other tab's pane.
+        let mut st = fresh_state();
+        let _ = split_tree_pane(&mut st, 0, 1, Axis::Horizontal);
+        let p = to_persisted(&st);
+        let mut v = serde_json::to_value(p).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        let lone = serde_json::json!({
+            "title": "extra",
+            "focused": 1,
+            "root": { "Pane": { "id": 3, "meta": {
+                "kind": "Local", "manual_title": null,
+                "bg": null, "transparency": 0.0, "degraded": false } } }
+        });
+        obj["tabs"].as_array_mut().unwrap().push(lone);
+        let back: Persisted = serde_json::from_value(v).unwrap();
+        let st2 = from_persisted(&back);
+        assert_eq!(st2.tree.tabs.len(), 2);
+        let extra = &st2.tree.tabs[1];
+        assert!(layout_tree::contains_pane(&extra.root, extra.focused));
+        assert_ne!(extra.focused, st2.tree.tabs[0].focused);
+    }
+
+    #[test]
+    fn legacy_settings_without_opacity_default() {
+        let mut v = serde_json::to_value(to_persisted(&fresh_state())).unwrap();
+        if let Some(o) = v.as_object_mut() {
+            if let Some(settings) = o.get_mut("settings") {
+                settings.as_object_mut().unwrap().remove("opacity");
+            }
+        }
+        let p: Persisted = serde_json::from_value(v).unwrap();
+        assert_eq!(from_persisted(&p).settings.opacity, 1.0);
     }
 
     #[test]

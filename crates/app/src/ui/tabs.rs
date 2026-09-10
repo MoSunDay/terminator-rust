@@ -76,6 +76,13 @@ fn chip_label(tab: &Tab) -> String {
 
 fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     let row = ui.max_rect();
+    // Borderless window: dragging the bare chrome (not a chip or button)
+    // moves the window. Registered first so widgets added later (and thus
+    // on top) keep their clicks; drags fall through to this background.
+    let drag = ui.interact(row, Id::new("chrome_drag"), Sense::drag());
+    if drag.drag_started_by(egui::PointerButton::Primary) {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
     ui.add_space(3.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = CHIP_GAP;

@@ -7,6 +7,9 @@
 #   K2: Ctrl+D exits opencoder (every mode: menu / prompt / task).
 #   K3: Ctrl+C exits opencoder when idle (busy = cancel only, by design).
 #   K4: Ctrl+Shift+W force-closes a pane while the TUI is running.
+#   K6: a single click closes a DEAD pane (leftover DEC mouse modes must
+#       not eat the click); the app stays alive while another pane
+#       remains (quit-on-last-close only).
 #   K5: Ctrl+Shift+Q quits the whole app (WM-close equivalent; the
 #       historical gap: there was NO quit shortcut at all).
 # Each pane runs $SHELL = a wrapper that execs the real binary, so the
@@ -23,7 +26,7 @@ OC_BIN=${OC_BIN:-/root/opencoder/target/release/opencoder}
 ROOT=$(mktemp -d /tmp/term-e2e-ocexit-XXXXXX)
 APP=target/debug/terminator-rust
 CTL=target/debug/terminator-ctl
-DISPLAY_N=":$$"
+DISPLAY_N=""
 XVFB_PID=""
 APP_PID=""
 OC_PIDS=()
@@ -71,6 +74,8 @@ export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
+# No compositor in Xvfb: pin full opacity for deterministic rendering.
+export TERMINATOR_OPAQUE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # --- world: three local panes, each running the real opencoder ----------
@@ -116,9 +121,22 @@ cat > "$HOME/.opencoder/config.json" <<'JSON'
 JSON
 
 # --- Xvfb + app -----------------------------------------------------------
-step "launch Xvfb $DISPLAY_N + app (3 opencoder panes)"
-Xvfb "$DISPLAY_N" -screen 0 1200x800x24 & XVFB_PID=$!
-sleep 0.7
+step "launch Xvfb + app (3 opencoder panes)"
+# Random display probe: a fixed/PID-derived number can collide with a
+# stale /tmp/.X11-unix socket left by an earlier crashed run.
+for _ in $(seq 1 12); do
+    N=$((100 + RANDOM % 880))
+    [ -S "/tmp/.X11-unix/X$N" ] && continue
+    Xvfb ":$N" -screen 0 1200x800x24 & XVFB_PID=$!
+    sleep 0.7
+    if kill -0 "$XVFB_PID" 2>/dev/null && DISPLAY=":$N" xdpyinfo >/dev/null 2>&1; then
+        DISPLAY_N=":$N"
+        break
+    fi
+    kill "$XVFB_PID" 2>/dev/null || true
+    XVFB_PID=""
+done
+[ -n "$DISPLAY_N" ] || fail "no free X display for Xvfb"
 export DISPLAY="$DISPLAY_N"
 env DISPLAY="$DISPLAY_N" RUST_LOG=info setsid "$APP" >"$ROOT/app.log" 2>&1 & APP_PID=$!
 for _ in $(seq 1 40); do [ -S "$SOCK" ] && break; sleep 0.25; done
@@ -176,6 +194,8 @@ echo "agent2 exited via Ctrl+C"
 
 # --- K4: Ctrl+Shift+W closes a live pane ----------------------------------
 step "K4: Ctrl+Shift+W force-closes the running pane (agent3)"
+# Quit-on-last-close semantics: 3 panes exist here, so closing agent3
+# must close ONLY that pane - the app has to survive (checked below).
 kill -0 "$P3_PID" 2>/dev/null || fail "agent3 died before K4 (test bug)"
 xdotool key --clearmodifiers ctrl+shift+Right   # focus agent3
 sleep 0.4
@@ -184,7 +204,25 @@ wait_pid_gone "$P3_PID" 40 \
     || fail "opencoder survived Ctrl+Shift+W"
 "$CTL" list 2>/dev/null | grep -q agent3 \
     && { "$CTL" list; fail "agent3 still listed after close"; }
-echo "agent3 pane closed while the TUI was live"
+kill -0 "$APP_PID" 2>/dev/null || fail "app quit on a non-last pane close"
+echo "agent3 pane closed while the TUI was live; app survived"
+
+# --- K6: a click closes a dead pane ---------------------------------------
+step "K6: clicking the dead agent1 pane closes it"
+# agent1's child exited in K2. The corpse still carries opencoder's DEC
+# mouse modes (1002/1003), which must NOT suppress the click-to-close.
+# Layout after K4: agent1 | agent2 (0.34 split) -> agent1 owns the left
+# third; click its content area.
+xdotool mousemove $((X + WIDTH * 15 / 100)) $((Y + HEIGHT * 50 / 100)) click 1
+for _ in $(seq 1 20); do
+    "$CTL" list 2>/dev/null | grep -q agent1 || break
+    sleep 0.25
+done
+"$CTL" list 2>/dev/null | grep -q agent1 \
+    && { "$CTL" list; fail "dead agent1 pane survived the click"; }
+kill -0 "$APP_PID" 2>/dev/null \
+    || fail "app quit while agent2's pane still exists"
+echo "dead agent1 pane closed by click; app alive (agent2 pane remains)"
 
 # --- K5: Ctrl+Shift+Q quits the app ---------------------------------------
 step "K5: Ctrl+Shift+Q quits terminator-rust"

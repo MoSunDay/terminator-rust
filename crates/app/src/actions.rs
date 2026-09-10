@@ -120,7 +120,10 @@ pub fn do_close_pane(
         *dirty = true;
     }
     if st.tree.tabs.is_empty() {
-        do_new_tab(st, sess, PaneKind::Local, dirty);
+        // Closing the last pane means the user is done: quit instead of
+        // resurrecting a shell tab (state saves via the WM-close path;
+        // ui.quitting keeps screen() from spawning a new tab first).
+        ui.quitting = true;
     }
     prune_tab_edit(st, ui);
 }
@@ -163,7 +166,9 @@ pub fn do_close_tab(
     ui.zoom = false;
     prune_tab_edit(st, ui);
     if st.tree.tabs.is_empty() {
-        do_new_tab(st, sess, PaneKind::Local, dirty);
+        // Same semantics as closing the last pane: closing the last tab
+        // quits the app.
+        ui.quitting = true;
     }
     *dirty = true;
 }
@@ -345,5 +350,55 @@ pub fn apply_pane_action(
         PaneAction::Respawn => {
             do_respawn(st, sess, pane, dirty);
         }
+    }
+}
+
+#[cfg(test)]
+mod close_tab_tests {
+    use super::*;
+    use crate::state::fresh_state;
+
+    fn two_tab_state() -> (AppState, SessionMap, UiState) {
+        let mut st = fresh_state();
+        // fresh_state() has one empty tab; shape: tab0 split(1,2), tab1 pane(3)
+        st.tree.tabs.clear();
+        st.tree.tabs.push(layout_tree::Tab {
+            title: "style".into(),
+            focused: 2,
+            root: layout_tree::Node::Split {
+                axis: Axis::Vertical,
+                ratio: 0.5,
+                first: Box::new(layout_tree::Node::Pane { id: 1 }),
+                second: Box::new(layout_tree::Node::Pane { id: 2 }),
+            },
+        });
+        st.tree.tabs.push(layout_tree::Tab {
+            title: "extra".into(),
+            focused: 3,
+            root: layout_tree::Node::Pane { id: 3 },
+        });
+        st.tree.active_tab = 1;
+        (st, session_map::session_map(), crate::state::ui_state())
+    }
+
+    #[test]
+    fn close_pane_on_single_pane_tab_removes_tab() {
+        let (mut st, mut sess, mut ui) = two_tab_state();
+        let mut dirty = false;
+        apply_action(&mut st, &mut sess, &mut ui, Action::ClosePane, &mut dirty);
+        assert_eq!(st.tree.tabs.len(), 1, "extra tab must be removed");
+        assert!(!ui.quitting, "one tab still remains");
+        assert!(!st.panes.contains_key(&3));
+    }
+
+    #[test]
+    fn close_last_pane_quits() {
+        let (mut st, mut sess, mut ui) = two_tab_state();
+        st.tree.tabs.remove(0);
+        st.tree.active_tab = 0;
+        let mut dirty = false;
+        apply_action(&mut st, &mut sess, &mut ui, Action::ClosePane, &mut dirty);
+        assert!(st.tree.tabs.is_empty());
+        assert!(ui.quitting);
     }
 }
