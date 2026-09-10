@@ -33,30 +33,50 @@ pub fn parse_font_spec(spec: &str) -> (PathBuf, u32) {
     }
 }
 
+/// Check that `bytes` parses as the `index`-th font face via
+/// `skrifa::FontRef::from_index` — the exact parser epaint runs in
+/// `FontFace::new` (and `panic!`s on) at first layout. `Ok(())` means
+/// epaint will accept the data; the error String carries the skrifa
+/// `ReadError` Display for logging.
+fn parse_ok(bytes: &[u8], index: u32) -> Result<(), String> {
+    skrifa::FontRef::from_index(bytes, index)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Font data from `TERMINATOR_CJK_FONT` when the variable is set and the
-/// file is readable; `None` falls back to the embedded bytes.
+/// file is readable AND parses as a valid font at the given face index;
+/// `None` falls back to the embedded bytes. epaint panics on a bad
+/// `FontDefinitions` entry, so the file is pre-validated here at startup
+/// and an invalid one degrades to the embedded subset with a warning.
 pub fn env_font_data() -> Option<FontData> {
     let spec = std::env::var("TERMINATOR_CJK_FONT").ok()?;
     if spec.trim().is_empty() {
         return None;
     }
     let (path, index) = parse_font_spec(&spec);
-    match std::fs::read(&path) {
-        Ok(bytes) => {
-            log::info!("CJK font from env: {} face {index}", path.display());
-            Some(FontData {
-                index,
-                ..FontData::from_owned(bytes)
-            })
-        }
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(e) => {
             log::warn!(
                 "cannot read TERMINATOR_CJK_FONT {}: {e}; using embedded font",
                 path.display()
             );
-            None
+            return None;
         }
+    };
+    if let Err(err) = parse_ok(&bytes, index) {
+        log::warn!(
+            "TERMINATOR_CJK_FONT {} (face {index}) is not a valid font: {err}; using embedded font",
+            path.display()
+        );
+        return None;
     }
+    log::info!("CJK font from env: {} face {index}", path.display());
+    Some(FontData {
+        index,
+        ..FontData::from_owned(bytes)
+    })
 }
 
 /// Append the CJK font to the end of both family fallback chains.
@@ -117,6 +137,34 @@ mod tests {
             parse_font_spec("path:bad"),
             (PathBuf::from("path:bad"), 0)
         );
+    }
+
+    #[test]
+    fn parse_ok_accepts_embedded_font() {
+        assert_eq!(parse_ok(CJK_FONT_BYTES, 0), Ok(()));
+    }
+
+    #[test]
+    fn parse_ok_rejects_garbage_bytes() {
+        let err = parse_ok(b"not a font at all", 0).expect_err("garbage must not parse");
+        assert!(!err.is_empty(), "error should carry skrifa's Display");
+    }
+
+    #[test]
+    fn parse_ok_rejects_bad_face_index() {
+        // read-fonts' FontRef::from_index (what skrifa and epaint call)
+        // returns InvalidCollectionIndex for a non-zero index on a
+        // single (non-.ttc) font — it does NOT silently clamp or ignore
+        // the index — so a bogus `:99` suffix falls back to the
+        // embedded font instead of panicking in epaint.
+        assert!(parse_ok(CJK_FONT_BYTES, 99).is_err());
+    }
+
+    #[test]
+    fn parse_ok_rejects_empty_bytes() {
+        // Belt-and-braces for the degenerate case: an empty file cannot
+        // hold an sfnt header and must be rejected like any other junk.
+        assert!(parse_ok(&[], 0).is_err());
     }
 
     #[test]

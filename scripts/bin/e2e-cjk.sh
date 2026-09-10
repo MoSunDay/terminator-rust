@@ -53,7 +53,7 @@ except ImportError:
 f = TTFont("assets/fonts/NotoSansSC-Regular-subset.otf")
 cmap = f.getBestCmap()
 sample = ("汉字测试简繁體かなカナ・。「」【】《》～！？（）"
-          "Ａｚ０９Ⅰ①㈱ㄅㄆㅏㅣ纮㙟")
+          "Ａｚ０９Ⅰ①㈱ㄅㄆㅏㅣ纮㙟한글")
 missing = [c for c in sample if ord(c) not in cmap]
 if missing:
     sys.exit(f"cmap missing: {missing!r}")

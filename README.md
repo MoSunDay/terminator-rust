@@ -21,6 +21,19 @@ A terminator-style terminal multiplexer built with
 - Layout and pane state persisted to `~/.config/terminator-rust/state.json`;
   remote hosts registry at `~/.config/terminator-rust/sessions.json`.
 
+## Fonts / Unicode
+
+The binary embeds a Noto Sans SC subset (OFL, `assets/fonts/OFL.txt`) as
+the last entry of every font fallback chain, so Han, kana, bopomofo,
+fullwidth forms, roman numerals, circled digits AND Hangul syllables
+(AC00-D7AF) render with zero system-font dependency, so Linux and macOS
+output is identical by construction. Override with
+`TERMINATOR_CJK_FONT=path[:face_index]` to swap in any system font, e.g.
+a full `NotoSansCJK.ttc` face for Traditional/Korean-preferred glyph
+variants or Ext-B coverage. The override is parse-validated at startup
+and falls back to the embedded font with a warning if the file is
+unreadable or not a valid font.
+
 ## Layout
 
 | crate        | role                                                    |

@@ -271,6 +271,7 @@ dependencies = [
  "remote",
  "serde",
  "serde_json",
+ "skrifa",
  "theme",
  "vt-pane",
 ]
