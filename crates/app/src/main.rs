@@ -22,7 +22,8 @@ struct Terminator {
 }
 
 impl Terminator {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        ui::fonts::install(&cc.egui_ctx);
         let path = persist::state_path();
         let st = persist::load(&path).unwrap_or_else(fresh_state);
         let reg_path = remote::default_registry_path();
