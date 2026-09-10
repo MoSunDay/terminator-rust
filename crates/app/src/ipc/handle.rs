@@ -41,8 +41,10 @@ pub fn execute(req: Request, data: &mut Data) -> Response {
 /// without a session are still listed (zeros / empty fields).
 fn list(st: &AppState, sess: &mut SessionMap) -> Response {
     let mut ids: Vec<PaneId> = Vec::new();
-    for tab in &st.tree.tabs {
-        layout_tree::pane_ids(&tab.root, &mut ids);
+    for w in &st.windows {
+        for tab in &w.tree.tabs {
+            layout_tree::pane_ids(&tab.root, &mut ids);
+        }
     }
     ids.dedup();
     let panes = ids

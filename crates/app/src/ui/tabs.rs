@@ -11,7 +11,7 @@ use theme::Palette;
 use crate::actions;
 use crate::render::colors::{self, to_c32};
 use crate::session_map::SessionMap;
-use crate::state::{self, AppState, Data};
+use crate::state::{self, AppState, Data, WindowState};
 
 const CHIP_H: f32 = 24.0;
 const CHIP_PAD_X: f32 = 10.0;
@@ -94,20 +94,31 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             ..
         } = d;
         let mut close_tab: Option<usize> = None;
-        let count = st.tree.tabs.len();
+        let count = st.win().map(|w| w.tree.tabs.len()).unwrap_or(0);
         for i in 0..count {
             let Some((anchor, title, label)) = st
-                .tree
-                .tabs
-                .get(i)
+                .win()
+                .and_then(|w| w.tree.tabs.get(i))
                 .map(|t| (state::tab_anchor(t), t.title.clone(), chip_label(t)))
             else {
                 continue;
             };
-            let editing = uist.tab_edit.as_ref().is_some_and(|(a, _)| *a == anchor);
-            let selected = i == st.tree.active_tab;
+            let editing = st
+                .win()
+                .is_some_and(|w| w.ui.tab_edit.as_ref().is_some_and(|(a, _)| *a == anchor));
+            let selected = st.win().is_some_and(|w| w.tree.active_tab == i);
             if editing {
-                let Some((anchor, buf)) = uist.tab_edit.as_mut() else {
+                // Rename buffer lives in the window ui, the title it edits
+                // in the window tree: split WindowState for both.
+                let wi = st.active_idx();
+                let AppState { windows, .. } = st;
+                let Some(WindowState {
+                    tree, ui: wui, ..
+                }) = windows.get_mut(wi)
+                else {
+                    continue;
+                };
+                let Some((anchor, buf)) = wui.tab_edit.as_mut() else {
                     continue;
                 };
                 let resp = ui.add(
@@ -131,8 +142,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 // directly instead of waiting for lost_focus.
                 if confirm || cancel {
                     if confirm {
-                        if let Some(t) = st
-                            .tree
+                        if let Some(t) = tree
                             .tabs
                             .iter_mut()
                             .find(|t| state::tab_anchor(t) == *anchor)
@@ -141,7 +151,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                         }
                         *dirty = true;
                     }
-                    uist.tab_edit = None;
+                    wui.tab_edit = None;
                 }
                 continue;
             }
@@ -198,12 +208,16 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             if close_resp.clicked() {
                 close_tab = Some(i);
             } else if resp.clicked() && !selected {
-                st.tree.active_tab = i;
-                uist.zoom = false;
+                if let Some(w) = st.win_mut() {
+                    w.tree.active_tab = i;
+                    w.ui.zoom = false;
+                }
             }
             close_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             if resp.double_clicked() {
-                uist.tab_edit = Some((anchor, title));
+                if let Some(w) = st.win_mut() {
+                    w.ui.tab_edit = Some((anchor, title));
+                }
             }
             if resp.middle_clicked() {
                 close_tab = Some(i);
@@ -231,14 +245,16 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
         let zoom = ui.interact(zoom_rect, Id::new("chrome_zoom"), Sense::click());
         hover_fill(ui, zoom_rect, zoom.hovered(), pal);
         // Quiet accent hint when idle; full accent once zoomed.
-        let zoom_col = if uist.zoom {
+        let zoom_col = if st.win().is_some_and(|w| w.ui.zoom) {
             to_c32(pal.block_highlight)
         } else {
             to_c32(pal.block_highlight).gamma_multiply(0.7)
         };
         corner_brackets(&painter, zoom_rect.center(), zoom_col);
         if zoom.clicked() {
-            uist.zoom = !uist.zoom;
+            if let Some(w) = st.win_mut() {
+                w.ui.zoom = !w.ui.zoom;
+            }
         }
         zoom.on_hover_text("Zoom focused pane (Ctrl+Shift+F)");
 
@@ -308,7 +324,14 @@ fn trailing_buttons(
         icon_col(resp.hovered()),
     );
     if resp.clicked() {
-        actions::do_split(st, sess, st.tree.active_tab, None, Axis::Vertical, dirty);
+        actions::do_split(
+            st,
+            sess,
+            st.win().map(|w| w.tree.active_tab).unwrap_or(0),
+            None,
+            Axis::Vertical,
+            dirty,
+        );
     }
     resp.on_hover_text("Split left / right (Ctrl+Shift+E)");
 
@@ -321,7 +344,14 @@ fn trailing_buttons(
         icon_col(resp.hovered()),
     );
     if resp.clicked() {
-        actions::do_split(st, sess, st.tree.active_tab, None, Axis::Horizontal, dirty);
+        actions::do_split(
+            st,
+            sess,
+            st.win().map(|w| w.tree.active_tab).unwrap_or(0),
+            None,
+            Axis::Horizontal,
+            dirty,
+        );
     }
     resp.on_hover_text("Split top / bottom (Ctrl+Shift+O)");
 }

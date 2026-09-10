@@ -22,7 +22,9 @@ pub use rect::{
     near_divider, rect_area, rect_center, rect_contains, shrink, split_rect, split_rect_gapped,
     Axis, Rect,
 };
-pub use tabs::{alloc_pane_id, close_pane, close_tab, new_tab, new_tree, next_pane_id};
+pub use tabs::{
+    alloc_pane_id, close_pane, close_tab, ensure_next_pane_id, new_tab, new_tree, next_pane_id,
+};
 pub use tree::{
     contains_pane, find_node, find_node_mut, pane_count, pane_ids, parent_axis, parent_ratio,
     set_parent_ratio, set_ratio_at_level, sorted_pane_ids, split_pane, split_pane_ratio,

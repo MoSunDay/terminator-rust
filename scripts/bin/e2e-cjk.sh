@@ -67,6 +67,8 @@ export HOME="$ROOT/home"
 export SHELL=/bin/bash
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
+# No compositor in Xvfb: pin full opacity for deterministic ink checks.
+export TERMINATOR_OPAQUE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # Single dracula pane with a stable ctl addressing key.
@@ -117,8 +119,14 @@ export X Y WIDTH HEIGHT
 echo "window $WID at ${X},${Y} ${WIDTH}x${HEIGHT}"
 
 # --- 3. control-channel CJK round-trip ------------------------------------
-step "send CJK echo, capture round-trips"
-"$CTL" send cjk --text "echo 汉字测试"$'\n' >/dev/null
+step "send CJK line, capture round-trips"
+# clear first, then type WITHOUT Enter: the wide glyphs are the only
+# ink line on screen (an Enter would print the echo output line plus a
+# fresh prompt whose ink rows interleave with the 16px tall CJK line
+# and merge into one band).
+"$CTL" send cjk --text "clear"$'\n' >/dev/null
+sleep 0.6
+"$CTL" send cjk --text "汉字测试" >/dev/null
 CAP=""
 for _ in $(seq 1 20); do
     CAP=$("$CTL" capture cjk 2>/dev/null || true)
@@ -145,9 +153,13 @@ img = Image.open(os.environ["SCRCAP"])
 X, Y, W, H = (int(os.environ[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
 px = img.load()
 
-# Content region: below the chrome chip row and the pane header.
+# Single tab -> no tab bar: the first text line's ink starts ~Y+28,
+# directly under the pane header. Scan from Y+8 (chrome/hairline are
+# bg-colored, the centered header title only adds non-wide comps);
+# starting at the old Y+55 clipped the wide glyphs' top rows and made
+# every Han component fail the height filter.
 x0, x1 = X + 8, X + W - 8
-y0, y1 = Y + 55, Y + H - 8
+y0, y1 = Y + 8, Y + H - 8
 
 # Ink components = (column run) x (row run) inside each band. Column runs
 # come from any-ink-in-band; the row run then isolates the text line, so a
@@ -156,7 +168,11 @@ y0, y1 = Y + 55, Y + H - 8
 rows = [y for y in range(y0, y1) if any(is_fg(px[x, y]) for x in range(x0, x1, 2))]
 bands = []
 for y in rows:
-    if bands and y - bands[-1][1] <= 3:
+    # Merge gap 1 only: a wide-CJK line's 16px ink leaves just a 2-row
+    # valley to the next text line; bridging it (old <=3) merges all
+    # lines into one band and a glyph's column run then inherits the
+    # neighbor line's rows (h=30 -> fails the wide-cell filter).
+    if bands and y - bands[-1][1] <= 1:
         bands[-1][1] = y
     else:
         bands.append([y, y])
@@ -192,7 +208,11 @@ def interior_ink(c):
     return sum(1 for x in ix for y in iy if is_fg(px[x, y]))
 inked = [c for c in wide if interior_ink(c) >= 8]
 
-ok_w = len(wide) >= 4
+# >=3 not 4: a glyph can anatomically split into narrow column runs
+# (e.g. 测's sparse 氵 dots leave >1px gaps) and drop out of `wide`
+# while rendering perfectly; tofu detection rests on `inked` (hollow
+# interiors), not on the wide count.
+ok_w = len(wide) >= 3
 ok_i = len(inked) >= 3
 print(f"ink components: {len(comps)} total, wide {len(wide)} "
       f"[{'OK' if ok_w else 'FAIL'}], stroked {len(inked)} "

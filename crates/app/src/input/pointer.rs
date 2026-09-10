@@ -7,14 +7,14 @@
 //! locally and never reports.
 
 use egui::{Context, Event, PointerButton, Pos2, Rect};
-use layout_tree::PaneId;
+use layout_tree::{LayoutTree, PaneId};
 use libghostty_vt::key::Mods as GMods;
 use libghostty_vt::mouse;
 use log::warn;
 use vt_pane::{mouse as vmouse, Session};
 
 use crate::session_map::SessionMap;
-use crate::state::{AppState, UiState};
+use crate::state::{AppState, WindowState};
 
 /// egui modifiers -> ghostty mods.
 fn gmods(m: &egui::Modifiers) -> GMods {
@@ -92,8 +92,8 @@ fn surface_px(rect: Rect, pos: Pos2, ppp: f32) -> (f32, f32) {
 }
 
 /// Focus `pane` if it is not focused yet (persisted -> dirty).
-fn focus_pane(st: &mut AppState, pane: PaneId, dirty: &mut bool) {
-    if let Some(t) = st.tree.tabs.get_mut(st.tree.active_tab) {
+fn focus_pane(tree: &mut LayoutTree, pane: PaneId, dirty: &mut bool) {
+    if let Some(t) = tree.tabs.get_mut(tree.active_tab) {
         if t.focused != pane {
             t.focused = pane;
             *dirty = true;
@@ -198,13 +198,13 @@ fn on_wheel(
 }
 
 /// One frame of raw pointer routing over the pane content rects.
-/// `dirty` marks persisted state changes (focus moves).
+/// `dirty` marks persisted state changes (focus moves). Pointer-grab state
+/// lives in the ACTIVE window's UI (one input stream per OS window).
 pub fn handle(
     ctx: &Context,
     rects: &[(PaneId, Rect)],
     st: &mut AppState,
     sess: &mut SessionMap,
-    uist: &mut UiState,
     cell_h: f32,
     dirty: &mut bool,
 ) {
@@ -213,6 +213,14 @@ pub fn handle(
     let hover = ctx.input(|i| i.pointer.hover_pos());
     let mods_now = ctx.input(|i| i.modifiers);
     let ppp = ctx.pixels_per_point();
+    let wi = st.active_idx();
+    let AppState { windows, .. } = st;
+    let Some(w) = windows.get_mut(wi) else {
+        return;
+    };
+    let WindowState {
+        tree, ui: wui, ..
+    } = w;
     for ev in events {
         match ev {
             Event::PointerButton {
@@ -227,7 +235,7 @@ pub fn handle(
                 let pane = if pressed {
                     pane_at(rects, pos)
                 } else {
-                    uist.pointer_pane.or_else(|| pane_at(rects, pos))
+                    wui.pointer_pane.or_else(|| pane_at(rects, pos))
                 };
                 let Some(pane) = pane else {
                     // Unreachable with an owner set (releases resolve to it),
@@ -235,16 +243,16 @@ pub fn handle(
                     continue;
                 };
                 if pressed {
-                    focus_pane(st, pane, dirty);
+                    focus_pane(tree, pane, dirty);
                 }
                 let Some((_, rect)) = rects.iter().find(|(p, _)| *p == pane) else {
-                    if uist.pointer_pane == Some(pane) {
+                    if wui.pointer_pane == Some(pane) {
                         // Owner vanished mid-grab (tab switch / relayout):
                         // drop the grab so motion/wheel stop targeting a
                         // zombie pane.
-                        uist.pointer_pane = None;
-                        uist.pointer_buttons = 0;
-                        uist.pointer_last = None;
+                        wui.pointer_pane = None;
+                        wui.pointer_buttons = 0;
+                        wui.pointer_last = None;
                     }
                     continue;
                 };
@@ -253,45 +261,45 @@ pub fn handle(
                     Some(s) if s.exit.is_none() => {
                         on_button(s, *rect, pos, ppp, button, pressed, &modifiers);
                         if pressed {
-                            uist.pointer_pane = Some(pane);
-                            uist.pointer_buttons |= bit;
-                            uist.pointer_last = Some(bit.trailing_zeros() as u8);
+                            wui.pointer_pane = Some(pane);
+                            wui.pointer_buttons |= bit;
+                            wui.pointer_last = Some(bit.trailing_zeros() as u8);
                         } else {
-                            uist.pointer_buttons &= !bit;
-                            if uist.pointer_buttons == 0 {
-                                uist.pointer_pane = None;
-                                uist.pointer_last = None;
+                            wui.pointer_buttons &= !bit;
+                            if wui.pointer_buttons == 0 {
+                                wui.pointer_pane = None;
+                                wui.pointer_last = None;
                             } else {
                                 // Keep "most recent press still held" honest
                                 // when a chorded button goes up first.
-                                uist.pointer_last =
-                                    Some(uist.pointer_buttons.trailing_zeros() as u8);
+                                wui.pointer_last =
+                                    Some(wui.pointer_buttons.trailing_zeros() as u8);
                             }
                         }
                     }
                     _ if !pressed => {
-                        uist.pointer_pane = None;
-                        uist.pointer_buttons = 0;
-                        uist.pointer_last = None;
+                        wui.pointer_pane = None;
+                        wui.pointer_buttons = 0;
+                        wui.pointer_last = None;
                     }
                     _ => {}
                 }
             }
             Event::PointerMoved(pos) => {
-                let Some(pane) = uist.pointer_pane else {
+                let Some(pane) = wui.pointer_pane else {
                     continue;
                 };
                 let Some((_, rect)) = rects.iter().find(|(p, _)| *p == pane) else {
-                    if uist.pointer_pane == Some(pane) {
-                        uist.pointer_pane = None;
-                        uist.pointer_buttons = 0;
-                        uist.pointer_last = None;
+                    if wui.pointer_pane == Some(pane) {
+                        wui.pointer_pane = None;
+                        wui.pointer_buttons = 0;
+                        wui.pointer_last = None;
                     }
                     continue;
                 };
                 // Motion reports the most recent button still held; without
                 // one there is no grab to service.
-                let Some(bit) = uist.pointer_last else {
+                let Some(bit) = wui.pointer_last else {
                     continue;
                 };
                 let Some(button) = button_at(bit) else {
@@ -311,7 +319,7 @@ pub fn handle(
             } => {
                 // Wheel targets the pane under the pointer (hover), or the
                 // drag owner while a drag is active.
-                let target = uist
+                let target = wui
                     .pointer_pane
                     .or_else(|| hover.and_then(|p| pane_at(rects, p)));
                 let Some(pane) = target else {
@@ -322,10 +330,10 @@ pub fn handle(
                     continue;
                 }
                 let Some((_, rect)) = rects.iter().find(|(p, _)| *p == pane) else {
-                    if uist.pointer_pane == Some(pane) {
-                        uist.pointer_pane = None;
-                        uist.pointer_buttons = 0;
-                        uist.pointer_last = None;
+                    if wui.pointer_pane == Some(pane) {
+                        wui.pointer_pane = None;
+                        wui.pointer_buttons = 0;
+                        wui.pointer_last = None;
                     }
                     continue;
                 };
@@ -347,7 +355,7 @@ pub fn handle(
 mod tests {
     use super::*;
     use crate::session_map::session_map;
-    use crate::state::{fresh_state, ui_state};
+    use crate::state::fresh_state;
     use egui::{Modifiers, Pos2, RawInput};
     use vt_pane::{task as vtask, SessionOpts};
 
@@ -393,7 +401,6 @@ mod tests {
         rects: &[(PaneId, Rect)],
         st: &mut AppState,
         sess: &mut SessionMap,
-        ui: &mut UiState,
     ) {
         let input = RawInput {
             events: vec![ev],
@@ -401,7 +408,7 @@ mod tests {
         };
         ctx.begin_pass(input);
         let mut dirty = false;
-        handle(ctx, rects, st, sess, ui, 16.0, &mut dirty);
+        handle(ctx, rects, st, sess, 16.0, &mut dirty);
         let mut out = ctx.end_pass();
         out.textures_delta.clear();
     }
@@ -420,7 +427,7 @@ mod tests {
         let Some(mut sess) = pty_harness() else {
             return;
         };
-        let (mut st, mut ui) = (fresh_state(), ui_state());
+        let mut st = fresh_state();
         let ctx = Context::default();
         let live = vec![(1, Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0)))];
         dispatch(
@@ -429,10 +436,9 @@ mod tests {
             &live,
             &mut st,
             &mut sess,
-            &mut ui,
         );
-        assert_eq!(ui.pointer_pane, Some(1));
-        assert_eq!(ui.pointer_buttons, 1);
+        assert_eq!(st.windows[0].ui.pointer_pane, Some(1));
+        assert_eq!(st.windows[0].ui.pointer_buttons, 1);
         // Pane 1 vanishes mid-grab (tab switch / close). The stale owner
         // must be dropped instead of hijacking later motion and wheel.
         dispatch(
@@ -441,11 +447,10 @@ mod tests {
             &[],
             &mut st,
             &mut sess,
-            &mut ui,
         );
-        assert_eq!(ui.pointer_pane, None);
-        assert_eq!(ui.pointer_buttons, 0);
-        assert_eq!(ui.pointer_last, None);
+        assert_eq!(st.windows[0].ui.pointer_pane, None);
+        assert_eq!(st.windows[0].ui.pointer_buttons, 0);
+        assert_eq!(st.windows[0].ui.pointer_last, None);
     }
 
     #[test]
@@ -453,7 +458,7 @@ mod tests {
         let Some(mut sess) = pty_harness() else {
             return;
         };
-        let (mut st, mut ui) = (fresh_state(), ui_state());
+        let mut st = fresh_state();
         let ctx = Context::default();
         let live = vec![(1, Rect::from_min_size(Pos2::ZERO, egui::vec2(400.0, 300.0)))];
         dispatch(
@@ -462,7 +467,6 @@ mod tests {
             &live,
             &mut st,
             &mut sess,
-            &mut ui,
         );
         dispatch(
             &ctx,
@@ -470,11 +474,10 @@ mod tests {
             &live,
             &mut st,
             &mut sess,
-            &mut ui,
         );
-        assert_eq!(ui.pointer_pane, Some(1));
-        assert_eq!(ui.pointer_buttons, 0b11);
-        assert_eq!(ui.pointer_last, Some(1));
+        assert_eq!(st.windows[0].ui.pointer_pane, Some(1));
+        assert_eq!(st.windows[0].ui.pointer_buttons, 0b11);
+        assert_eq!(st.windows[0].ui.pointer_last, Some(1));
         // Releasing one chorded button keeps the grab for the other and
         // demotes the motion button to a button still held.
         dispatch(
@@ -483,21 +486,19 @@ mod tests {
             &live,
             &mut st,
             &mut sess,
-            &mut ui,
         );
-        assert_eq!(ui.pointer_pane, Some(1));
-        assert_eq!(ui.pointer_buttons, 1);
-        assert_eq!(ui.pointer_last, Some(0));
+        assert_eq!(st.windows[0].ui.pointer_pane, Some(1));
+        assert_eq!(st.windows[0].ui.pointer_buttons, 1);
+        assert_eq!(st.windows[0].ui.pointer_last, Some(0));
         dispatch(
             &ctx,
             button_ev(PointerButton::Primary, false, Pos2::new(500.0, 500.0)),
             &live,
             &mut st,
             &mut sess,
-            &mut ui,
         );
-        assert_eq!(ui.pointer_pane, None);
-        assert_eq!(ui.pointer_buttons, 0);
-        assert_eq!(ui.pointer_last, None);
+        assert_eq!(st.windows[0].ui.pointer_pane, None);
+        assert_eq!(st.windows[0].ui.pointer_buttons, 0);
+        assert_eq!(st.windows[0].ui.pointer_last, None);
     }
 }

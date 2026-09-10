@@ -8,6 +8,7 @@ mod render;
 mod session_map;
 mod state;
 mod ui;
+mod windows;
 
 use egui::ViewportBuilder;
 use log::warn;
@@ -60,45 +61,33 @@ impl eframe::App for Terminator {
             self.save_if_dirty();
         }
 
-        input::keyboard::handle(
-            &ctx,
-            &mut self.data.st,
-            &mut self.data.sess,
-            &mut self.data.ui,
-            &mut self.data.dirty,
-        );
         let theme = self.data.st.theme_name.clone();
         ui::style::sync(&ctx, &theme, &mut self.data.ui);
 
+        // The control socket and per-window passes all act on the window
+        // the user is focused on (set inside windows::render).
+        self.data.st.active = self.data.st.focus;
         if let Some(i) = self.ipc.as_mut() {
             ipc::server::drain(i, &mut self.data);
         }
 
-        let pal = render::colors::palette_of(&theme);
-        let opacity = self.data.st.settings.opacity;
-        let chrome = render::colors::with_opacity(
-            render::colors::to_c32(render::colors::chrome_bg(&pal)),
-            opacity,
-        );
-        let page_bg = render::colors::with_opacity(render::colors::to_c32(pal.background), opacity);
-        // Single tab: zero chrome up top - the pane header already
-        // identifies the pane, so content starts at y=0. Ctrl+Shift+T (or
-        // any multi-tab state) brings the bar back.
-        if self.data.st.tree.tabs.len() > 1 {
-            egui::Panel::top("tab_bar")
-                .frame(egui::Frame::NONE.fill(chrome))
-                .show(ui, |ui| ui::tabs::bar(ui, &mut self.data));
-        }
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(page_bg))
-            .show(ui, |panel| render::screen::screen(panel, &mut self.data));
+        // Root window: a plain render pass into the root viewport.
+        windows::render(ui, &mut self.data, 0);
         ui::inspector::show(&ctx, &mut self.data);
+
+        // Secondary windows: immediate viewports = real OS windows, one
+        // render pass each (their keyboard input arrives in their own
+        // pass inside windows::render). Removal shrinks the list; the loop
+        // re-checks the slot so no window is skipped.
+        windows::render_secondaries(&ctx, &mut self.data);
+        self.data.st.active = self.data.st.focus;
 
         self.save_if_dirty();
 
-        // Closing the last pane/tab flips ui.quitting: ask the WM to close
-        // every frame until it lands (the close path re-enters ui() once to
-        // save; ensure_sessions must not resurrect a tab in between).
+        // Closing the last pane/tab of the last window flips ui.quitting:
+        // ask the WM to close every frame until it lands (the close path
+        // re-enters ui() once to save; ensure_sessions must not resurrect
+        // a tab in between). Secondaries closing never sets this.
         if self.data.ui.quitting {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }

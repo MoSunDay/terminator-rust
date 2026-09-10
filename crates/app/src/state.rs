@@ -49,12 +49,79 @@ impl Default for Settings {
     }
 }
 
-/// Persisted app model: layout tree, per-pane config, theme name.
+/// Persisted app model: per-window layout trees, per-pane config, theme.
 pub struct AppState {
-    pub tree: LayoutTree,
+    /// One entry per OS window; invariant: >= 1 while the app runs.
+    /// Tab indices inside each tree are per-window.
+    pub windows: Vec<WindowState>,
+    /// Focused window index (clamped on use, see [`AppState::active_idx`]).
+    pub active: usize,
+    /// Window the USER is interacting with (keyboard focus). `active` is the
+    /// window currently being rendered; they differ only inside a
+    /// non-focused viewport's render pass. Restored to 0 on load.
+    pub focus: usize,
     pub theme_name: String,
     pub settings: Settings,
     pub panes: BTreeMap<PaneId, PaneMeta>,
+    /// Global pane-id counter: keeps ids unique across all windows.
+    pub next_pane_id: PaneId,
+    /// Next OS-window id; windows get stable ids starting at 1
+    /// (0 is egui's ROOT viewport).
+    pub next_window_id: u64,
+}
+
+impl AppState {
+    pub fn active_idx(&self) -> usize {
+        self.active.min(self.windows.len().saturating_sub(1))
+    }
+
+    pub fn win(&self) -> Option<&WindowState> {
+        self.windows.get(self.active_idx())
+    }
+
+    pub fn win_mut(&mut self) -> Option<&mut WindowState> {
+        let i = self.active_idx();
+        self.windows.get_mut(i)
+    }
+
+    /// Fix up `focus` after `windows.remove(removed)`: the removed window
+    /// falls back to the root (0), higher indices shift down.
+    pub fn retarget_after_remove(&mut self, removed: usize) {
+        if self.focus == removed {
+            self.focus = 0;
+        } else if self.focus > removed {
+            self.focus -= 1;
+        }
+        let n = self.windows.len();
+        self.focus = self.focus.min(n.saturating_sub(1));
+        self.active = self.active.min(n.saturating_sub(1));
+    }
+
+    /// Global pane-id uniqueness: seed a window's tree allocator before a
+    /// mutation that allocates (split), then [`AppState::collect_alloc`]
+    /// afterwards.
+    pub fn seed_alloc(&mut self, win: usize) {
+        let next = self.next_pane_id;
+        if let Some(w) = self.windows.get_mut(win) {
+            layout_tree::ensure_next_pane_id(&mut w.tree, next);
+        }
+    }
+
+    pub fn collect_alloc(&mut self) {
+        let mut next = self.next_pane_id;
+        for w in &self.windows {
+            next = next.max(layout_tree::next_pane_id(&w.tree));
+        }
+        self.next_pane_id = next;
+    }
+}
+
+/// One OS window: its own tab tree plus scoped UI state.
+pub struct WindowState {
+    /// Stable window id (starts at 1).
+    pub id: u64,
+    pub tree: LayoutTree,
+    pub ui: WindowUi,
 }
 
 /// Monospace cell metrics: points for layout, pixels for the pty.
@@ -90,8 +157,9 @@ pub struct RemoteForm {
     pub session: String,
 }
 
-/// Transient UI state; never persisted.
-pub struct UiState {
+/// Transient per-OS-window UI state (input stream + editors scoped to one
+/// window); never persisted.
+pub struct WindowUi {
     pub zoom: bool,
     /// (tab anchor pane, edit buffer) while a tab title is being renamed.
     pub tab_edit: Option<(PaneId, String)>,
@@ -103,8 +171,6 @@ pub struct UiState {
     pub color_open: Option<PaneId>,
     pub color_buf: String,
     pub trans_open: Option<PaneId>,
-    pub inspector: bool,
-    pub form: RemoteForm,
     pub drag: Option<DragState>,
     /// Pane owning an in-progress pointer drag (selection or motion
     /// reporting) of ANY button; keeps receiving PointerMoved even
@@ -115,8 +181,6 @@ pub struct UiState {
     pub pointer_buttons: u8,
     /// Bit index of the most recent press still held (motion reports it).
     pub pointer_last: Option<u8>,
-    /// Last theme name the egui style was derived from (style::sync memo).
-    pub styled_theme: Option<String>,
     /// Modifier state as of the END of the previous frame's input handling;
     /// seed for reconstructing per-event mods (egui 0.36 aggregates
     /// ModifiersChanged into a post-batch `i.modifiers`, which is wrong
@@ -124,13 +188,21 @@ pub struct UiState {
     /// release shares the frame with the folded Event::Copy).
     pub mods_frame_end: egui::Modifiers,
     pub font_size: f32,
+}
+
+/// Transient app-global UI state; never persisted.
+pub struct UiState {
+    pub inspector: bool,
+    pub form: RemoteForm,
+    /// Last theme name the egui style was derived from (style::sync memo).
+    pub styled_theme: Option<String>,
     /// The last pane/tab was closed: the app is shutting down. Guards the
     /// empty-tabs auto-respawn until the ViewportCommand::Close lands.
     pub quitting: bool,
 }
 
-pub fn ui_state() -> UiState {
-    UiState {
+pub fn window_ui() -> WindowUi {
+    WindowUi {
         zoom: false,
         tab_edit: None,
         pane_edit: None,
@@ -138,15 +210,20 @@ pub fn ui_state() -> UiState {
         color_open: None,
         color_buf: String::new(),
         trans_open: None,
-        inspector: false,
-        form: RemoteForm::default(),
         drag: None,
         pointer_pane: None,
         pointer_buttons: 0,
         pointer_last: None,
-        styled_theme: None,
         mods_frame_end: egui::Modifiers::NONE,
         font_size: 14.0,
+    }
+}
+
+pub fn ui_state() -> UiState {
+    UiState {
+        inspector: false,
+        form: RemoteForm::default(),
+        styled_theme: None,
         quitting: false,
     }
 }
@@ -161,13 +238,20 @@ pub fn new_pane_meta(kind: PaneKind) -> PaneMeta {
     }
 }
 
-/// Fresh state: one tab, one local shell pane.
+/// Fresh state: one window (id 1), one tab, one local shell pane.
 pub fn fresh_state() -> AppState {
     let tree = new_tree("shell");
     let mut panes = BTreeMap::new();
     panes.insert(1, new_pane_meta(PaneKind::Local));
+    let next_pane_id = layout_tree::next_pane_id(&tree);
     AppState {
-        tree,
+        windows: vec![WindowState {
+            id: 1,
+            tree,
+            ui: window_ui(),
+        }],
+        active: 0,
+        focus: 0,
         theme_name: theme::BUILTIN_NAMES
             .first()
             .copied()
@@ -175,14 +259,22 @@ pub fn fresh_state() -> AppState {
             .to_string(),
         settings: Settings::default(),
         panes,
+        next_pane_id,
+        next_window_id: 2,
     }
 }
 
-/// All pane ids across all tabs.
-pub fn all_pane_ids(tree: &LayoutTree) -> Vec<PaneId> {
-    let mut out = Vec::new();
-    for tab in &tree.tabs {
-        out.extend(layout_tree::sorted_pane_ids(&tab.root));
+/// All pane ids across all tabs of all windows, flat and unique.
+pub fn all_pane_ids(st: &AppState) -> Vec<PaneId> {
+    let mut out: Vec<PaneId> = Vec::new();
+    for w in &st.windows {
+        for tab in &w.tree.tabs {
+            for id in layout_tree::sorted_pane_ids(&tab.root) {
+                if !out.contains(&id) {
+                    out.push(id);
+                }
+            }
+        }
     }
     out
 }
@@ -237,8 +329,12 @@ pub fn effective_title(manual: Option<&str>, osc: &str, kind: &PaneKind) -> Stri
 /// True when a pane other than `except` already claims this exact manual
 /// title: manual titles are the addressing key of the control socket, so
 /// they must stay unique.
-pub fn manual_title_taken(st: &AppState, title: &str, except: PaneId) -> bool {
-    st.panes
+pub fn manual_title_taken(
+    panes: &BTreeMap<PaneId, PaneMeta>,
+    title: &str,
+    except: PaneId,
+) -> bool {
+    panes
         .iter()
         .any(|(id, m)| *id != except && m.manual_title.as_deref() == Some(title))
 }
@@ -265,10 +361,18 @@ pub fn compute_grid(w: f32, h: f32, cell_w: f32, cell_h: f32) -> (u16, u16) {
 // ---------------------------------------------------------------------------
 
 /// Tree/meta half of a split, no process spawning (unit-testable).
-/// Returns the new pane id.
+/// Splits in the ACTIVE window's tree; keeps the global pane-id counter in
+/// sync. Returns the new pane id.
 pub fn split_tree_pane(st: &mut AppState, tab: usize, pane: PaneId, axis: Axis) -> Option<PaneId> {
     let ratio = st.settings.split_ratio;
-    let new_id = split_pane_ratio(&mut st.tree, tab, pane, axis, ratio)?;
+    let wi = st.active_idx();
+    st.seed_alloc(wi);
+    let new_id = st
+        .windows
+        .get_mut(wi)
+        .and_then(|w| split_pane_ratio(&mut w.tree, tab, pane, axis, ratio));
+    st.collect_alloc();
+    let new_id = new_id?;
     st.panes.insert(new_id, new_pane_meta(PaneKind::Local));
     Some(new_id)
 }
@@ -327,13 +431,13 @@ mod tests {
     fn manual_title_taken_ignores_self_and_empty_titles() {
         let mut st = fresh_state();
         st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
-        assert!(!manual_title_taken(&st, "agent", 1), "own title is fine");
-        assert!(!manual_title_taken(&st, "other", 1));
+        assert!(!manual_title_taken(&st.panes, "agent", 1), "own title is fine");
+        assert!(!manual_title_taken(&st.panes, "other", 1));
         assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
         st.panes.get_mut(&2).unwrap().manual_title = Some("agent".into());
-        assert!(manual_title_taken(&st, "agent", 1));
-        assert!(manual_title_taken(&st, "agent", 2));
-        assert!(!manual_title_taken(&st, "agent2", 1));
+        assert!(manual_title_taken(&st.panes, "agent", 1));
+        assert!(manual_title_taken(&st.panes, "agent", 2));
+        assert!(!manual_title_taken(&st.panes, "agent2", 1));
     }
 
     #[test]
@@ -347,39 +451,83 @@ mod tests {
     #[test]
     fn split_and_close_keep_maps_consistent() {
         let mut st = fresh_state();
-        assert_eq!(all_pane_ids(&st.tree), vec![1]);
+        assert_eq!(all_pane_ids(&st), vec![1]);
         let two = split_tree_pane(&mut st, 0, 1, Axis::Horizontal);
         assert_eq!(two, Some(2));
         assert!(st.panes.contains_key(&2));
         let three = split_tree_pane(&mut st, 0, 2, Axis::Vertical);
         assert_eq!(three, Some(3));
-        assert_eq!(layout_tree::pane_count(&st.tree.tabs[0].root), 3);
-        assert_eq!(all_pane_ids(&st.tree).len(), 3);
-        layout_tree::close_pane(&mut st.tree, 0, 2);
+        assert_eq!(layout_tree::pane_count(&st.windows[0].tree.tabs[0].root), 3);
+        assert_eq!(all_pane_ids(&st).len(), 3);
+        layout_tree::close_pane(&mut st.windows[0].tree, 0, 2);
         st.panes.remove(&2);
-        assert_eq!(all_pane_ids(&st.tree), vec![1, 3]);
+        assert_eq!(all_pane_ids(&st), vec![1, 3]);
     }
     #[test]
     fn tab_anchor_is_the_lowest_pane_id() {
         let mut st = fresh_state();
-        assert_eq!(tab_anchor(&st.tree.tabs[0]), 1);
+        assert_eq!(tab_anchor(&st.windows[0].tree.tabs[0]), 1);
         assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
         // Still pane 1 (lowest id), unaffected by new splits.
-        assert_eq!(tab_anchor(&st.tree.tabs[0]), 1);
+        assert_eq!(tab_anchor(&st.windows[0].tree.tabs[0]), 1);
     }
 
     #[test]
     fn tab_edit_orphaned_tracks_anchor_pane_close() {
         let mut st = fresh_state();
-        assert!(!tab_edit_orphaned(&st.tree, 1));
+        assert!(!tab_edit_orphaned(&st.windows[0].tree, 1));
         assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
-        assert!(!tab_edit_orphaned(&st.tree, 1));
+        assert!(!tab_edit_orphaned(&st.windows[0].tree, 1));
         // Closing the anchor pane moves the tab to a new anchor, orphaning
         // any rename buffer keyed on the old one.
-        layout_tree::close_pane(&mut st.tree, 0, 1);
+        layout_tree::close_pane(&mut st.windows[0].tree, 0, 1);
         st.panes.remove(&1);
-        assert!(tab_edit_orphaned(&st.tree, 1));
-        assert_eq!(tab_anchor(&st.tree.tabs[0]), 2);
-        assert!(!tab_edit_orphaned(&st.tree, 2));
+        assert!(tab_edit_orphaned(&st.windows[0].tree, 1));
+        assert_eq!(tab_anchor(&st.windows[0].tree.tabs[0]), 2);
+        assert!(!tab_edit_orphaned(&st.windows[0].tree, 2));
+    }
+
+    #[test]
+    fn active_idx_clamps_and_win_helpers_stay_option() {
+        let mut st = fresh_state();
+        assert_eq!(st.active_idx(), 0);
+        assert!(st.win().is_some() && st.win_mut().is_some());
+        st.active = 9; // out of range: clamped, never panics
+        assert_eq!(st.active_idx(), 0);
+        st.windows.clear();
+        assert_eq!(st.active_idx(), 0);
+        assert!(st.win().is_none());
+        assert!(st.win_mut().is_none());
+    }
+
+    #[test]
+    fn seed_and_collect_keep_pane_ids_unique_across_windows() {
+        let mut st = fresh_state();
+        assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
+        // A second window joins with a tree allocated from scratch: seed
+        // its allocator from the global counter so a new tab cannot reuse
+        // ids already live in the first window.
+        let mut aux = layout_tree::new_tree("aux");
+        layout_tree::close_tab(&mut aux, 0);
+        st.windows.push(WindowState {
+            id: 2,
+            tree: aux,
+            ui: window_ui(),
+        });
+        let wi = st.windows.len() - 1;
+        st.seed_alloc(wi);
+        let tab = layout_tree::new_tab(&mut st.windows[wi].tree, "aux");
+        st.collect_alloc();
+        let pane = st.windows[wi].tree.tabs[tab].focused;
+        st.panes.insert(pane, new_pane_meta(PaneKind::Local));
+        assert_eq!(pane, 3, "fresh id drawn from the global counter");
+        let ids = all_pane_ids(&st);
+        assert_eq!(ids.len(), 3);
+        assert_eq!(
+            ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            3,
+            "pane ids stay unique across windows"
+        );
+        assert_eq!(st.next_pane_id, 4);
     }
 }

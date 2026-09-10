@@ -6,7 +6,7 @@ use layout_tree::{
     MIN_RATIO,
 };
 
-use crate::state::{AppState, DragState};
+use crate::state::{AppState, DragState, WindowState};
 
 /// Divider half-width for pointer hit-testing.
 pub const DIVIDER_TOL: f32 = 4.0;
@@ -106,17 +106,19 @@ pub fn drag_ratio(hit: &DividerHit, pos: Pos2, gap: f32) -> f32 {
 }
 
 /// One frame of divider hover/drag handling. Returns true while a drag is
-/// active so callers can suppress pane interactions.
-pub fn divider_interaction(
-    ui: &mut Ui,
-    st: &mut AppState,
-    area: Rect,
-    drag: &mut Option<DragState>,
-    dirty: &mut bool,
-) -> bool {
+/// active so callers can suppress pane interactions. Works on the ACTIVE
+/// window's tree; the drag state lives in that window's UI.
+pub fn divider_interaction(ui: &mut Ui, st: &mut AppState, area: Rect, dirty: &mut bool) -> bool {
     let gap = crate::state::DIVIDER_W;
-    let tab_idx = st.tree.active_tab;
-    let Some(tab) = st.tree.tabs.get(tab_idx) else {
+    let wi = st.active_idx();
+    let AppState { windows, .. } = st;
+    let Some(w) = windows.get_mut(wi) else {
+        return false;
+    };
+    let WindowState { tree, ui: wui, .. } = w;
+    let drag = &mut wui.drag;
+    let tab_idx = tree.active_tab;
+    let Some(tab) = tree.tabs.get(tab_idx) else {
         *drag = None;
         return false;
     };
@@ -137,7 +139,7 @@ pub fn divider_interaction(
                     })
                 {
                     let ratio = drag_ratio(&hit, pos, gap);
-                    if let Some(t) = st.tree.tabs.get_mut(d.tab) {
+                    if let Some(t) = tree.tabs.get_mut(d.tab) {
                         if set_ratio_at_level(&mut t.root, d.pane, d.level, ratio) {
                             *dirty = true;
                             return true;
@@ -185,10 +187,12 @@ pub fn pane_interact(
 ) -> egui::Response {
     let resp = ui.interact(rect, egui::Id::new("pane").with(pane), Sense::click());
     if resp.clicked() {
-        if let Some(t) = st.tree.tabs.get_mut(st.tree.active_tab) {
-            if t.focused != pane {
-                t.focused = pane;
-                *dirty = true; // focus is persisted; save it
+        if let Some(w) = st.win_mut() {
+            if let Some(t) = w.tree.tabs.get_mut(w.tree.active_tab) {
+                if t.focused != pane {
+                    t.focused = pane;
+                    *dirty = true; // focus is persisted; save it
+                }
             }
         }
     }

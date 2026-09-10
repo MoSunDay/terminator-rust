@@ -22,6 +22,8 @@ pub enum Action {
     Respawn,
     Paste,
     Copy,
+    /// Open a new OS window (Ctrl+Shift+N).
+    NewWindow,
     /// Quit the whole app (Ctrl+Shift+Q); WM-close equivalent.
     Quit,
 }
@@ -48,6 +50,7 @@ pub enum SKey {
     F,
     C,
     V,
+    N,
     Tab,
     PageUp,
     PageDown,
@@ -76,6 +79,7 @@ pub fn route_shortcut(m: SMods, k: SKey) -> Option<Action> {
         (true, SKey::E) => Some(Action::SplitVertical),
         (true, SKey::D) => Some(Action::SplitDefault),
         (true, SKey::W) => Some(Action::ClosePane),
+        (true, SKey::N) => Some(Action::NewWindow),
         (true, SKey::Q) => Some(Action::Quit),
         (true, SKey::R) => Some(Action::Respawn),
         (true, SKey::F) => Some(Action::ToggleZoom),
@@ -128,6 +132,11 @@ mod tests {
             route_shortcut(mods(true, true), SKey::W),
             Some(Action::ClosePane)
         );
+        assert_eq!(
+            route_shortcut(mods(true, true), SKey::N),
+            Some(Action::NewWindow)
+        );
+        assert_eq!(route_shortcut(mods(true, false), SKey::N), None);
         assert_eq!(
             route_shortcut(mods(true, true), SKey::Q),
             Some(Action::Quit)

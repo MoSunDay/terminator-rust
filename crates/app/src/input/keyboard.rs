@@ -101,6 +101,9 @@ fn read_clipboard() -> String {
 }
 
 /// Frame-level input dispatch: shortcuts first, then terminal input.
+///
+/// `ui` is the app-global UI state (quit flag); per-window input state
+/// (`mods_frame_end`) is reached through the active window of `st`.
 pub fn handle(
     ctx: &Context,
     st: &mut AppState,
@@ -117,8 +120,16 @@ pub fn handle(
     // ctrl-down marks landed in an earlier frame, trusting `i.modifiers`
     // (or a stale seed) makes the folded Copy look modifier-less and
     // silently reroutes SIGINT to the clipboard path.
-    let mods_at_start = ui.mods_frame_end;
-    ui.mods_frame_end = ctx.input(|i| i.modifiers);
+    // NOTE: `ui` here is the app-GLOBAL UiState (apply_action needs
+    // ui.quitting); the per-event mod seed lives in the ACTIVE window's
+    // WindowUi, reached through `st`.
+    let mods_at_start = st
+        .win()
+        .map(|w| w.ui.mods_frame_end)
+        .unwrap_or(egui::Modifiers::NONE);
+    if let Some(w) = st.win_mut() {
+        w.ui.mods_frame_end = ctx.input(|i| i.modifiers);
+    }
     if ctx.egui_wants_keyboard_input() {
         return; // a text field has focus; let it keep the keys
     }
@@ -126,8 +137,11 @@ pub fn handle(
     // advance over ModifiersChanged marks; see the seeding note above
     let mut mods_at = mods_at_start;
     let alt_chars = alt_keyed_chars(&events);
-    let tab = st.tree.active_tab.min(st.tree.tabs.len().saturating_sub(1));
-    let focused = st.tree.tabs.get(tab).map(|t| t.focused);
+    let tab = st
+        .win()
+        .map(|w| w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1)))
+        .unwrap_or(0);
+    let focused = st.win().and_then(|w| w.tree.tabs.get(tab)).map(|t| t.focused);
     for ev in events {
         if let Event::ModifiersChanged(m) = ev {
             mods_at = m;
@@ -216,8 +230,17 @@ pub fn handle(
                         }
                         if action == Action::Quit {
                             // Global exit (Ctrl+Shift+Q); the WM-close path
-                            // persists state in ui() before shutdown.
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            // persists state in ui() before shutdown. Sent to
+                            // ROOT so the press also quits from a secondary
+                            // window (its own close only drops that window).
+                            ctx.send_viewport_cmd_to(
+                                egui::ViewportId::ROOT,
+                                egui::ViewportCommand::Close,
+                            );
+                            continue;
+                        }
+                        if action == Action::NewWindow {
+                            crate::windows::spawn(st, sess, dirty);
                             continue;
                         }
                         actions::apply_action(st, sess, ui, action, dirty);

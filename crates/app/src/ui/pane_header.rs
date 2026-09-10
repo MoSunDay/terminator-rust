@@ -1,6 +1,8 @@
 //! Per-pane header strip: title, rename, badges, color/transparency popups,
 //! close button and the pane context menu.
 
+use std::collections::BTreeMap;
+
 use egui::{Button, Id, Key, Popup, Rect, Sense, TextEdit, Ui, Vec2};
 use layout_tree::PaneId;
 use theme::{Palette, Rgb};
@@ -8,21 +10,21 @@ use theme::{Palette, Rgb};
 use crate::actions;
 use crate::render::colors::{self, to_c32};
 use crate::session_map::SessionMap;
-use crate::state::{effective_title, AppState, PaneAction, UiState};
+use crate::state::{effective_title, AppState, PaneAction, PaneMeta, UiState, WindowState};
 
 const BTN: f32 = 16.0;
 
 /// None when the candidate manual title is acceptable: names must be
 /// unique (control-socket addressing) and not digits-only (reserved for
 /// pane ids in ctl's untagged PaneSelector).
-fn reject_reason(st: &AppState, value: &str, pane: PaneId) -> Option<&'static str> {
+fn reject_reason(panes: &BTreeMap<PaneId, PaneMeta>, value: &str, pane: PaneId) -> Option<&'static str> {
     if value.is_empty() {
         return None;
     }
     if value.chars().all(|c| c.is_ascii_digit()) {
         return Some("digits-only names are reserved for pane ids");
     }
-    if crate::state::manual_title_taken(st, value, pane) {
+    if crate::state::manual_title_taken(panes, value, pane) {
         return Some("another pane already uses this name");
     }
     None
@@ -49,7 +51,10 @@ pub fn show(
     pal: &Palette,
     dirty: &mut bool,
 ) {
-    let focused = st.tree.tabs.get(tab).is_some_and(|t| t.focused == pane);
+    let focused = st
+        .win()
+        .and_then(|w| w.tree.tabs.get(tab))
+        .is_some_and(|t| t.focused == pane);
     let meta = st.panes.get(&pane);
     let osc = crate::session_map::osc_title(sess, pane);
     let exit = crate::session_map::exit_code(sess, pane);
@@ -57,6 +62,7 @@ pub fn show(
         Some(m) => effective_title(m.manual_title.as_deref(), &osc, &m.kind),
         None => "?".to_string(),
     };
+    let degraded = meta.is_some_and(|m| m.degraded);
 
     // Borderless window: the header strip doubles as a drag handle.
     // Registered first so the title/buttons on top keep their clicks
@@ -86,7 +92,7 @@ pub fn show(
 
     // Badges (right of the title area, before the buttons).
     let mut badges: Vec<String> = Vec::new();
-    if meta.is_some_and(|m| m.degraded) {
+    if degraded {
         badges.push("ssh".to_string());
     }
     if let Some(code) = exit {
@@ -103,9 +109,18 @@ pub fn show(
         rect.right_top() + Vec2::new(-(btn_w + badge_w + 8.0), rect.height() - 2.0),
     );
 
-    let editing = uist.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane);
+    let editing = st
+        .win()
+        .is_some_and(|w| w.ui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane));
     if editing {
-        let buf = match uist.pane_edit.as_mut() {
+        // The editor buffer lives in the window ui while validation needs
+        // the pane map: field-split AppState for disjoint borrows.
+        let wi = st.active_idx();
+        let AppState { panes, windows, .. } = st;
+        let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) else {
+            return;
+        };
+        let buf = match wui.pane_edit.as_mut() {
             Some((_, b)) => b,
             None => return,
         };
@@ -131,23 +146,23 @@ pub fn show(
             // duplicates; pure digits would parse as a pane Id in ctl's
             // untagged PaneSelector. Keep the editor open and say why.
             let reason = if confirm {
-                reject_reason(st, buf.trim(), pane)
+                reject_reason(panes, buf.trim(), pane)
             } else {
                 None
             };
             if reason.is_none() {
                 if confirm {
                     let value = buf.trim().to_string();
-                    if let Some(m) = st.panes.get_mut(&pane) {
+                    if let Some(m) = panes.get_mut(&pane) {
                         m.manual_title = if value.is_empty() { None } else { Some(value) };
                     }
                     *dirty = true;
                 }
-                uist.pane_edit = None;
+                wui.pane_edit = None;
             }
-            uist.pane_edit_note = reason;
+            wui.pane_edit_note = reason;
         }
-        if let Some(note) = uist.pane_edit_note {
+        if let Some(note) = wui.pane_edit_note {
             ui.painter().text(
                 rect.left_bottom() + Vec2::new(8.0, 2.0),
                 egui::Align2::LEFT_TOP,
@@ -188,8 +203,10 @@ pub fn show(
             egui::Sense::click(),
         );
         if hit.double_clicked() {
-            uist.pane_edit = Some((pane, title));
-            uist.pane_edit_note = None;
+            if let Some(w) = st.win_mut() {
+                w.ui.pane_edit = Some((pane, title));
+                w.ui.pane_edit_note = None;
+            }
         }
     }
 
@@ -215,39 +232,50 @@ pub fn show(
         return;
     }
     if trans.clicked() {
-        uist.trans_open = if uist.trans_open == Some(pane) {
-            None
-        } else {
-            Some(pane)
-        };
+        if let Some(w) = st.win_mut() {
+            w.ui.trans_open = if w.ui.trans_open == Some(pane) {
+                None
+            } else {
+                Some(pane)
+            };
+        }
     }
     if color.clicked() {
-        uist.color_open = if uist.color_open == Some(pane) {
-            None
-        } else {
-            Some(pane)
-        };
-        uist.color_buf = st
-            .panes
-            .get(&pane)
-            .and_then(|m| m.bg_color)
-            .map(hex)
-            .unwrap_or_default();
+        let wi = st.active_idx();
+        let AppState { panes, windows, .. } = st;
+        if let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) {
+            wui.color_open = if wui.color_open == Some(pane) {
+                None
+            } else {
+                Some(pane)
+            };
+            wui.color_buf = panes
+                .get(&pane)
+                .and_then(|m| m.bg_color)
+                .map(hex)
+                .unwrap_or_default();
+        }
     }
 
-    color_popup(&color, pane, st, uist, pal, dirty);
-    trans_popup(&trans, pane, st, uist, pal, dirty);
+    color_popup(&color, pane, st, pal, dirty);
+    trans_popup(&trans, pane, st, pal, dirty);
 }
 
 fn color_popup(
     anchor: &egui::Response,
     pane: PaneId,
     st: &mut AppState,
-    uist: &mut UiState,
     pal: &Palette,
     dirty: &mut bool,
 ) {
-    let mut open = uist.color_open == Some(pane);
+    // Popups read the window ui (open flag / hex buffer) while applying
+    // colors to the pane map: split AppState into disjoint field borrows.
+    let wi = st.active_idx();
+    let AppState { panes, windows, .. } = st;
+    let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) else {
+        return;
+    };
+    let mut open = wui.color_open == Some(pane);
     Popup::from_response(anchor)
         .id(Id::new("pane_color").with(pane))
         .open_bool(&mut open)
@@ -261,38 +289,38 @@ fn color_popup(
                         .on_hover_text(hex(sw))
                         .clicked()
                     {
-                        if let Some(m) = st.panes.get_mut(&pane) {
+                        if let Some(m) = panes.get_mut(&pane) {
                             m.bg_color = Some(sw);
                         }
-                        uist.color_buf = hex(sw);
+                        wui.color_buf = hex(sw);
                         *dirty = true;
                     }
                 }
             });
             p.horizontal(|p| {
                 p.add(
-                    TextEdit::singleline(&mut uist.color_buf)
+                    TextEdit::singleline(&mut wui.color_buf)
                         .desired_width(80.0)
                         .hint_text("#rrggbb"),
                 );
-                if parse_rgb(&uist.color_buf).is_some() && p.button("apply").clicked() {
-                    if let Some(rgb) = parse_rgb(&uist.color_buf) {
-                        if let Some(m) = st.panes.get_mut(&pane) {
+                if parse_rgb(&wui.color_buf).is_some() && p.button("apply").clicked() {
+                    if let Some(rgb) = parse_rgb(&wui.color_buf) {
+                        if let Some(m) = panes.get_mut(&pane) {
                             m.bg_color = Some(rgb);
                         }
                         *dirty = true;
                     }
                 }
                 if p.button("clear").clicked() {
-                    if let Some(m) = st.panes.get_mut(&pane) {
+                    if let Some(m) = panes.get_mut(&pane) {
                         m.bg_color = None;
                     }
                     *dirty = true;
                 }
             });
         });
-    if !open && uist.color_open == Some(pane) {
-        uist.color_open = None;
+    if !open && wui.color_open == Some(pane) {
+        wui.color_open = None;
     }
 }
 
@@ -300,35 +328,39 @@ fn trans_popup(
     anchor: &egui::Response,
     pane: PaneId,
     st: &mut AppState,
-    uist: &mut UiState,
     pal: &Palette,
     dirty: &mut bool,
 ) {
-    let mut open = uist.trans_open == Some(pane);
+    let wi = st.active_idx();
+    let AppState { panes, windows, .. } = st;
+    let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) else {
+        return;
+    };
+    let mut open = wui.trans_open == Some(pane);
     Popup::from_response(anchor)
         .id(Id::new("pane_trans").with(pane))
         .open_bool(&mut open)
         .show(|p| {
             p.set_min_width(180.0);
-            let mut value = st.panes.get(&pane).map(|m| m.transparency).unwrap_or(0.0);
+            let mut value = panes.get(&pane).map(|m| m.transparency).unwrap_or(0.0);
             if p.add(egui::Slider::new(&mut value, 0.0..=1.0).text("pane bg"))
                 .changed()
             {
-                if let Some(m) = st.panes.get_mut(&pane) {
+                if let Some(m) = panes.get_mut(&pane) {
                     m.transparency = value;
                 }
                 *dirty = true;
             }
             p.label("0 = solid pane bg, 1 = theme bg");
-            if st.panes.get(&pane).is_some_and(|m| m.bg_color.is_none()) {
+            if panes.get(&pane).is_some_and(|m| m.bg_color.is_none()) {
                 p.colored_label(
                     to_c32(pal.bright[3]),
                     "no pane bg set: transparency blends the pane bg with the theme bg — set a pane bg color first (C), otherwise the slider has no visual effect",
                 );
             }
         });
-    if !open && uist.trans_open == Some(pane) {
-        uist.trans_open = None;
+    if !open && wui.trans_open == Some(pane) {
+        wui.trans_open = None;
     }
 }
 
@@ -348,8 +380,10 @@ pub fn menu(
         .and_then(|m| m.manual_title.clone())
         .unwrap_or_default();
     if ui.button("Rename pane").clicked() {
-        uist.pane_edit = Some((pane, title));
-        uist.pane_edit_note = None;
+        if let Some(w) = st.win_mut() {
+            w.ui.pane_edit = Some((pane, title));
+            w.ui.pane_edit_note = None;
+        }
     }
     if ui.button("Split horizontally").clicked() {
         actions::apply_pane_action(
@@ -366,7 +400,9 @@ pub fn menu(
         actions::apply_pane_action(st, sess, uist, tab, pane, PaneAction::SplitVertical, dirty);
     }
     if ui.button("Zoom pane").clicked() {
-        uist.zoom = !uist.zoom;
+        if let Some(w) = st.win_mut() {
+            w.ui.zoom = !w.ui.zoom;
+        }
     }
     // Single-tab chrome hides the tab bar (and its inspector cell), so the
     // pane menu carries the always-available entry point.
@@ -392,18 +428,18 @@ mod tests {
     fn reject_reason_blocks_digits_and_duplicates_only() {
         let mut st = fresh_state();
         st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
-        assert_eq!(reject_reason(&st, "", 1), None, "empty clears the title");
-        assert_eq!(reject_reason(&st, "agent", 1), None, "own title is fine");
-        assert!(reject_reason(&st, "7", 1).is_some(), "digits-only -> id");
+        assert_eq!(reject_reason(&st.panes, "", 1), None, "empty clears the title");
+        assert_eq!(reject_reason(&st.panes, "agent", 1), None, "own title is fine");
+        assert!(reject_reason(&st.panes, "7", 1).is_some(), "digits-only -> id");
         assert_eq!(
-            reject_reason(&st, "42x", 1),
+            reject_reason(&st.panes, "42x", 1),
             None,
             "digits plus text is fine"
         );
         assert_eq!(split_tree_pane(&mut st, 0, 1, Axis::Vertical), Some(2));
         // from the new pane's side, pane 1's claim is a conflict
         assert_eq!(
-            reject_reason(&st, "agent", 2),
+            reject_reason(&st.panes, "agent", 2),
             Some("another pane already uses this name")
         );
     }

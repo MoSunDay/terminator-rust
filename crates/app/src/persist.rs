@@ -8,14 +8,16 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use layout_tree::{
-    new_tab, new_tree, set_parent_ratio, split_pane, Axis, LayoutTree, Node, PaneId, MAX_RATIO,
-    MIN_RATIO,
+    close_tab, ensure_next_pane_id, new_tab, new_tree, next_pane_id, set_parent_ratio, split_pane,
+    Axis, LayoutTree, Node, PaneId, MAX_RATIO, MIN_RATIO,
 };
 use log::warn;
 use remote::{PaneKind, RemoteTarget};
 use serde::{Deserialize, Serialize};
 
-use crate::state::{fresh_state, new_pane_meta, AppState, PaneMeta};
+use crate::state::{
+    fresh_state, new_pane_meta, window_ui, AppState, PaneMeta, WindowState,
+};
 
 // ---------------------------------------------------------------------------
 // JSON model
@@ -24,9 +26,24 @@ use crate::state::{fresh_state, new_pane_meta, AppState, PaneMeta};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Persisted {
     theme: String,
+    /// Legacy single-window layout (pre multi-window files): the tabs of
+    /// the implicit first window. Still written as a mirror of window 1 so
+    /// older binaries keep loading new files.
+    #[serde(default)]
     tabs: Vec<PTab>,
     #[serde(default)]
     settings: PSettings,
+    /// One entry per OS window (new format); empty in legacy files.
+    #[serde(default)]
+    windows: Vec<PWindow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PWindow {
+    id: u64,
+    #[serde(default)]
+    active_tab: usize,
+    tabs: Vec<PTab>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,19 +249,31 @@ fn pn_from(node: &Node, panes: &BTreeMap<PaneId, PaneMeta>) -> PNode {
 }
 
 fn to_persisted(st: &AppState) -> Persisted {
-    Persisted {
-        theme: st.theme_name.clone(),
-        settings: PSettings::of(&st.settings),
-        tabs: st
-            .tree
-            .tabs
+    let tabs_of = |tree: &LayoutTree| -> Vec<PTab> {
+        tree.tabs
             .iter()
             .map(|t| PTab {
                 title: t.title.clone(),
                 focused: Some(t.focused),
                 root: pn_from(&t.root, &st.panes),
             })
-            .collect(),
+            .collect()
+    };
+    let windows = st
+        .windows
+        .iter()
+        .map(|w| PWindow {
+            id: w.id,
+            active_tab: w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1)),
+            tabs: tabs_of(&w.tree),
+        })
+        .collect();
+    Persisted {
+        theme: st.theme_name.clone(),
+        settings: PSettings::of(&st.settings),
+        // Legacy mirror: window 1's tabs for pre-multi-window binaries.
+        tabs: st.windows.first().map(|w| tabs_of(&w.tree)).unwrap_or_default(),
+        windows,
     }
 }
 
@@ -255,6 +284,10 @@ fn to_persisted(st: &AppState) -> Persisted {
 struct Builder {
     remap: HashMap<PaneId, PaneId>,
     panes: BTreeMap<PaneId, PaneMeta>,
+    /// Global pane-id budget: ids handed out so far. Every window's tree
+    /// allocator is raised above it before allocating, keeping pane ids
+    /// unique ACROSS windows.
+    next: PaneId,
 }
 
 impl Builder {
@@ -287,15 +320,73 @@ impl Builder {
 }
 
 fn from_persisted(p: &Persisted) -> AppState {
-    if p.tabs.is_empty() {
-        return fresh_state();
-    }
-    let mut tree = new_tree(&p.tabs[0].title);
+    // New-format files list windows; legacy files carry a bare tab list
+    // that maps onto one implicit window (id 1, first tab active).
+    let windows_src: Vec<(u64, usize, &[PTab])> = if p.windows.is_empty() {
+        if p.tabs.is_empty() {
+            return fresh_state();
+        }
+        vec![(1, 0, p.tabs.as_slice())]
+    } else {
+        p.windows
+            .iter()
+            .map(|w| (w.id, w.active_tab, w.tabs.as_slice()))
+            .collect()
+    };
     let mut b = Builder {
         remap: HashMap::new(),
         panes: BTreeMap::new(),
+        next: 2,
     };
-    for (i, pt) in p.tabs.iter().enumerate() {
+    let mut windows = Vec::new();
+    for (id, active_tab, tabs) in windows_src {
+        windows.push(build_window(id, active_tab, tabs, &mut b));
+    }
+    let next_pane_id = windows
+        .iter()
+        .map(|w| layout_tree::next_pane_id(&w.tree))
+        .max()
+        .unwrap_or(2);
+    let next_window_id = windows.iter().map(|w| w.id).max().unwrap_or(1).max(1) + 1;
+    AppState {
+        windows,
+        // Restore focuses the root window; interacting with a secondary
+        // window flips `focus` within a frame.
+        active: 0,
+        focus: 0,
+        theme_name: if p.theme.is_empty() {
+            fresh_state().theme_name
+        } else {
+            p.theme.clone()
+        },
+        settings: p.settings.to_settings(),
+        panes: b.panes,
+        next_pane_id,
+        next_window_id,
+    }
+}
+
+/// Rebuild one window's tree from its persisted tabs, remapping pane ids
+/// into the global id space (see [`Builder::next`]). An empty tab list
+/// yields a fresh default tree (the renderer respawns a tab into it).
+fn build_window(id: u64, active_tab: usize, tabs: &[PTab], b: &mut Builder) -> WindowState {
+    if tabs.is_empty() {
+        return WindowState {
+            id,
+            tree: new_tree("shell"),
+            ui: window_ui(),
+        };
+    }
+    let mut tree = new_tree(&tabs[0].title);
+    if b.next > 2 {
+        // Not the first window: new_tree() reserved pane 1, which window 1
+        // already owns. Drop that seed tab and re-seed the allocator above
+        // the global budget before allocating a fresh one.
+        close_tab(&mut tree, 0);
+        ensure_next_pane_id(&mut tree, b.next);
+        new_tab(&mut tree, &tabs[0].title);
+    }
+    for (i, pt) in tabs.iter().enumerate() {
         if i > 0 {
             new_tab(&mut tree, &pt.title);
         }
@@ -320,18 +411,14 @@ fn from_persisted(p: &Persisted) -> AppState {
             t.focused = focused;
         }
     }
-    // new_tab() leaves the LAST tab active while rebuilding; a restored
-    // session should open on the first one.
-    tree.active_tab = 0;
-    AppState {
+    // new_tab() leaves the LAST tab active while rebuilding; restore the
+    // saved one (legacy files default to 0).
+    tree.active_tab = active_tab.min(tree.tabs.len().saturating_sub(1));
+    b.next = b.next.max(next_pane_id(&tree));
+    WindowState {
+        id,
         tree,
-        theme_name: if p.theme.is_empty() {
-            fresh_state().theme_name
-        } else {
-            p.theme.clone()
-        },
-        settings: p.settings.to_settings(),
-        panes: b.panes,
+        ui: window_ui(),
     }
 }
 
@@ -441,11 +528,11 @@ mod tests {
         let back: Persisted = serde_json::from_str(&json).unwrap_or(p.clone());
         let st2 = from_persisted(&back);
         assert_eq!(st2.theme_name, st.theme_name);
-        assert_eq!(st2.tree.tabs.len(), st.tree.tabs.len());
-        assert_eq!(st2.tree.tabs[0].title, st.tree.tabs[0].title);
-        assert_eq!(layout_tree::pane_count(&st2.tree.tabs[0].root), 3);
-        assert!(st2.panes.contains_key(&st2.tree.tabs[0].focused));
-        let ids = layout_tree::sorted_pane_ids(&st2.tree.tabs[0].root);
+        assert_eq!(st2.windows[0].tree.tabs.len(), st.windows[0].tree.tabs.len());
+        assert_eq!(st2.windows[0].tree.tabs[0].title, st.windows[0].tree.tabs[0].title);
+        assert_eq!(layout_tree::pane_count(&st2.windows[0].tree.tabs[0].root), 3);
+        assert!(st2.panes.contains_key(&st2.windows[0].tree.tabs[0].focused));
+        let ids = layout_tree::sorted_pane_ids(&st2.windows[0].tree.tabs[0].root);
         let m1 = ids
             .iter()
             .find(|id| st2.panes.get(*id).is_some_and(|m| m.manual_title.is_some()));
@@ -474,8 +561,8 @@ mod tests {
         assert!(back.is_some());
         let back = back.unwrap_or_else(fresh_state);
         assert_eq!(
-            layout_tree::pane_count(&back.tree.tabs[0].root),
-            layout_tree::pane_count(&st.tree.tabs[0].root)
+            layout_tree::pane_count(&back.windows[0].tree.tabs[0].root),
+            layout_tree::pane_count(&st.windows[0].tree.tabs[0].root)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -491,24 +578,27 @@ mod tests {
             theme: "x".to_string(),
             tabs: vec![],
             settings: PSettings::default(),
+            windows: vec![],
         };
         let st = from_persisted(&p);
-        assert_eq!(st.tree.tabs.len(), 1);
+        assert_eq!(st.windows.len(), 1);
+        assert_eq!(st.windows[0].tree.tabs.len(), 1);
     }
 
     #[test]
     fn multi_tab_roundtrip() {
         let mut st = fresh_state();
         let _ = split_tree_pane(&mut st, 0, 1, Axis::Vertical);
-        let idx = layout_tree::new_tab(&mut st.tree, "second");
-        let pane = st.tree.tabs.get(idx).map(|t| t.focused).unwrap_or(0);
+        let tree = &mut st.windows[0].tree;
+        let idx = layout_tree::new_tab(tree, "second");
+        let pane = tree.tabs.get(idx).map(|t| t.focused).unwrap_or(0);
         st.panes.insert(pane, new_pane_meta(PaneKind::Local));
         let back = from_persisted(&to_persisted(&st));
-        assert_eq!(back.tree.tabs.len(), 2);
-        let n0 = layout_tree::pane_count(&back.tree.tabs[0].root);
-        let n1 = layout_tree::pane_count(&back.tree.tabs[1].root);
+        assert_eq!(back.windows[0].tree.tabs.len(), 2);
+        let n0 = layout_tree::pane_count(&back.windows[0].tree.tabs[0].root);
+        let n1 = layout_tree::pane_count(&back.windows[0].tree.tabs[1].root);
         assert_eq!((n0, n1), (2, 1));
-        assert_ne!(back.tree.tabs[0].root, back.tree.tabs[1].root);
+        assert_ne!(back.windows[0].tree.tabs[0].root, back.windows[0].tree.tabs[1].root);
     }
 
     #[test]
@@ -545,13 +635,16 @@ mod tests {
                 "kind": "Local", "manual_title": null,
                 "bg": null, "transparency": 0.0, "degraded": false } } }
         });
-        obj["tabs"].as_array_mut().unwrap().push(lone);
+        obj["windows"].as_array_mut().unwrap()[0]["tabs"]
+            .as_array_mut()
+            .unwrap()
+            .push(lone);
         let back: Persisted = serde_json::from_value(v).unwrap();
         let st2 = from_persisted(&back);
-        assert_eq!(st2.tree.tabs.len(), 2);
-        let extra = &st2.tree.tabs[1];
+        assert_eq!(st2.windows[0].tree.tabs.len(), 2);
+        let extra = &st2.windows[0].tree.tabs[1];
         assert!(layout_tree::contains_pane(&extra.root, extra.focused));
-        assert_ne!(extra.focused, st2.tree.tabs[0].focused);
+        assert_ne!(extra.focused, st2.windows[0].tree.tabs[0].focused);
     }
 
     #[test]
@@ -577,5 +670,76 @@ mod tests {
             from_persisted(&p).settings,
             crate::state::Settings::default()
         );
+    }
+
+    /// Pre-multi-window state.json: a bare tab list (no `windows` key)
+    /// loads as one implicit window.
+    #[test]
+    fn legacy_tabs_load_as_single_window() {
+        let mut st = sample();
+        let tree = &mut st.windows[0].tree;
+        let idx = layout_tree::new_tab(tree, "legacy second");
+        let pane = tree.tabs.get(idx).map(|t| t.focused).unwrap_or(0);
+        st.panes.insert(pane, new_pane_meta(PaneKind::Local));
+        let mut v = serde_json::to_value(to_persisted(&st)).unwrap();
+        if let Some(o) = v.as_object_mut() {
+            o.remove("windows");
+        }
+        let p: Persisted = serde_json::from_value(v).unwrap();
+        assert!(p.windows.is_empty(), "file is legacy-shaped");
+        let back = from_persisted(&p);
+        assert_eq!(back.windows.len(), 1);
+        assert_eq!(back.windows[0].id, 1);
+        assert_eq!(back.windows[0].tree.tabs.len(), 2);
+        assert_eq!(back.active, 0);
+        assert_eq!(back.next_window_id, 2);
+    }
+
+    /// Two windows round-trip with globally unique pane ids and per-window
+    /// tab trees; the legacy `tabs` mirror still tracks window 1.
+    #[test]
+    fn two_window_roundtrip_keeps_pane_ids_unique() {
+        let mut st = fresh_state();
+        let _ = split_tree_pane(&mut st, 0, 1, Axis::Vertical);
+        // Second window: seed its allocator above window 1's ids.
+        st.windows.push(WindowState {
+            id: 7,
+            tree: {
+                let mut t = layout_tree::new_tree("win2");
+                layout_tree::close_tab(&mut t, 0);
+                layout_tree::ensure_next_pane_id(&mut t, st.next_pane_id);
+                layout_tree::new_tab(&mut t, "win2");
+                t
+            },
+            ui: window_ui(),
+        });
+        let w2_pane = st.windows[1].tree.tabs[0].focused;
+        st.panes.insert(w2_pane, new_pane_meta(PaneKind::Local));
+        let p = to_persisted(&st);
+        assert_eq!(p.windows.len(), 2);
+        assert_eq!(p.tabs.len(), p.windows[0].tabs.len(), "legacy mirror");
+
+        let back = from_persisted(&to_persisted(&st));
+        assert_eq!(back.windows.len(), 2);
+        assert_eq!(back.windows[0].id, 1);
+        assert_eq!(back.windows[1].id, 7);
+        assert_eq!(back.active, 0);
+        assert_eq!(back.next_window_id, 8);
+        let mut all = Vec::new();
+        for w in &back.windows {
+            for t in &w.tree.tabs {
+                layout_tree::pane_ids(&t.root, &mut all);
+            }
+        }
+        let n = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), n, "pane ids unique across windows");
+        assert_eq!(
+            back.panes.len(),
+            n,
+            "every rebuilt pane has metadata"
+        );
+        assert!(back.next_pane_id > *all.iter().max().unwrap_or(&0));
     }
 }

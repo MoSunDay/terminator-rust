@@ -4,8 +4,11 @@
 # keyboard alone, and the app itself must have a global quit:
 #   K1: plain typing reaches the TUI (the pane child is the opencoder
 #       binary, not a shell) and the TUI stays alive for the exit keys.
-#   K2: Ctrl+D exits opencoder (every mode: menu / prompt / task).
-#   K3: Ctrl+C exits opencoder when idle (busy = cancel only, by design).
+#   K2: double Ctrl+C exits opencoder (2026-09 upstream gesture; the old
+#       Ctrl+D/Esc/single-Ctrl+C exit was removed upstream).
+#   K3: a bare Ctrl+D is inert at the idle prompt (old gesture gone; the
+#       0x04 encoding path itself is what is under test); double Ctrl+C
+#       then exits.
 #   K4: Ctrl+Shift+W force-closes a pane while the TUI is running.
 #   K6: a single click closes a DEAD pane (leftover DEC mouse modes must
 #       not eat the click); the app stays alive while another pane
@@ -175,22 +178,36 @@ done
 sleep 1.5   # let the TUIs settle
 
 # --- K2: Ctrl+D exits opencoder ------------------------------------------
-step "K2: Ctrl+D exits the focused opencoder (agent1)"
+step "K2: double Ctrl+C exits the focused opencoder (agent1)"
+# opencode (2026-09 upstream) swapped the exit gesture: Ctrl+D/Esc/single
+# Ctrl+C no longer exit the idle prompt - Ctrl+C TWICE does (exit 0).
 # NOTE: no clicks - opencoder tracks the mouse (1002/1003), a click is
 # reported to it and can leave it busy, where Ctrl+C means cancel.
-xdotool key --clearmodifiers ctrl+d
+xdotool key --clearmodifiers ctrl+c
+sleep 0.4
+xdotool key --clearmodifiers ctrl+c
 wait_pid_gone "$P1_PID" 40 \
-    || { "$CTL" capture agent1 | tail -5; fail "opencoder survived Ctrl+D"; }
-echo "agent1 exited via Ctrl+D"
+    || { "$CTL" capture agent1 | tail -5; fail "opencoder survived Ctrl+C x2"; }
+echo "agent1 exited via Ctrl+C x2"
 
-# --- K3: Ctrl+C exits idle opencoder --------------------------------------
-step "K3: Ctrl+C exits the idle opencoder (agent2)"
+# --- K3: Ctrl+D inert at idle; double Ctrl+C exits -----------------------
+step "K3: bare Ctrl+D is inert at the idle prompt (agent2)"
+# The old exit gesture is GONE upstream: a bare Ctrl+D (kitty-flags
+# workaround path: 0x04 must still encode and reach the child) must NOT
+# kill a fully-idle opencode. Fully idle = single Ctrl+C would exit, so
+# probe with Ctrl+D first, then exit via the new gesture.
 xdotool key --clearmodifiers ctrl+shift+Right   # focus agent2
+sleep 0.4
+xdotool key --clearmodifiers ctrl+d
+sleep 1.5
+kill -0 "$P2_PID" 2>/dev/null \
+    || fail "agent2 exited on a bare Ctrl+D (gesture regression?)"
+xdotool key --clearmodifiers ctrl+c
 sleep 0.4
 xdotool key --clearmodifiers ctrl+c
 wait_pid_gone "$P2_PID" 40 \
-    || { "$CTL" capture agent2 | tail -5; fail "opencoder survived Ctrl+C"; }
-echo "agent2 exited via Ctrl+C"
+    || { "$CTL" capture agent2 | tail -5; fail "opencoder survived Ctrl+C x2"; }
+echo "agent2 ignored Ctrl+D, exited via Ctrl+C x2"
 
 # --- K4: Ctrl+Shift+W closes a live pane ----------------------------------
 step "K4: Ctrl+Shift+W force-closes the running pane (agent3)"
