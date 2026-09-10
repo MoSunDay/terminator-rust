@@ -15,8 +15,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   sessions; /proc discovery of the pane's opencoder process
 - oc-store: direct rusqlite access to opencoder per-workdir stores
   (schema guard v18, insert/pending/receipts; `oc-store-fixture` dev bin)
-- app: egui UI; binary `terminator-rust`; state at
-  ~/.config/terminator-rust/state.json; UDS ipc in src/ipc/
+- app: egui UI; binary `terminator-rust`; MULTI-OS-WINDOW: AppState
+  {windows: Vec<WindowState{id,tree,WindowUi}>, active=rendering idx,
+  focus=user window}; state at ~/.config/terminator-rust/state.json
+  (PWindow[] + legacy tabs mirror); UDS ipc in src/ipc/
 
 ## Build/e2e
 - `cargo build/test --workspace` (PKG_CONFIG_PATH set by .cargo/config.toml)
@@ -32,6 +34,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   live socket: bare Ctrl+C ^C echo, cross-pane drag SGR press/motion/
   RELEASE landing in the press-owner pane, Shift+PageUp/End scrollback
   paging, Ctrl+C actually interrupting a foreground job)
+- multi-window e2e: `scripts/bin/e2e-windows.sh` (Xvfb: Ctrl+Shift+N
+  spawns a real second X window, cross-window typing isolation via ctl
+  capture, last-pane close removes the window, re-spawn, quit-from-
+  secondary kills the app)
 - opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
   /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
   binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
@@ -165,9 +171,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   cleanly). Without ~/.opencoder/config.json it sits in the onboarding form
   where Ctrl+C only cancels (only Esc/Ctrl+D exit); a dummy
   provider/base_url/api_key/model config passes local validation with no
-  network and gives the idle prompt where ^C exits.
-- shortcuts: Ctrl+Shift+Q = global quit (Action::Quit -> egui
-  ViewportCommand::Close; to_skey must map Key::Q); pane title centering
+  network and gives the idle prompt. 2026-09 GESTURE CHANGE: the idle
+  prompt now exits only on Ctrl+C TWICE (exit 0); Ctrl+D/Esc/single
+  Ctrl+C are inert (probe scripts that send one ^C while the UI is still
+  animating need two - a fully-idle prompt may exit on the first).
+  e2e-oc-exit K2/K3 assert the NEW gesture; Ctrl+D stays under test as
+  the kitty-flags encoding path (must arrive, must not exit).
+- shortcuts: Ctrl+Shift+Q = global quit (Action::Quit -> ROOT viewport
+  Close via send_viewport_cmd_to, so the press works from ANY window;
+  to_skey must map Key::Q); Ctrl+Shift+N = new OS window
+  (Action::NewWindow -> windows::spawn); pane title centering
   (pane_header.rs draws at title_rect.center() CENTER_CENTER) is
   pixel-asserted by e2e-ui-style.sh check G; the chrome is a SINGLE row -
   the old centered window-title row is deleted (it duplicated the tab name
@@ -224,11 +237,48 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   global id remap can resolve a stale focused id into ANOTHER tab -> keys
   leak cross-tab) and active_tab forced to 0 on restore.
 
+## Multi-window model (2026-09)
+- one root pass renders windows[0]; `windows::render_secondaries` drives
+  each secondary via `ctx.show_viewport_immediate(ViewportId(Id::new(id)),
+  builder, cb)` - eframe native wgpu registers the immediate-viewport
+  renderer so these ARE real OS windows (no backend falls back to
+  embedded). The callback gets `&mut Ui` and runs synchronously INSIDE
+  that viewport's own input pass: keyboard::handle/pointer events are
+  per-viewport; key events only reach the X-focused viewport.
+- window ids start at 1 (ViewportId(0)=ROOT; Id::new hashes the u64);
+  pane ids stay globally unique via seed_alloc/collect_alloc - a spawned
+  window's tree drops the new_tree seed tab (pane id 1 would collide)
+  then ensures_next_pane_id + new_tab (same trick as persist
+  build_window).
+- empty ACTIVE tree: root (idx 0) respawns a tab or quits when it is the
+  LAST window (quitting flag); a secondary removes itself
+  (actions::handle_empty_window; terminate+panes.remove+retarget focus).
+  WM-close of a secondary = remove that window only; secondary close
+  semantics tested live. Ctrl+Shift+Q from anywhere quits the whole app.
+- `st.active` = window being rendered (set inside windows::render);
+  `st.focus` = user-focused window (viewport focused==Some(true)); the
+  IPC drain + inspector run on `active = focus` between render passes.
+- windows::render bails early when its window vanished mid-pass
+  (keyboard action removed it) - never render the NEXT window's tree
+  into the dying viewport. Secondary viewport destruction lags a few
+  seconds behind (eframe GC) - e2e polls for the X window to disappear.
+- remote desktop (WM present): `xdotool windowfocus` is NOT enough for
+  key delivery - `xdotool windowactivate` (EWMH _NET_ACTIVE_WINDOW) is
+  required; on bare Xvfb (no WM) windowfocus works (XSetInputFocus).
+  `import -window WID` screenshots a 32-bit ARGB window as ALL BLACK -
+  screenshot `import -window root` and read the window's pixels from the
+  full image instead.
+
 ## Verified end-to-end (2026-09)
 - borderless/quit batch (2026-09-10): e2e-oc-exit.sh K4 (Ctrl+Shift+W on a
   non-last pane keeps the app alive) + K6 (dead-pane click closes only
   that pane); e2e-ui-style.sh I1/I2 (single tab = zero chrome, header at
   y=0); all Xvfb e2e scripts export TERMINATOR_OPAQUE=1.
+- multi-window batch (2026-09-10): e2e-windows.sh W1-W5 all green; full
+  suite re-run green (ui-style, mouse-key, ipc-oc, cjk, oc-exit with the
+  new opencode gesture); deployed 192.168.31.196 and verified LIVE (2 X
+  windows, per-window typing isolation via ctl, window close keeps the
+  app, opacity 1.0 renders mocha bg not black).
 Xvfb: render + catppuccin colors exact px, key echo, ANSI 256 bg exact
 px, Ctrl+Shift+E split, state.json save/restore across restart, WM close.
 Batch-1 mouse (Xvfb): SGR press/release/motion + wheel press-only
