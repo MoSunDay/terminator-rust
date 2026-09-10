@@ -15,9 +15,7 @@ use log::warn;
 use remote::{PaneKind, RemoteTarget};
 use serde::{Deserialize, Serialize};
 
-use crate::state::{
-    fresh_state, new_pane_meta, window_ui, AppState, PaneMeta, WindowState,
-};
+use crate::state::{fresh_state, new_pane_meta, window_ui, AppState, PaneMeta, WindowState};
 
 // ---------------------------------------------------------------------------
 // JSON model
@@ -272,7 +270,11 @@ fn to_persisted(st: &AppState) -> Persisted {
         theme: st.theme_name.clone(),
         settings: PSettings::of(&st.settings),
         // Legacy mirror: window 1's tabs for pre-multi-window binaries.
-        tabs: st.windows.first().map(|w| tabs_of(&w.tree)).unwrap_or_default(),
+        tabs: st
+            .windows
+            .first()
+            .map(|w| tabs_of(&w.tree))
+            .unwrap_or_default(),
         windows,
     }
 }
@@ -528,9 +530,18 @@ mod tests {
         let back: Persisted = serde_json::from_str(&json).unwrap_or(p.clone());
         let st2 = from_persisted(&back);
         assert_eq!(st2.theme_name, st.theme_name);
-        assert_eq!(st2.windows[0].tree.tabs.len(), st.windows[0].tree.tabs.len());
-        assert_eq!(st2.windows[0].tree.tabs[0].title, st.windows[0].tree.tabs[0].title);
-        assert_eq!(layout_tree::pane_count(&st2.windows[0].tree.tabs[0].root), 3);
+        assert_eq!(
+            st2.windows[0].tree.tabs.len(),
+            st.windows[0].tree.tabs.len()
+        );
+        assert_eq!(
+            st2.windows[0].tree.tabs[0].title,
+            st.windows[0].tree.tabs[0].title
+        );
+        assert_eq!(
+            layout_tree::pane_count(&st2.windows[0].tree.tabs[0].root),
+            3
+        );
         assert!(st2.panes.contains_key(&st2.windows[0].tree.tabs[0].focused));
         let ids = layout_tree::sorted_pane_ids(&st2.windows[0].tree.tabs[0].root);
         let m1 = ids
@@ -598,7 +609,10 @@ mod tests {
         let n0 = layout_tree::pane_count(&back.windows[0].tree.tabs[0].root);
         let n1 = layout_tree::pane_count(&back.windows[0].tree.tabs[1].root);
         assert_eq!((n0, n1), (2, 1));
-        assert_ne!(back.windows[0].tree.tabs[0].root, back.windows[0].tree.tabs[1].root);
+        assert_ne!(
+            back.windows[0].tree.tabs[0].root,
+            back.windows[0].tree.tabs[1].root
+        );
     }
 
     #[test]
@@ -735,11 +749,7 @@ mod tests {
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), n, "pane ids unique across windows");
-        assert_eq!(
-            back.panes.len(),
-            n,
-            "every rebuilt pane has metadata"
-        );
+        assert_eq!(back.panes.len(), n, "every rebuilt pane has metadata");
         assert!(back.next_pane_id > *all.iter().max().unwrap_or(&0));
     }
 }

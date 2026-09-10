@@ -99,7 +99,8 @@ pub fn install(ctx: &egui::Context) -> bool {
         Some(d) => d,
         None => FontData::from_static(CJK_FONT_BYTES),
     };
-    defs.font_data.insert(CJK_FONT_NAME.to_string(), data.into());
+    defs.font_data
+        .insert(CJK_FONT_NAME.to_string(), data.into());
     push_families(&mut defs);
     ctx.set_fonts(defs);
     log::info!("CJK fallback font installed: {CJK_FONT_NAME}");
@@ -112,10 +113,7 @@ mod tests {
 
     #[test]
     fn parse_font_spec_splits_face_index() {
-        assert_eq!(
-            parse_font_spec("path.ttc"),
-            (PathBuf::from("path.ttc"), 0)
-        );
+        assert_eq!(parse_font_spec("path.ttc"), (PathBuf::from("path.ttc"), 0));
         assert_eq!(
             parse_font_spec("path.ttc:2"),
             (PathBuf::from("path.ttc"), 2)
@@ -133,10 +131,7 @@ mod tests {
             parse_font_spec("C:\\x\\font.ttf"),
             (PathBuf::from("C:\\x\\font.ttf"), 0)
         );
-        assert_eq!(
-            parse_font_spec("path:bad"),
-            (PathBuf::from("path:bad"), 0)
-        );
+        assert_eq!(parse_font_spec("path:bad"), (PathBuf::from("path:bad"), 0));
     }
 
     #[test]
@@ -184,4 +179,3 @@ mod tests {
         assert_eq!(hits, 1, "second push must not duplicate: {mono:?}");
     }
 }
-

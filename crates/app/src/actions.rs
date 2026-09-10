@@ -101,7 +101,10 @@ pub fn do_split(
     axis: Axis,
     dirty: &mut bool,
 ) -> Option<PaneId> {
-    let target = pane.or_else(|| st.win().and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused)))?;
+    let target = pane.or_else(|| {
+        st.win()
+            .and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused))
+    })?;
     let new_id = state::split_tree_pane(st, tab, target, axis)?;
     spawn_pane(st, sess, new_id);
     *dirty = true;
@@ -303,7 +306,10 @@ pub fn apply_action(
             do_split(st, sess, tab, None, axis, dirty);
         }
         Action::ClosePane => {
-            if let Some(pane) = st.win().and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused)) {
+            if let Some(pane) = st
+                .win()
+                .and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused))
+            {
                 do_close_pane(st, sess, ui, tab, pane, dirty);
             }
         }
@@ -356,7 +362,10 @@ pub fn apply_action(
             }
         }
         Action::Respawn => {
-            if let Some(pane) = st.win().and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused)) {
+            if let Some(pane) = st
+                .win()
+                .and_then(|w| w.tree.tabs.get(tab).map(|t| t.focused))
+            {
                 do_respawn(st, sess, pane, dirty);
             }
         }
