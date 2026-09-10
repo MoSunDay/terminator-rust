@@ -87,6 +87,25 @@ fn ls_style_directory_listing_renders() {
     assert!(frame.cells[0][0].bold, "dir entries are bold in ls --color");
 }
 
+#[test]
+fn cjk_wide_cells_flagged_with_spacer_tails() {
+    // "\u{6C49}a\u{5B57}" = Han, 'a', Han: each Han cell is wide and
+    // followed by an empty spacer tail cell.
+    let frame = frame_of(|t| t.vt_write("\u{6C49}a\u{5B57}".as_bytes()));
+    let row = &frame.cells[0];
+    assert_eq!(row[0].text, "\u{6C49}");
+    assert!(row[0].wide);
+    assert_eq!(row[1].text, "");
+    assert!(!row[1].wide);
+    assert_eq!(row[2].text, "a");
+    assert!(!row[2].wide);
+    assert_eq!(row[3].text, "\u{5B57}");
+    assert!(row[3].wide);
+    assert_eq!(row[4].text, "");
+    assert!(!row[4].wide);
+    assert_eq!(frame.cursor.x, 5, "wide cells advance the cursor by two");
+}
+
 // -------- pty integration --------
 
 fn wait_output(sess: &mut crate::task::Session, millis: u64) {
