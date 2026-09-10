@@ -48,6 +48,10 @@ pub struct PaneInfo {
     pub alive: bool,
     /// Observed exit code once the child terminated.
     pub exit: Option<i32>,
+    /// Id of the OS window owning the pane (1 = root). Serde default so a
+    /// list response from an older server still deserializes (0 = unknown).
+    #[serde(default)]
+    pub window: u64,
 }
 
 /// Screen capture result: plain text plus enough geometry to interpret it.
@@ -160,5 +164,23 @@ mod tests {
         );
         let r: Response = serde_json::from_str(r#"{"ok":"written","bytes":3}"#).unwrap();
         assert_eq!(r, Response::Written { bytes: 3 });
+    }
+
+    #[test]
+    fn pane_info_window_defaults_for_old_servers() {
+        // A list response without the `window` key (pre-window field
+        // server) still loads: the field defaults to 0 = unknown.
+        let old: Vec<PaneInfo> = serde_json::from_str(
+            r#"[{"id":3,"name":null,"kind":"local","osc_title":"","cols":80,"rows":24,"pid":9,"alive":true,"exit":null}]"#,
+        )
+        .unwrap();
+        assert_eq!(old[0].window, 0);
+        let new: Vec<PaneInfo> = serde_json::from_str(
+            r#"[{"id":3,"name":null,"kind":"local","osc_title":"","cols":80,"rows":24,"pid":9,"alive":true,"exit":null,"window":2}]"#,
+        )
+        .unwrap();
+        assert_eq!(new[0].window, 2);
+        let out = serde_json::to_string(&new[0]).unwrap();
+        assert!(out.contains(r#""window":2"#), "{out}");
     }
 }

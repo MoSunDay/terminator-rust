@@ -37,14 +37,21 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - multi-window e2e: `scripts/bin/e2e-windows.sh` (Xvfb: Ctrl+Shift+N
   spawns a real second X window, cross-window typing isolation via ctl
   capture, last-pane close removes the window, re-spawn, quit-from-
-  secondary kills the app)
+  secondary kills the app, W6 root last-pane close with a sibling alive
+  respawns a fresh root tab instead of quitting). CI runs it in
+  .github/workflows/ci.yml (zig via PyPI wheel + fetch-vendor.sh for the
+  ghostty pin; fmt/clippy are hard gates since that workflow landed).
 - opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
   /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
   binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
   ~/.opencoder/config.json needed - onboarding form eats ^C; focus navigation
   via Ctrl+Shift+Right, NEVER clicks into mouse-tracking panes; K4 =
   Ctrl+Shift+W on a NON-last pane keeps the app alive (quit only on the
-  last close), K6 = a click closes a DEAD pane)
+  last close), K6 = a click closes a DEAD pane; opencode FIRST RUN seeds
+  ~/.opencoder (skills installer + state dirs) - concurrent first-runs
+  RACE it and instances exit(1) silently after "first frame" (repro: new
+  HOME x3 pty = 2 dead, warm HOME = 3/3 alive), so the script WARMS UP the
+  scratch HOME with one throwaway pty run before launching the app)
 - cjk font e2e: `scripts/bin/e2e-cjk.sh` (fontTools cmap coverage of the
   embedded subset; Xvfb live app: ctl send `echo 汉字测试` capture round-trip
   + scrot/PIL connected-ink assertions - real Han ink ~15x17px with interior
@@ -171,12 +178,17 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   cleanly). Without ~/.opencoder/config.json it sits in the onboarding form
   where Ctrl+C only cancels (only Esc/Ctrl+D exit); a dummy
   provider/base_url/api_key/model config passes local validation with no
-  network and gives the idle prompt. 2026-09 GESTURE CHANGE: the idle
-  prompt now exits only on Ctrl+C TWICE (exit 0); Ctrl+D/Esc/single
-  Ctrl+C are inert (probe scripts that send one ^C while the UI is still
-  animating need two - a fully-idle prompt may exit on the first).
-  e2e-oc-exit K2/K3 assert the NEW gesture; Ctrl+D stays under test as
-  the kitty-flags encoding path (must arrive, must not exit).
+  network and gives the idle prompt. GESTURE DRIFTS with
+  the OC_BIN build (2026-09-10 saw two flips in one day): the 22:41
+  build exits the idle prompt on a SINGLE Ctrl+C AND on a bare Ctrl+D
+  (status 0 both, Esc inert); the morning build needed Ctrl+C TWICE with
+  Ctrl+D inert. e2e K2 uses spaced Ctrl+C x2 (valid under both); K3
+  rides Ctrl+D-exits as POSITIVE proof of 0x04 delivery through the
+  kitty-flags workaround (dropped key = pane stays alive). Probing
+  gestures on a raw pty: write the MASTER side (pty.openpty +
+  os.write) - writing /dev/pts/N (slave) simulates terminal OUTPUT,
+  keys never reach the child, and every "inert" observed that way is
+  void.
 - shortcuts: Ctrl+Shift+Q = global quit (Action::Quit -> ROOT viewport
   Close via send_viewport_cmd_to, so the press works from ANY window;
   to_skey must map Key::Q); Ctrl+Shift+N = new OS window
@@ -257,7 +269,12 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   semantics tested live. Ctrl+Shift+Q from anywhere quits the whole app.
 - `st.active` = window being rendered (set inside windows::render);
   `st.focus` = user-focused window (viewport focused==Some(true)); the
-  IPC drain + inspector run on `active = focus` between render passes.
+  IPC drain runs on `active = focus` between render passes.
+- inspector is PER-WINDOW (WindowUi.inspector): each window's pass draws
+  its own panel (root: main.rs after render(0); secondary: inside the
+  show_viewport_immediate callback - the callback runs as that viewport's
+  own pass, so egui::Window layers land THERE and the font slider writes
+  windows[idx]). Two open inspectors coexist via Id salted with win_id.
 - windows::render bails early when its window vanished mid-pass
   (keyboard action removed it) - never render the NEXT window's tree
   into the dying viewport. Secondary viewport destruction lags a few
@@ -290,6 +307,8 @@ reconnect to live session. e2e gate: bootstrap config is chrome-free so
 "ZELLIJ" NEVER renders; gate = loading screen cleared + typed marker
 (zellij round-trip) + session in list-sessions.
 Control channel (2026-09, scripts/bin/e2e-ipc-oc.sh): ctl list/capture/send
+  (PaneInfo carries `window` u64, serde-default 0 for old servers; the
+  text table has a WIN column after ID - column-count parsers must adapt)
 over the live socket, TERMINATOR_SOCK present in the pane child env, oc link
 via /proc fd discovery, submit -> pending -> consume -> receipt by seq,
 honest --wait timeout, second instance reclaims a SIGTERM-stale socket

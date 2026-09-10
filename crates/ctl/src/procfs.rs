@@ -221,6 +221,7 @@ mod tests {
             pid,
             alive: true,
             exit: None,
+            window: 1,
         };
         assert_eq!(pane_pid(&info), pid);
         info.pid = 0;

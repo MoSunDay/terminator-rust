@@ -17,7 +17,11 @@ const BTN: f32 = 16.0;
 /// None when the candidate manual title is acceptable: names must be
 /// unique (control-socket addressing) and not digits-only (reserved for
 /// pane ids in ctl's untagged PaneSelector).
-fn reject_reason(panes: &BTreeMap<PaneId, PaneMeta>, value: &str, pane: PaneId) -> Option<&'static str> {
+fn reject_reason(
+    panes: &BTreeMap<PaneId, PaneMeta>,
+    value: &str,
+    pane: PaneId,
+) -> Option<&'static str> {
     if value.is_empty() {
         return None;
     }
@@ -405,9 +409,12 @@ pub fn menu(
         }
     }
     // Single-tab chrome hides the tab bar (and its inspector cell), so the
-    // pane menu carries the always-available entry point.
+    // pane menu carries the always-available entry point. The flag is
+    // per-window: the panel opens in THIS window.
     if ui.button("Inspector").clicked() {
-        uist.inspector = !uist.inspector;
+        if let Some(w) = st.win_mut() {
+            w.ui.inspector = !w.ui.inspector;
+        }
     }
     if ui.button("Respawn pane").clicked() {
         actions::apply_pane_action(st, sess, uist, tab, pane, PaneAction::Respawn, dirty);
@@ -428,9 +435,20 @@ mod tests {
     fn reject_reason_blocks_digits_and_duplicates_only() {
         let mut st = fresh_state();
         st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
-        assert_eq!(reject_reason(&st.panes, "", 1), None, "empty clears the title");
-        assert_eq!(reject_reason(&st.panes, "agent", 1), None, "own title is fine");
-        assert!(reject_reason(&st.panes, "7", 1).is_some(), "digits-only -> id");
+        assert_eq!(
+            reject_reason(&st.panes, "", 1),
+            None,
+            "empty clears the title"
+        );
+        assert_eq!(
+            reject_reason(&st.panes, "agent", 1),
+            None,
+            "own title is fine"
+        );
+        assert!(
+            reject_reason(&st.panes, "7", 1).is_some(),
+            "digits-only -> id"
+        );
         assert_eq!(
             reject_reason(&st.panes, "42x", 1),
             None,

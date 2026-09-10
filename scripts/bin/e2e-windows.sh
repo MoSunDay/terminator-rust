@@ -8,6 +8,9 @@
 #       window; the app and the root window stay alive.
 #   W4: a re-spawned secondary works the same way (window ids progress).
 #   W5: Ctrl+Shift+Q pressed in the SECONDARY window quits the whole app.
+#   W6: closing the ROOT window's last pane while a sibling window lives
+#       respawns a fresh root tab (root never dies with siblings) instead
+#       of quitting the app.
 #
 # Usage: scripts/bin/e2e-windows.sh  (repo root; needs Xvfb + xdotool).
 #        E2E_KEEP=1 keeps the scratch dir for debugging.
@@ -173,8 +176,36 @@ P_SEC2=$(echo "$ids" | tail -1)
 xdotool type --delay 60 "E2EWIN3"
 wait_capture "$P_SEC2" E2EWIN3 || fail "re-spawned pane missing marker"
 
+# --- W6: root's last pane close respawns a tab (sibling alive) ------------
+step "W6: closing the ROOT window's last pane respawns a fresh root tab"
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+sleep 1
+xdotool key --clearmodifiers ctrl+shift+w
+kill -0 "$APP_PID" 2>/dev/null || { tail "$ROOT/app.log"; fail "app quit on root last-pane close with a sibling alive"; }
+wait_win '^terminator-rust$' >/dev/null || fail "root window vanished with a sibling alive"
+# Root respawns a NEW pane (fresh id, not the closed one); wait for the
+# bookkeeping to settle at 2 panes again.
+NEW_ROOT=""
+for _ in $(seq 1 40); do
+    ids=$(pane_ids)
+    if [ "$(echo "$ids" | wc -l)" -eq 2 ] && [ "$ids" != "$P_ROOT $P_SEC2" ]; then
+        NEW_ROOT=$(echo "$ids" | grep -vx "$P_SEC2" || true)
+        [ -n "$NEW_ROOT" ] && [ "$NEW_ROOT" != "$P_ROOT" ] && break
+    fi
+    sleep 0.25
+done
+[ -n "${NEW_ROOT:-}" ] && [ "$NEW_ROOT" != "$P_ROOT" ]     || { "$CTL" list; fail "root did not respawn a fresh pane after its last close"; }
+xdotool type --delay 60 "E2EWIN4"
+wait_capture "$NEW_ROOT" E2EWIN4 || { "$CTL" capture "$NEW_ROOT" | tail -3; fail "respawned root pane missing marker"; }
+wait_capture "$P_SEC2" E2EWIN3 || fail "sibling pane disturbed by root respawn"
+echo "root respawned pane $NEW_ROOT (was $P_ROOT), sibling intact"
+
 # --- W5: Ctrl+Shift+Q from the secondary quits the whole app --------------
 step "W5: Ctrl+Shift+Q in the secondary quits the app"
+xdotool windowfocus "$SEC2_WID"
+until xdotool windowfocus "$SEC2_WID" 2>/dev/null; do sleep 0.3; done
+sleep 0.5
 xdotool key --clearmodifiers ctrl+shift+q
 wait_pid_gone "$APP_PID" 40 || { tail "$ROOT/app.log"; fail "app survived Ctrl+Shift+Q from secondary"; }
 echo "app exited cleanly"

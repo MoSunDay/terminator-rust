@@ -44,18 +44,29 @@ fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, hint: &str) {
     });
 }
 
-/// Show the inspector window when `d.ui.inspector` is set.
-pub fn show(ctx: &Context, d: &mut Data) {
-    if !d.ui.inspector {
+/// Show the inspector window of OS window `idx` when its per-window
+/// `inspector` flag is set. Must be called from THAT window's render pass
+/// (root pass for the root window, the viewport callback for secondaries):
+/// egui::Window layers land in whichever viewport is rendering, so the
+/// panel - and its per-window font slider - stay with their owner even
+/// when several windows have it open at once.
+pub fn show(ctx: &Context, d: &mut Data, idx: usize) {
+    let Some(win_id) = d.st.windows.get(idx).map(|w| w.id) else {
+        return;
+    };
+    if !d.st.windows.get(idx).is_some_and(|w| w.ui.inspector) {
         return;
     }
     let reg_path = default_registry_path();
-    let mut open = d.ui.inspector;
+    let mut open = true;
     Window::new("Inspector")
+        // Per-owner id: two windows can each keep an inspector open, and
+        // their area state (position/size) must not fight over one id.
+        .id(egui::Id::new("inspector").with(win_id))
         .open(&mut open)
         .resizable(false)
         .show(ctx, |ui| {
-            theme_section(ui, d);
+            theme_section(ui, d, idx);
             ui.separator();
             splits_section(ui, d);
             ui.separator();
@@ -63,10 +74,12 @@ pub fn show(ctx: &Context, d: &mut Data) {
             ui.separator();
             registry_section(ui, d, &reg_path);
         });
-    d.ui.inspector = open;
+    if let Some(w) = d.st.windows.get_mut(idx) {
+        w.ui.inspector = open;
+    }
 }
 
-fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
+fn theme_section(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     let current = d.st.theme_name.clone();
     ui.horizontal(|ui| {
         ui.label("Theme:");
@@ -81,9 +94,14 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
     if d.st.theme_name != current {
         d.dirty = true;
     }
-    // Font size lives in the (per-window) WindowUi; slider works on a
-    // local copy and writes back on change.
-    let mut size = d.st.win().map(|w| w.ui.font_size).unwrap_or(14.0);
+    // Font size lives in the (per-window) WindowUi of the window that
+    // owns this panel; slider works on a local copy and writes back on
+    // change.
+    let mut size =
+        d.st.windows
+            .get(idx)
+            .map(|w| w.ui.font_size)
+            .unwrap_or(14.0);
     if ui
         .add(
             egui::Slider::new(&mut size, 10.0..=24.0)
@@ -92,7 +110,7 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
         )
         .changed()
     {
-        if let Some(w) = d.st.win_mut() {
+        if let Some(w) = d.st.windows.get_mut(idx) {
             w.ui.font_size = size;
         }
         // Font metrics are re-measured every frame; nothing else to do.
