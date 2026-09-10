@@ -92,7 +92,10 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         w.tree.active_tab = w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1));
     }
     let tab = st.win().map(|w| w.tree.active_tab).unwrap_or(0);
-    let focused = st.win().and_then(|w| w.tree.tabs.get(tab)).map(|t| t.focused);
+    let focused = st
+        .win()
+        .and_then(|w| w.tree.tabs.get(tab))
+        .map(|t| t.focused);
     let blink = cursor_on(&ctx);
     let painter = ui.painter().clone();
     let rects = pane_rects(st, area);

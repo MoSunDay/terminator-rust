@@ -218,9 +218,7 @@ pub fn handle(
     let Some(w) = windows.get_mut(wi) else {
         return;
     };
-    let WindowState {
-        tree, ui: wui, ..
-    } = w;
+    let WindowState { tree, ui: wui, .. } = w;
     for ev in events {
         match ev {
             Event::PointerButton {
@@ -272,8 +270,7 @@ pub fn handle(
                             } else {
                                 // Keep "most recent press still held" honest
                                 // when a chorded button goes up first.
-                                wui.pointer_last =
-                                    Some(wui.pointer_buttons.trailing_zeros() as u8);
+                                wui.pointer_last = Some(wui.pointer_buttons.trailing_zeros() as u8);
                             }
                         }
                     }

@@ -141,7 +141,10 @@ pub fn handle(
         .win()
         .map(|w| w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1)))
         .unwrap_or(0);
-    let focused = st.win().and_then(|w| w.tree.tabs.get(tab)).map(|t| t.focused);
+    let focused = st
+        .win()
+        .and_then(|w| w.tree.tabs.get(tab))
+        .map(|t| t.focused);
     for ev in events {
         if let Event::ModifiersChanged(m) = ev {
             mods_at = m;

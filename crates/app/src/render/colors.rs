@@ -244,7 +244,11 @@ mod tests {
         let a = with_opacity(c, 0.8);
         // Color32 stores premultiplied channels: they dim with alpha.
         assert_eq!(a.a(), (0.8f32 * 255.0).round() as u8);
-        assert!(a.r() < c.r() && a.r() > 0, "premultiplied r dims: {}", a.r());
+        assert!(
+            a.r() < c.r() && a.r() > 0,
+            "premultiplied r dims: {}",
+            a.r()
+        );
     }
 
     #[test]
