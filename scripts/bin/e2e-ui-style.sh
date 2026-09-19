@@ -6,12 +6,13 @@
 #      bg #ff0000 + transparency 0.5 -> mix 50/50 with the theme bg
 #      (blend_background / with_alpha_over).
 #   B: the split gutter is two-tone - chrome_bg field (mix(bg, fg, 0.045))
-#      with one 1px divider line (mix(bg, fg, 0.13)) through the middle.
+#      with a 2px rounded grab handle (mix(bg, fg, 0.13)) centered in the
+#      strip (idle color; the hover step only paints under the pointer).
 #   C: the plain right pane paints the theme background untouched.
 #   D: the chrome top bar paints chrome_bg (mix(bg, fg, 0.045)); sampled at
 #      30% width, clear of the chips and the trailing icon buttons.
-#   E: the active tab chip carries a 2px accent underline flush at its
-#      bottom edge.
+#   E: the active tab chip carries a 2px accent underline (rounded caps,
+#      inset clear of the pill corners) flush at its bottom edge.
 #   F: the active tab chip fill is the subtle accent tint mix(bg, accent,
 #      0.18).
 #   G: the pane header title is CENTERED in the space left of the C/T/X
@@ -70,6 +71,7 @@ SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
 # No compositor in Xvfb: pin full opacity for deterministic pixels.
 export TERMINATOR_OPAQUE=1
+export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # Preset: dracula theme, settings, a vertical 50/50 Split whose left pane
@@ -142,6 +144,11 @@ echo "preset loaded: Split pair + 'extra' tab, 'red' addressable"
 
 # --- pixel assertions ----------------------------------------------------
 step "scrot + PIL pixel assertions"
+# Park the pointer on bare chrome first: Xvfb starts it at the screen
+# center, exactly on the split gutter - the divider grab handle would
+# paint its hover step and break the resting-gutter expectation.
+xdotool mousemove $((X + WIDTH * 30 / 100)) $((Y + 6))
+sleep 0.5   # let one 50ms repaint cadence land before capturing
 scrot -o "$ROOT/scr.png"
 export SCRCAP="$ROOT/scr.png"
 python3 - <<'PY'
@@ -186,10 +193,11 @@ check("C theme-bg", int(X + W * 0.75), int(Y + H * 0.55), BG)
 #    the tab chips and the right-edge icon cells.
 check("D chrome-bg", int(X + W * 0.30), Y + 4, mix(BG, FG, 0.045))
 
-# B: gutter two-tone - chrome_bg field mix(bg, fg, 0.045) with a 1px
-#    divider line mix(bg, fg, 0.13) down the strip middle. Scan the band
-#    across the 50% split line: the 6px strip contributes a few chrome
-#    field px and >=1 divider-line px (the rest of the band is pane content).
+# B: gutter two-tone - chrome_bg field mix(bg, fg, 0.045) with a 2px
+#    rounded grab handle mix(bg, fg, 0.13) centered in the strip. Scan the
+#    band across the 50% split line: the 6px strip contributes a few chrome
+#    field px and >=1 handle px (the rest of the band is pane content;
+#    unfocused-pane card seams paint hairline mix(bg, fg, 0.09), distinct).
 exp_div = mix(BG, FG, 0.13)
 exp_fld = mix(BG, FG, 0.045)
 y = int(Y + H * 0.55)

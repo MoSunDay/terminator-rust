@@ -96,6 +96,7 @@ export HOME="$ROOT/home"
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
 export TERMINATOR_OPAQUE=1
+export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 # plain sh: no OSC title churn, window names stay deterministic
 export SHELL=/bin/sh

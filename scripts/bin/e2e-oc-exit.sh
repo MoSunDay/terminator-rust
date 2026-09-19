@@ -101,6 +101,7 @@ SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
 # No compositor in Xvfb: pin full opacity for deterministic rendering.
 export TERMINATOR_OPAQUE=1
+export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # --- world: three local panes, each running the real opencoder ----------

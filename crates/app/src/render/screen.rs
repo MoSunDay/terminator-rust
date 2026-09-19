@@ -2,22 +2,25 @@
 
 use std::time::Duration;
 
-use egui::{Color32, Rect, Stroke, StrokeKind, Ui};
+use egui::{Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
 use layout_tree::{content_rect, layout_tab, PaneId};
 use remote::PaneKind;
 
 use crate::actions;
 use crate::input::{mouse, pointer};
-use crate::render::{colors, grid};
+use crate::render::{colors, grid, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
-use crate::ui::pane_header;
 
-/// Blink duty cycle: visible 1.2s of every 2s.
-fn cursor_on(ctx: &egui::Context) -> bool {
-    let t = ctx.input(|i| i.time);
-    (t * 2.0) % 2.0 < 1.2
-}
+/// Pane card silhouette: rounded where the header meets the chrome, square
+/// at the window bottom.
+const CARD_RADIUS: CornerRadius = CornerRadius {
+    nw: tokens::R_MD,
+    ne: tokens::R_MD,
+    sw: 0,
+    se: 0,
+};
+use crate::ui::pane_header;
 
 /// Pane rects (screen-space layout_tree rects) for the active tab.
 fn pane_rects(st: &AppState, area: Rect) -> Vec<(PaneId, layout_tree::Rect)> {
@@ -50,10 +53,10 @@ fn draw_viewport_bar(
     }
     let h = content.height();
     let track_rect = Rect::from_min_max(
-        egui::pos2(content.right() - 3.0, content.top()),
+        egui::pos2(content.right() - 4.0, content.top()),
         egui::pos2(content.right() - 1.0, content.bottom()),
     );
-    painter.rect_filled(track_rect, 0.0, track);
+    painter.rect_filled(track_rect, 1.0, track);
     let ratio = |v: u64| v as f32 / total as f32;
     let thumb_h = (h * ratio(len)).clamp(12.0, h);
     let top = (h * ratio(offset)).min(h - thumb_h);
@@ -61,7 +64,7 @@ fn draw_viewport_bar(
         egui::pos2(track_rect.left(), content.top() + top),
         egui::pos2(track_rect.right(), content.top() + top + thumb_h),
     );
-    painter.rect_filled(bar, 0.0, thumb);
+    painter.rect_filled(bar, 2.0, thumb);
 }
 
 /// Render the whole terminal area into the central panel ui.
@@ -96,7 +99,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         .win()
         .and_then(|w| w.tree.tabs.get(tab))
         .map(|t| t.focused);
-    let blink = cursor_on(&ctx);
+    let cursor_a = tokens::cursor_alpha(ctx.input(|i| i.time) as f32);
     let painter = ui.painter().clone();
     let rects = pane_rects(st, area);
 
@@ -136,7 +139,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         meta,
                         cell,
                         font_size,
-                        cursor_on: blink && Some(pane) == focused,
+                        cursor_alpha: if Some(pane) == focused { cursor_a } else { 0.0 },
                         opacity: st.settings.opacity,
                     },
                 );
@@ -172,7 +175,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                     &painter,
                     content,
                     colors::with_opacity(colors::effective_bg(&pal, meta), st.settings.opacity),
-                    colors::to_c32(pal.foreground),
+                    colors::to_c32(colors::title_text(&pal)),
                     &msg,
                 );
             }
@@ -200,21 +203,43 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             }
         }
 
-        if Some(pane) == focused && !st.win().is_some_and(|w| w.ui.zoom) {
+        let zoomed = st.win().is_some_and(|w| w.ui.zoom);
+        if Some(pane) == focused && !zoomed {
+            // Card focus: a 1px accent stroke plus a 3px accent bar on
+            // the header's left edge (Warp/Ghostty convention) - quieter
+            // than the old full-ring hard stroke.
             painter.rect_stroke(
                 full,
-                2.0,
-                Stroke::new(1.5, colors::to_c32(pal.block_highlight)),
+                CARD_RADIUS,
+                Stroke::new(1.0, colors::to_c32(pal.block_highlight)),
+                StrokeKind::Inside,
+            );
+            painter.rect_filled(
+                Rect::from_min_size(full.min, egui::vec2(3.0, PANE_HEADER_H)),
+                1.0,
+                colors::to_c32(pal.block_highlight),
+            );
+        } else if !zoomed {
+            // Unfocused panes read as quiet cards separated from their
+            // neighbours by a hairline seam.
+            painter.rect_stroke(
+                full,
+                CARD_RADIUS,
+                Stroke::new(1.0, colors::to_c32(colors::hairline(&pal))),
                 StrokeKind::Inside,
             );
         }
     }
 
     // Divider strips over the background (non-zoom only): a quiet chrome
-    // field with a single divider line down the middle. Geometry and
-    // hit-testing live in mouse.rs; this is paint only.
+    // field with a 2px rounded-cap grab handle in the middle. Geometry
+    // and hit-testing live in mouse.rs; this is paint only.
     if !st.win().is_some_and(|w| w.ui.zoom) {
         if let Some(tabref) = st.win().and_then(|w| w.tree.tabs.get(tab)) {
+            let hover_key = ui.input(|i| i.pointer.hover_pos()).and_then(|p| {
+                mouse::find_divider(tabref, grid::lt_rect(area), DIVIDER_W, p, 2.0)
+                    .map(|h| (h.pane, h.level))
+            });
             for h in mouse::dividers(tabref, grid::lt_rect(area), DIVIDER_W) {
                 let s = h.strip;
                 painter.rect_filled(
@@ -225,20 +250,32 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         st.settings.opacity,
                     ),
                 );
-                let line = Stroke::new(
-                    1.0,
-                    colors::with_opacity(
-                        colors::to_c32(colors::divider(&pal)),
-                        st.settings.opacity,
-                    ),
+                // Handle brightens from the resting divider step to a
+                // clear hover step while the pointer is on the strip.
+                let resting = hover_key != Some((h.pane, h.level));
+                let handle_col = colors::mix(
+                    pal.background,
+                    pal.foreground,
+                    if resting { 0.13 } else { 0.22 },
                 );
-                // Tall strip = vertical split: center the line on x;
-                // otherwise it is a horizontal strip: center on y.
-                if s.height() >= s.width() {
-                    painter.vline(s.center().x, s.y_range(), line);
+                let handle_col =
+                    colors::with_opacity(colors::to_c32(handle_col), st.settings.opacity);
+                // Tall strip = vertical split: the handle runs along y;
+                // otherwise it is a horizontal strip: along x.
+                let along = |len: f32| {
+                    if s.height() >= s.width() {
+                        Rect::from_center_size(s.center(), egui::vec2(2.0, len))
+                    } else {
+                        Rect::from_center_size(s.center(), egui::vec2(len, 2.0))
+                    }
+                };
+                let span = if s.height() >= s.width() {
+                    s.height()
                 } else {
-                    painter.hline(s.x_range(), s.center().y, line);
-                }
+                    s.width()
+                };
+                let handle = along((span * 0.35).clamp(8.0, 64.0));
+                painter.rect_filled(handle, 1.0, handle_col);
             }
         }
     }

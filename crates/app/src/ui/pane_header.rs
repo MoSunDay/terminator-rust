@@ -79,10 +79,16 @@ pub fn show(
 
     // Quiet chrome: the header is a flat chrome strip (the focused pane is
     // already framed by its accent stroke) with a hairline over the
-    // content; focus reads through the title color.
+    // content; focus reads through the title color. Top corners round to
+    // meet the pane card stroke.
     ui.painter().rect_filled(
         rect,
-        2.0,
+        egui::CornerRadius {
+            nw: crate::render::tokens::R_MD,
+            ne: crate::render::tokens::R_MD,
+            sw: 0,
+            se: 0,
+        },
         colors::with_opacity(to_c32(colors::chrome_bg(pal)), st.settings.opacity),
     );
     ui.painter().hline(

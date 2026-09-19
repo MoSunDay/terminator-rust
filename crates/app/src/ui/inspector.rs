@@ -44,6 +44,21 @@ fn field(ui: &mut egui::Ui, caption: &str, value: &mut String, hint: &str) {
     });
 }
 
+/// Small-caps dimmed section title with breathing room around it;
+/// replaces ui.heading + separator for visual grouping.
+fn section_title(ui: &mut egui::Ui, pal: &theme::Palette, title: &str) {
+    ui.add_space(8.0);
+    ui.label(
+        egui::RichText::new(title.to_uppercase())
+            .small()
+            .strong()
+            .color(crate::render::colors::to_c32(
+                crate::render::colors::title_text(pal),
+            )),
+    );
+    ui.add_space(3.0);
+}
+
 /// Show the inspector window of OS window `idx` when its per-window
 /// `inspector` flag is set. Must be called from THAT window's render pass
 /// (root pass for the root window, the viewport callback for secondaries):
@@ -67,11 +82,8 @@ pub fn show(ctx: &Context, d: &mut Data, idx: usize) {
         .resizable(false)
         .show(ctx, |ui| {
             theme_section(ui, d, idx);
-            ui.separator();
             splits_section(ui, d);
-            ui.separator();
             form_section(ui, d, &reg_path);
-            ui.separator();
             registry_section(ui, d, &reg_path);
         });
     if let Some(w) = d.st.windows.get_mut(idx) {
@@ -80,6 +92,8 @@ pub fn show(ctx: &Context, d: &mut Data, idx: usize) {
 }
 
 fn theme_section(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
+    let pal = crate::render::colors::palette_of(&d.st.theme_name);
+    section_title(ui, &pal, "Appearance");
     let current = d.st.theme_name.clone();
     ui.horizontal(|ui| {
         ui.label("Theme:");
@@ -118,7 +132,11 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
 }
 
 fn splits_section(ui: &mut egui::Ui, d: &mut Data) {
-    ui.heading("Splits");
+    section_title(
+        ui,
+        &crate::render::colors::palette_of(&d.st.theme_name),
+        "Splits",
+    );
     // Settings is Copy: edit a copy, then write back and flag dirty when it
     // actually changed (borrowck-friendly, covers combo box AND slider).
     let mut s = d.st.settings;
@@ -164,7 +182,11 @@ fn splits_section(ui: &mut egui::Ui, d: &mut Data) {
 }
 
 fn form_section(ui: &mut egui::Ui, d: &mut Data, reg_path: &Path) {
-    ui.heading("New remote tab");
+    section_title(
+        ui,
+        &crate::render::colors::palette_of(&d.st.theme_name),
+        "Remote",
+    );
     let Data {
         st,
         sess,
@@ -203,7 +225,11 @@ fn form_section(ui: &mut egui::Ui, d: &mut Data, reg_path: &Path) {
 }
 
 fn registry_section(ui: &mut egui::Ui, d: &mut Data, reg_path: &Path) {
-    ui.heading("Saved hosts");
+    section_title(
+        ui,
+        &crate::render::colors::palette_of(&d.st.theme_name),
+        "Saved hosts",
+    );
     if d.registry.is_empty() {
         ui.small("(none saved)");
         return;
