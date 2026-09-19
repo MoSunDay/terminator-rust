@@ -1,3 +1,5 @@
+Commit: a57e1b153dbd549e6ce240ffa798f0d17c2edc76
+
 # 多窗口评审收尾：inspector 窗口归属 / pane 窗口列 / W6 / K1 加固 / CI
 
 ## 背景（Context）
