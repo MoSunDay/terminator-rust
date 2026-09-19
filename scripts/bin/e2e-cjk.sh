@@ -8,11 +8,12 @@
 #      socket into a real pty, and assert `ctl capture` round-trips the
 #      exact UTF-8 line (wide cells + spacer tails intact).
 #   3. Pixels: scrot + PIL. Real Han glyphs painted at the measured wide
-#      scale have ink ~14x15px with interior strokes; ASCII at 14pt stays
-#      <= 9x10.5px, and a tofu fallback (hollow replacement square) has an
-#      empty interior. So: >= 6 connected ink components with w>=10.5,
-#      h>=12.5, and >= 3 of them carrying >= 8 interior ink pixels
-#      (the command-echo line alone yields 4 such glyphs).
+#      scale have ink ~11-13x12-13px with interior strokes (the Maple
+#      primary renders CJK at exactly 2x the latin advance, so wide_size
+#      == font_size); ASCII at 14pt stays <= 8x12px, and a tofu fallback
+#      (hollow replacement square) has an empty interior. So: >= 3
+#      connected ink components with w>=8.5, h>=10.5, and >= 3 of them
+#      carrying >= 8 interior ink pixels.
 # Usage: scripts/bin/e2e-cjk.sh  (repo root; needs Xvfb + xdotool + scrot +
 # python3-PIL + python3-fontTools). E2E_KEEP=1 keeps the scratch dir.
 set -euo pipefail
@@ -43,21 +44,40 @@ step() { echo "== $*"; }
 cargo build -p app -p ctl --bins >/dev/null
 
 # --- 1. asset cmap coverage (fontTools, no X needed) ----------------------
-step "embedded subset cmap covers CJK sample set"
+step "embedded subsets cmaps cover their sample sets"
 python3 - <<'PY' || fail "fontTools cmap check"
 import sys
 try:
     from fontTools.ttLib import TTFont
 except ImportError:
     sys.exit("python3-fontTools missing")
-f = TTFont("assets/fonts/NotoSansSC-Regular-subset.otf")
-cmap = f.getBestCmap()
-sample = ("汉字测试简繁體かなカナ・。「」【】《》～！？（）"
-          "Ａｚ０９Ⅰ①㈱ㄅㄆㅏㅣ纮㙟한글")
-missing = [c for c in sample if ord(c) not in cmap]
-if missing:
-    sys.exit(f"cmap missing: {missing!r}")
-print(f"asset cmap OK ({f['maxp'].numGlyphs} glyphs)")
+def check(path, sample, probe_adv=False):
+    f = TTFont(path)
+    cmap = f.getBestCmap()
+    missing = [c for c in sample if ord(c) not in cmap]
+    if missing:
+        sys.exit(f"{path} cmap missing: {missing!r}")
+    if probe_adv:
+        upm, hmtx = f["head"].unitsPerEm, f["hmtx"]
+        def adv(ch): return hmtx[cmap[ord(ch)]][0] / upm
+        ratio = adv("\u6c49") / adv("M")
+        if abs(ratio - 2.0) > 0.01:
+            sys.exit(f"{path}: adv ratio {ratio:.4f}, want exactly 2.0")
+        print(f"  {path}: adv ratio {ratio:.1f} OK")
+    print(f"  {path}: cmap OK ({f['maxp'].numGlyphs} glyphs)")
+
+# primary mono: ASCII, box drawing, GB2312 Han (simplified), kana/punct,
+# Nerd Font icons; its CJK advance must be exactly 2x the latin one.
+check("assets/fonts/MapleMonoNF-CN-subset.ttf",
+      "".join(map(chr, range(0x20, 0x7F)))
+      + "汉字测试简繁体かなカナ・。「」【】《》～！？（）"
+      + "".join(map(chr, range(0x2500, 0x2580)))
+      + "".join(chr(c) for c in (0xE0A0, 0xE0B0, 0xF004, 0xF121, 0xF1AF0)),
+      probe_adv=True)
+# last-resort fallback: the full old sample incl. Hangul + fullwidth
+check("assets/fonts/NotoSansSC-Regular-subset.otf",
+      "汉字测试简繁體かなカナ・。「」【】《》～！？（）"
+      "Ａｚ０９Ⅰ①㈱ㄅㄆㅏㅣ纮㙟한글")
 PY
 
 # --- 2. live boot ----------------------------------------------------------
@@ -164,8 +184,9 @@ y0, y1 = Y + 8, Y + H - 8
 
 # Ink components = (column run) x (row run) inside each band. Column runs
 # come from any-ink-in-band; the row run then isolates the text line, so a
-# glyph never inherits rows from a stacked line sharing its columns (CJK
-# ink at the wide scale overflows the ASCII line height and lines touch).
+# glyph never inherits rows from a stacked line sharing its columns (a
+# line's ink can sit within a couple rows of its neighbor, so runs must
+# stay scoped to their own band).
 rows = [y for y in range(y0, y1) if any(is_fg(px[x, y]) for x in range(x0, x1, 2))]
 bands = []
 for y in rows:
@@ -199,8 +220,10 @@ for (by0, by1) in bands:
         for (ry0, ry1) in yr:
             comps.append((cx0, cx1, ry0, ry1))
 
+# Measured with the Maple primary: Han ink deltas are 10..12 x 11..12
+# while the widest ASCII glyph stays at 7, so 8.5/10.5 split the gap.
 wide = [c for c in comps
-        if 9.5 <= c[1]-c[0] <= 22 and 12.5 <= c[3]-c[2] <= 22]
+        if 8.5 <= c[1]-c[0] <= 22 and 10.5 <= c[3]-c[2] <= 22]
 def interior_ink(c):
     cx0, cx1, cy0, cy1 = c
     mx, my = (cx1-cx0)*0.22, (cy1-cy0)*0.22

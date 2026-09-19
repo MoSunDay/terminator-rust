@@ -234,15 +234,17 @@ mod tests {
                 .width()
         });
         // The invariant that matters: a wide glyph painted at wide_size
-        // fills exactly two narrow cells (embedded font scale ~1.2).
+        // fills exactly two narrow cells. With the Maple primary font
+        // (adv(汉) == 2*adv(M)) the scale converges to ~1.0, so wide_size
+        // lands on font_size within pixel-quantization noise.
         assert!(
             (advance - 2.0 * cell.w).abs() < 0.05,
             "wide advance {advance} should fill two cells ({}pts)",
             2.0 * cell.w
         );
         assert!(
-            cell.wide_size > 14.0,
-            "wide cells must paint larger than narrow ones: {}",
+            (cell.wide_size - 14.0).abs() < 0.2,
+            "wide scale should converge to ~1.0 (got {}; ~1.2 means the Noto fallback won the probe)",
             cell.wide_size
         );
     }
