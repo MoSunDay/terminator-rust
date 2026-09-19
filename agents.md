@@ -1,4 +1,4 @@
-Commit: 4ebb8eba52338c50a56abdacc9eed9b37b401f1f
+Commit: a57e1b153dbd549e6ce240ffa798f0d17c2edc76
 
 # agents.md - repo memory for terminator-rust
 
@@ -52,16 +52,19 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   RACE it and instances exit(1) silently after "first frame" (repro: new
   HOME x3 pty = 2 dead, warm HOME = 3/3 alive), so the script WARMS UP the
   scratch HOME with one throwaway pty run before launching the app)
-- cjk font e2e: `scripts/bin/e2e-cjk.sh` (fontTools cmap coverage of the
-  embedded subset; Xvfb live app: ctl send `echo 汉字测试` capture round-trip
-  + scrot/PIL connected-ink assertions - real Han ink ~15x17px with interior
-  strokes; ASCII <=9x10.5, tofu replacement square is hollow inside)
+- cjk font e2e: `scripts/bin/e2e-cjk.sh` (fontTools cmap coverage of BOTH
+  embedded subsets + a 2:1 advance probe on the Maple one; Xvfb live app: ctl
+  send `echo 汉字测试` capture round-trip + scrot/PIL connected-ink
+  assertions - real Han ink ~11-13x12-13px with interior strokes; ASCII
+  <=8x12, wide filter 8.5..22 x 10.5..22, tofu square is hollow inside)
 - ui style e2e: `scripts/bin/e2e-ui-style.sh` (Xvfb + scrot/PIL pixel
   assertions: pane bg/theme blend via transparency, gutter two-tone
-  (chrome_bg field + 1px divider line), chrome top-bar fill, active-chip
-  underline + fill; expectations are COMPUTED in-script from dracula
-  constants via a mix() helper - token retunes touch only colors.rs,
-  geometry changes touch the script; presets a dracula Split state.json;
+  (chrome_bg field + 2px rounded grab handle, hover step mix 0.22 only
+  under the pointer), chrome top-bar fill, active-chip underline (rounded
+  caps, inset past the pill corners) + fill; expectations are COMPUTED
+  in-script from dracula constants via a mix() helper - token retunes
+  touch only colors.rs/tokens.rs, geometry changes touch the script;
+  presets a dracula Split state.json;
   checks I1/I2 assert the single-tab zero-chrome layout)
 - deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
   repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
@@ -135,6 +138,14 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   a zombie; buttonless 1003 hover motion stays unforwarded (batch-2
   gap). app surface_px multiplies egui points by pixels_per_point
   (vt-pane cell px are physical).
+- Xvfb initial pointer rests at the SCREEN CENTER - with a centered
+  50/50 split that is exactly ON the gutter, so any pointer-state visual
+  (divider hover handle) is live from frame one: e2e-ui-style parks the
+  pointer on bare chrome (`xdotool mousemove`) + sleeps ~0.5s before
+  scrot (the app repaints on a 50ms cadence; an instant scrot grabs the
+  pre-motion frame). All Xvfb e2e scripts export TERMINATOR_NO_MOTION=1
+  (hover fades + cursor sine blink pinned to end states; see
+  render/tokens.rs - radius/shadow/motion token layer, pure functions).
 - Xvfb smoke ops: launch with `setsid nohup ... </dev/null &` to survive
   across tool calls; NEVER `pkill -f` a pattern that occurs in your own
   command line (self-kill, tool exit -1) - kill by PID instead.
@@ -178,10 +189,9 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   cleanly). Without ~/.opencoder/config.json it sits in the onboarding form
   where Ctrl+C only cancels (only Esc/Ctrl+D exit); a dummy
   provider/base_url/api_key/model config passes local validation with no
-  network and gives the idle prompt. GESTURE DRIFTS with
-  the OC_BIN build (2026-09-10 saw two flips in one day): the 22:41
-  build exits the idle prompt on a SINGLE Ctrl+C AND on a bare Ctrl+D
-  (status 0 both, Esc inert); the morning build needed Ctrl+C TWICE with
+  network and gives the idle prompt. GESTURE DRIFTS with the OC_BIN
+  build: some builds exit the idle prompt on a SINGLE Ctrl+C or a bare
+  Ctrl+D (status 0 both, Esc inert), others need Ctrl+C TWICE with
   Ctrl+D inert. e2e K2 uses spaced Ctrl+C x2 (valid under both); K3
   rides Ctrl+D-exits as POSITIVE proof of 0x04 delivery through the
   kitty-flags workaround (dropped key = pane stays alive). Probing
@@ -203,25 +213,29 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   && interact_pos().is_none_or(...)` so a miss-click cannot strand the
   editor.
 
-- CJK display: egui default fonts have ZERO CJK glyphs -> Chinese was tofu.
-  Fix: assets/fonts/NotoSansSC-Regular-subset.otf (9.8MB OFL subset, extracted
-  SC face idx 2 from Debian NotoSansCJK ttc, pyftsubset terminal ranges +
-  Hangul AC00-D7AF, 40330 glyphs; the recipe NEEDS --no-layout-closure or
-  GSUB closure inflates it to 47k glyphs; Hangul glyphs are EAW-wide at
-  0.92em advance and paint slightly inside the 2-cell pair)
-  include_bytes! + FontDefinitions families[Monospace/Proportional].push
-  (family list IS the glyph fallback chain); install once in Terminator::new
-  via ctx.set_fonts. TERMINATOR_CJK_FONT=path[:ttc_index] swaps the embedded
-  bytes (last ':' + u32-suffix = face index). Han advance is 1.0em vs 'M'
-  ~0.6em, so wide cells paint at CellSize.wide_size = font_size * 2w/adv("汉"
-  via layout_no_wrap, ~1.204, clamp 0.8..=1.8 else 1.2) - cell PITCH is set by
-  grid geometry either way; env fonts are parse-validated at startup
-  (skrifa FontRef::from_index - epaint's own parser, direct workspace dep):
+- font stack: ui/fonts.rs installs TWO embedded OFL fonts. PRIMARY
+  assets/fonts/MapleMonoNF-CN-subset.ttf (7.4MB, 18780 glyphs, from maple-font
+  v7.9 MapleMonoNormal-NF-CN-Regular; pyftsubset --no-layout-closure
+  --no-hinting, unicodes = latin/symbol ranges + GB2312 hanzi enumerated via
+  the codec itself (bytes([b1,b2]).decode('gb2312'), 7446 chars) + NF PUA
+  E000-F8FF + planes 15/16 icon ranges) FIRST in both family chains
+  (insert(0)) - ASCII, box-drawing 2500-257F complete, GB2312 Han, kana,
+  NF icons; adv(汉) == 2*adv(M) exactly (1.2em vs 0.6em) so
+  CellSize.wide_size converges to ~font_size (measured 13.99 at 14pt) -
+  Han/latin mix now aligns with NO compensation scale. Maple lacks Hangul,
+  fullwidth latin, ①㈱ etc -> they fall through to the LAST-chain
+  assets/fonts/NotoSansSC-Regular-subset.otf (9.8MB, 40330 glyphs, recipe
+  NEEDS --no-layout-closure; its Hangul advances 1.0em and paints slightly
+  inside the 2-cell pair). ghostty advances NF PUA icons TWO cells (EAW
+  ambiguous) so icon ink ~14-16px fills the double span. TERMINATOR_FONT and
+  TERMINATOR_CJK_FONT=path[:ttc_index] swap each embedded font (last ':' +
+  u32-suffix = face index); env fonts are parse-validated at startup (skrifa
+  FontRef::from_index - epaint's own parser, direct workspace dep):
   unreadable OR unparseable -> log::warn + embedded fallback, never the
-  epaint first-layout panic (app always starts). e2e ink detection: wide-glyph ink overflows the
-  ASCII line height (1.2x) and stacked lines TOUCH -> row-band splitting is
-  impossible; use (column-run x row-run) components and expect >=4 wide+>=3
-  stroked (a tofu fallback square passes width but has a hollow interior).
+  epaint first-layout panic (app always starts). e2e ink detection: use
+  (column-run x row-run) components and expect >=3 wide (w-delta >=8.5;
+  ASCII tops out at 7) + >=3 stroked (a tofu square passes width but has a
+  hollow interior).
   Xvfb in scripts: NEVER derive the display number from $$ (stale
   /tmp/.X11-unix sockets make Xvfb refuse to bind) - probe random free
   numbers, and `export DISPLAY` for xdotool/scrot (env DISPLAY=... on the app
@@ -248,6 +262,17 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   modes must not eat the click. persist: per-tab focused containment (the
   global id remap can resolve a stale focused id into ANOTHER tab -> keys
   leak cross-tab) and active_tab forced to 0 on restore.
+- state.json carries `settings {split_axis:"v"|"h", split_ratio 0.05..0.95}`
+  (serde default: old files load unchanged). Ctrl+Shift+D splits along
+  settings.split_axis; layout-tree split_pane_ratio clamps non-finite ->
+  0.5 -> 0.05..0.95.
+- app chrome colors derive from the palette in render/colors.rs (mix():
+  chrome_bg 4.5% bg->fg, hover 10%, hairline 9%, divider 13%, tab_active
+  bg->highlight 18%, title_text fg->bg 42%). ui/style.rs sync() installs a
+  dark egui style ONCE per theme change (UiState.styled_theme guards);
+  pinned test values: divider(dracula) == (67,69,78), hairline ==
+  (59,61,71), tab_active == (67,61,89). egui 0.36 has no ctx.set_style -
+  use set_theme(Theme::Dark) + set_style_of.
 
 ## Multi-window model (2026-09)
 - one root pass renders windows[0]; `windows::render_secondaries` drives
@@ -286,51 +311,35 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   screenshot `import -window root` and read the window's pixels from the
   full image instead.
 
-## Verified end-to-end (2026-09)
-- borderless/quit batch (2026-09-10): e2e-oc-exit.sh K4 (Ctrl+Shift+W on a
-  non-last pane keeps the app alive) + K6 (dead-pane click closes only
-  that pane); e2e-ui-style.sh I1/I2 (single tab = zero chrome, header at
-  y=0); all Xvfb e2e scripts export TERMINATOR_OPAQUE=1.
-- multi-window batch (2026-09-10): e2e-windows.sh W1-W5 all green; full
-  suite re-run green (ui-style, mouse-key, ipc-oc, cjk, oc-exit with the
-  new opencode gesture); deployed 192.168.31.196 and verified LIVE (2 X
-  windows, per-window typing isolation via ctl, window close keeps the
-  app, opacity 1.0 renders mocha bg not black).
-Xvfb: render + catppuccin colors exact px, key echo, ANSI 256 bg exact
-px, Ctrl+Shift+E split, state.json save/restore across restart, WM close.
-Batch-1 mouse (Xvfb): SGR press/release/motion + wheel press-only
-reports byte-exact, less wheel = arrows x3, viewport scrollback +
-snap-back-on-typing, drag-select highlight + Ctrl+Shift+C == xclip
-readback, Shift+drag escape hatch.
-ssh-localhost: zellij create+attach via bootstrap, exit-42 degrade,
-reconnect to live session. e2e gate: bootstrap config is chrome-free so
-"ZELLIJ" NEVER renders; gate = loading screen cleared + typed marker
-(zellij round-trip) + session in list-sessions.
-Control channel (2026-09, scripts/bin/e2e-ipc-oc.sh): ctl list/capture/send
-  (PaneInfo carries `window` u64, serde-default 0 for old servers; the
-  text table has a WIN column after ID - column-count parsers must adapt)
-over the live socket, TERMINATOR_SOCK present in the pane child env, oc link
-via /proc fd discovery, submit -> pending -> consume -> receipt by seq,
-honest --wait timeout, second instance reclaims a SIGTERM-stale socket
-(socket perms asserted 600 on first bind AND after reclaim).
-Mouse/key review fixes (2026-09, scripts/bin/e2e-mouse-key.sh): ^C echo
-through the egui Copy-fold gate, cross-pane drag RELEASE delivered to the
-press-owner pane's tracker child, Shift+PageUp/End scrollback paging, and
-Ctrl+C interrupting a foreground sleep 45 (pty signal reset verified).
-- state.json now carries `settings {split_axis:"v"|"h", split_ratio
-  0.05..0.95}` (serde default: old files load unchanged). Ctrl+Shift+D
-  splits along settings.split_axis; layout-tree split_pane_ratio clamps
-  non-finite -> 0.5 -> 0.05..0.95.
-- app chrome colors derive from the palette in render/colors.rs (mix():
-  chrome_bg 4.5% bg->fg, hover 10%, hairline 9%, divider 13%, tab_active
-  bg->highlight 18%, title_text fg->bg 42%). ui/style.rs sync() installs a
-  dark egui style ONCE per theme change (UiState.styled_theme guards);
-  pinned test values: divider(dracula) == (67,69,78), hairline ==
-  (59,61,71), tab_active == (67,61,89). egui 0.36 has no ctx.set_style -
-  use set_theme(Theme::Dark) + set_style_of.
-opencoder exit + quit (2026-09, scripts/bin/e2e-oc-exit.sh): real opencoder
-panes Ctrl+D/Ctrl+C exit (status 0), Ctrl+Shift+W closes a live TUI pane,
-Ctrl+Shift+Q quits the app; e2e-ui-style.sh G asserts pane-title pixel
-centering and H the absence of the removed window-title row. Deployed to
-192.168.31.196 and verified live (ctl list/capture; remote px differ from
-Xvfb only via wallpaper transparency blend).
+## Verified end-to-end (final state)
+All suites green (ui-style, mouse-key, windows W1-W6, ipc-oc, cjk,
+oc-exit, remote); Xvfb scripts export TERMINATOR_OPAQUE=1; live-verified
+on deploy target 192.168.31.196 (2 X windows, per-window typing
+isolation, window close keeps the app, opacity 1.0 = mocha bg not
+black, ctl list/capture; remote px differ only via wallpaper blend).
+- rendering: catppuccin + ANSI 256 bg exact px, CJK cmap (Han/kana/
+  hangul) + real Han ink px, single tab = zero chrome (header y=0),
+  pane-title centering (ui-style G), no window-title row (H)
+- windows/lifecycle: Ctrl+Shift+N second OS window, last-pane close
+  removes the window, root last-pane close with sibling alive respawns a
+  tab, Ctrl+Shift+W on non-last pane keeps app alive (K4), dead-pane
+  click closes only it (K6), Ctrl+Shift+Q quits from any window, WM
+  close honored
+- input: key echo, ^C echo through the egui Copy-fold gate, Ctrl+Shift+E
+  split, SGR press/release/motion + wheel byte-exact (less wheel =
+  arrows x3), cross-pane drag RELEASE to the press-owner pane, drag-
+  select + Ctrl+Shift+C == xclip readback, Shift+drag escape hatch,
+  Shift+PageUp/End scrollback paging + snap-back-on-typing, Ctrl+C
+  interrupts a foreground job (pty signal reset verified)
+- opencode panes: real opencoder Ctrl+D/Ctrl+C exits the idle prompt
+  (status 0), Ctrl+Shift+W closes a live TUI pane
+- control channel: ctl list/capture/send over the live socket (PaneInfo
+  `window` u64 serde-default 0, WIN column after ID - column-count
+  parsers must adapt), TERMINATOR_SOCK in pane env, oc link via /proc fd
+  discovery, submit -> pending -> consume -> receipt by seq, honest
+  --wait, SIGTERM-stale socket reclaim (perms 600 on first bind AND
+  after reclaim)
+- remote zellij: bootstrap create+attach, reconnect, exit-42 degrade;
+  gate = loading cleared + typed marker round-trip + session listed
+  ("ZELLIJ" never renders - chrome-free config)
+- persistence: state.json save/restore across restart
