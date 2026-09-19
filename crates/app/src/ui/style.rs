@@ -3,6 +3,7 @@
 use egui::{vec2, Context, CornerRadius, Stroke, Style, Visuals};
 
 use crate::render::colors::{self, palette_of};
+use crate::render::tokens;
 use crate::state::UiState;
 
 /// Install a dark egui style derived from the active theme. Idempotent per
@@ -34,6 +35,12 @@ pub fn sync(ctx: &Context, theme_name: &str, uist: &mut UiState) {
     style.visuals.extreme_bg_color = colors::to_c32(pal.background);
     style.visuals.hyperlink_color = accent;
     style.visuals.window_stroke = Stroke::new(1.0, line);
+    // Floating layers (Inspector window, popups, context menus): soft
+    // elevation shadow + unified rounding from the token scale.
+    style.visuals.window_shadow = tokens::shadow(tokens::Layer::Window);
+    style.visuals.popup_shadow = tokens::shadow(tokens::Layer::Popup);
+    style.visuals.window_corner_radius = CornerRadius::same(tokens::R_LG);
+    style.visuals.menu_corner_radius = CornerRadius::same(tokens::R_MD);
     style.visuals.selection.bg_fill = accent.gamma_multiply(0.25);
     style.visuals.selection.stroke = Stroke::NONE;
 

@@ -1,17 +1,14 @@
-//! Chrome top bar: centered title row + custom-drawn tab chip row.
+//! Chrome top bar: custom-drawn tab chip row + anchored edge cells.
 
-use egui::{
-    pos2, vec2, Align2, Color32, CornerRadius, FontId, Id, Key, Pos2, Rect, Sense, Stroke,
-    StrokeKind, TextEdit, Ui,
-};
-use layout_tree::{Axis, Tab};
-use remote::PaneKind;
+use egui::{pos2, vec2, Align2, CornerRadius, FontId, Id, Key, Rect, Sense, TextEdit, Ui};
+use layout_tree::Tab;
 use theme::Palette;
 
 use crate::actions;
 use crate::render::colors::{self, to_c32};
-use crate::session_map::SessionMap;
+use crate::render::tokens;
 use crate::state::{self, AppState, Data, WindowState};
+use crate::ui::tabs_widgets;
 
 const CHIP_H: f32 = 24.0;
 const CHIP_PAD_X: f32 = 10.0;
@@ -19,13 +16,13 @@ const CHIP_MIN_W: f32 = 44.0;
 const CHIP_GAP: f32 = 5.0;
 const CLOSE_W: f32 = 14.0;
 const ACCENT_H: f32 = 2.0; // active-chip underline height
-const ICON: f32 = 16.0; // icon button cell
-/// Chip silhouette: rounded top corners, square where it meets the content.
+/// Chip silhouette: full pill - the bar bg matches the chip field, so the
+/// rounding reads as a soft silhouette instead of a tab-flap.
 const CHIP_RADIUS: CornerRadius = CornerRadius {
-    nw: 5,
-    ne: 5,
-    sw: 0,
-    se: 0,
+    nw: tokens::R_MD,
+    ne: tokens::R_MD,
+    sw: tokens::R_MD,
+    se: tokens::R_MD,
 };
 
 /// Render the single-row chrome bar: tab chips + trailing buttons, with
@@ -34,34 +31,6 @@ const CHIP_RADIUS: CornerRadius = CornerRadius {
 pub fn bar(ui: &mut Ui, d: &mut Data) {
     let pal = colors::palette_of(&d.st.theme_name);
     tab_row(ui, d, &pal);
-}
-
-/// Chrome text color helper (dimmed).
-fn dim_text(pal: &Palette) -> Color32 {
-    to_c32(colors::title_text(pal))
-}
-
-/// Hover fill for a chrome icon cell.
-fn hover_fill(ui: &Ui, rect: Rect, hovered: bool, pal: &Palette) {
-    if hovered {
-        ui.painter()
-            .rect_filled(rect, 4.0, to_c32(colors::chrome_hover(pal)));
-    }
-}
-
-/// Corner brackets marking the zoomed (single-pane) view.
-fn corner_brackets(p: &egui::Painter, c: Pos2, color: Color32) {
-    let s = 4.5; // half cell
-    let l = 3.0; // arm length
-    let st = Stroke::new(1.5, color);
-    let corner = |px: f32, py: f32, dx: f32, dy: f32| {
-        p.line_segment([pos2(px, py + dy * l), pos2(px, py)], st);
-        p.line_segment([pos2(px, py), pos2(px + dx * l, py)], st);
-    };
-    corner(c.x - s, c.y - s, 1.0, 1.0); // top-left
-    corner(c.x + s, c.y - s, -1.0, 1.0); // top-right
-    corner(c.x - s, c.y + s, 1.0, -1.0); // bottom-left
-    corner(c.x + s, c.y + s, -1.0, -1.0);
 }
 
 /// Chip label: pane count suffix once the tab holds more than one pane.
@@ -95,6 +64,9 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
         } = d;
         let mut close_tab: Option<usize> = None;
         let count = st.win().map(|w| w.tree.tabs.len()).unwrap_or(0);
+        let win_id = st.win().map(|w| w.id).unwrap_or(0);
+        let chrome_base = to_c32(colors::chrome_bg(pal));
+        let chrome_hover = to_c32(colors::chrome_hover(pal));
         for i in 0..count {
             let Some((anchor, title, label)) = st
                 .win()
@@ -154,26 +126,44 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             }
 
             let painter = ui.painter().clone();
-            let galley =
-                painter.layout_no_wrap(label, FontId::proportional(11.5), Color32::PLACEHOLDER);
+            let galley = painter.layout_no_wrap(
+                label,
+                FontId::proportional(11.5),
+                egui::Color32::PLACEHOLDER,
+            );
             let w = (CHIP_PAD_X * 2.0 + galley.size().x + CLOSE_W).max(CHIP_MIN_W);
             let (rect, resp) = ui.allocate_exact_size(vec2(w, CHIP_H), Sense::click());
             if selected {
                 painter.rect_filled(rect, CHIP_RADIUS, to_c32(colors::tab_active(pal)));
-                // Underline flush at the chip bottom: this tab owns the
-                // content below.
+                // Rounded-cap accent underline flush at the chip bottom:
+                // this tab owns the content below. Inset clear of the pill
+                // corners so the caps stay on the straight edge.
                 let underline = Rect::from_min_max(
-                    pos2(rect.left(), rect.bottom() - ACCENT_H),
-                    pos2(rect.right(), rect.bottom()),
+                    pos2(
+                        rect.left() + f32::from(tokens::R_MD) + 2.0,
+                        rect.bottom() - ACCENT_H,
+                    ),
+                    pos2(rect.right() - f32::from(tokens::R_MD) - 2.0, rect.bottom()),
                 );
-                painter.rect_filled(underline, 0.0, to_c32(pal.block_highlight));
-            } else if resp.hovered() {
-                painter.rect_filled(rect, CHIP_RADIUS, to_c32(colors::chrome_hover(pal)));
+                painter.rect_filled(underline, 1.0, to_c32(pal.block_highlight));
+            } else {
+                let t = tokens::hover_t(
+                    ui.ctx(),
+                    Id::new("chip_fade").with(win_id).with(i),
+                    resp.hovered(),
+                );
+                if t > 0.0 {
+                    painter.rect_filled(
+                        rect,
+                        CHIP_RADIUS,
+                        tokens::lerp_color(chrome_base, chrome_hover, t),
+                    );
+                }
             }
             let text_col = if selected {
                 to_c32(pal.foreground)
             } else {
-                dim_text(pal)
+                tabs_widgets::dim_text(pal)
             };
             let galley_rect = Align2::LEFT_CENTER.align_size_within_rect(
                 galley.size(),
@@ -194,13 +184,9 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 let xcol = if selected {
                     to_c32(pal.foreground)
                 } else {
-                    dim_text(pal)
+                    tabs_widgets::dim_text(pal)
                 };
-                let xstroke = Stroke::new(1.2, xcol);
-                let c = close_rect.center();
-                let a = 3.5;
-                painter.line_segment([pos2(c.x - a, c.y - a), pos2(c.x + a, c.y + a)], xstroke);
-                painter.line_segment([pos2(c.x - a, c.y + a), pos2(c.x + a, c.y - a)], xstroke);
+                tabs_widgets::close_glyph(&painter, close_rect, close_resp.hovered(), pal, xcol);
             }
             if close_resp.clicked() {
                 close_tab = Some(i);
@@ -225,57 +211,8 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
         }
 
         ui.add_space(8.0);
-        trailing_buttons(ui, st, sess, pal, dirty);
-
-        // Right-edge cells anchored to the row end (old title-row place):
-        // zoom left of inspector. interact() on fixed rects, layout cursor
-        // untouched.
-        let band = ui.min_rect();
-        let iy = (band.top() + band.bottom()) / 2.0 - ICON / 2.0;
-        let insp_rect = Rect::from_min_size(pos2(row.right() - 5.0 - ICON, iy), vec2(ICON, ICON));
-        let zoom_rect = Rect::from_min_size(
-            pos2(insp_rect.left() - 4.0 - ICON, insp_rect.top()),
-            vec2(ICON, ICON),
-        );
-        let painter = ui.painter().clone();
-
-        let zoom = ui.interact(zoom_rect, Id::new("chrome_zoom"), Sense::click());
-        hover_fill(ui, zoom_rect, zoom.hovered(), pal);
-        // Quiet accent hint when idle; full accent once zoomed.
-        let zoom_col = if st.win().is_some_and(|w| w.ui.zoom) {
-            to_c32(pal.block_highlight)
-        } else {
-            to_c32(pal.block_highlight).gamma_multiply(0.7)
-        };
-        corner_brackets(&painter, zoom_rect.center(), zoom_col);
-        if zoom.clicked() {
-            if let Some(w) = st.win_mut() {
-                w.ui.zoom = !w.ui.zoom;
-            }
-        }
-        zoom.on_hover_text("Zoom focused pane (Ctrl+Shift+F)");
-
-        let insp = ui.interact(insp_rect, Id::new("chrome_inspector"), Sense::click());
-        hover_fill(ui, insp_rect, insp.hovered(), pal);
-        // Per-window flag: the panel opens in the window that clicked.
-        let insp_col = if st.win().is_some_and(|w| w.ui.inspector) {
-            to_c32(pal.block_highlight)
-        } else {
-            dim_text(pal)
-        };
-        painter.text(
-            insp_rect.center(),
-            Align2::CENTER_CENTER,
-            "i",
-            FontId::proportional(12.5),
-            insp_col,
-        );
-        if insp.clicked() {
-            if let Some(w) = st.win_mut() {
-                w.ui.inspector = !w.ui.inspector;
-            }
-        }
-        insp.on_hover_text("Inspector (settings, hosts)");
+        tabs_widgets::trailing_buttons(ui, st, sess, pal, dirty);
+        tabs_widgets::edge_cells(ui, row.right(), st);
     });
     ui.add_space(3.0);
     // Hairline under the merged chrome row (was under the removed title
@@ -283,102 +220,14 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     ui.painter().hline(
         row.x_range(),
         ui.min_rect().bottom() - 0.5,
-        Stroke::new(1.0, to_c32(colors::hairline(pal))),
+        egui::Stroke::new(1.0, to_c32(colors::hairline(pal))),
     );
-}
-
-/// End-of-row icon buttons: new tab + explicit-axis splits.
-fn trailing_buttons(
-    ui: &mut Ui,
-    st: &mut AppState,
-    sess: &mut SessionMap,
-    pal: &Palette,
-    dirty: &mut bool,
-) {
-    let painter = ui.painter().clone();
-    let icon_col = |hovered: bool| {
-        to_c32(if hovered {
-            pal.foreground
-        } else {
-            colors::title_text(pal)
-        })
-    };
-
-    let (rect, resp) = ui.allocate_exact_size(vec2(ICON, ICON), Sense::click());
-    hover_fill(ui, rect, resp.hovered(), pal);
-    let c = rect.center();
-    let st_line = Stroke::new(1.5, icon_col(resp.hovered()));
-    painter.line_segment([pos2(c.x - 4.0, c.y), pos2(c.x + 4.0, c.y)], st_line);
-    painter.line_segment([pos2(c.x, c.y - 4.0), pos2(c.x, c.y + 4.0)], st_line);
-    if resp.clicked() {
-        actions::do_new_tab(st, sess, PaneKind::Local, dirty);
-    }
-    resp.on_hover_text("New tab (Ctrl+Shift+T)");
-
-    let (rect, resp) = ui.allocate_exact_size(vec2(ICON, ICON), Sense::click());
-    hover_fill(ui, rect, resp.hovered(), pal);
-    split_icon(
-        &painter,
-        rect.center(),
-        Axis::Vertical,
-        icon_col(resp.hovered()),
-    );
-    if resp.clicked() {
-        actions::do_split(
-            st,
-            sess,
-            st.win().map(|w| w.tree.active_tab).unwrap_or(0),
-            None,
-            Axis::Vertical,
-            dirty,
-        );
-    }
-    resp.on_hover_text("Split left / right (Ctrl+Shift+E)");
-
-    let (rect, resp) = ui.allocate_exact_size(vec2(ICON, ICON), Sense::click());
-    hover_fill(ui, rect, resp.hovered(), pal);
-    split_icon(
-        &painter,
-        rect.center(),
-        Axis::Horizontal,
-        icon_col(resp.hovered()),
-    );
-    if resp.clicked() {
-        actions::do_split(
-            st,
-            sess,
-            st.win().map(|w| w.tree.active_tab).unwrap_or(0),
-            None,
-            Axis::Horizontal,
-            dirty,
-        );
-    }
-    resp.on_hover_text("Split top / bottom (Ctrl+Shift+O)");
-}
-
-/// Two small outlined panes along the split axis.
-fn split_icon(p: &egui::Painter, c: Pos2, axis: Axis, color: Color32) {
-    let stroke = Stroke::new(1.4, color);
-    let (first, second) = match axis {
-        // Vertical divider: children side by side (6x9 each, 2 gap).
-        Axis::Vertical => (
-            Rect::from_min_max(pos2(c.x - 7.0, c.y - 4.5), pos2(c.x - 1.0, c.y + 4.5)),
-            Rect::from_min_max(pos2(c.x + 1.0, c.y - 4.5), pos2(c.x + 7.0, c.y + 4.5)),
-        ),
-        // Horizontal divider: children stacked (9x6 each).
-        Axis::Horizontal => (
-            Rect::from_min_max(pos2(c.x - 4.5, c.y - 7.0), pos2(c.x + 4.5, c.y - 1.0)),
-            Rect::from_min_max(pos2(c.x - 4.5, c.y + 1.0), pos2(c.x + 4.5, c.y + 7.0)),
-        ),
-    };
-    p.rect_stroke(first, 2.0, stroke, StrokeKind::Middle);
-    p.rect_stroke(second, 2.0, stroke, StrokeKind::Middle);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use layout_tree::{new_tree, split_pane};
+    use layout_tree::{new_tree, split_pane, Axis};
 
     #[test]
     fn chip_label_counts_panes() {

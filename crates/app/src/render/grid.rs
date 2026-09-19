@@ -77,7 +77,8 @@ pub struct DrawArgs<'a> {
     pub meta: &'a PaneMeta,
     pub cell: CellSize,
     pub font_size: f32,
-    pub cursor_on: bool,
+    /// Cursor visibility alpha (0 = hidden, 1 = solid block).
+    pub cursor_alpha: f32,
     /// Window opacity applied to the pane base fill only.
     pub opacity: f32,
 }
@@ -103,7 +104,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     let meta = a.meta;
     let cell = a.cell;
     let font_size = a.font_size;
-    let cursor_on = a.cursor_on;
+    let cursor_alpha = a.cursor_alpha;
     let bg = with_opacity(effective_bg(pal, meta), a.opacity);
     painter.rect_filled(rect, 0.0, bg);
     let default_fg = to_c32(pal.foreground);
@@ -111,12 +112,18 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
         .cursor_color
         .map(vt_rgb)
         .map_or(to_c32(pal.cursor), to_c32);
-    let cursor_at =
-        if cursor_on && fr.cursor.visible && fr.cursor.x < fr.cols && fr.cursor.y < fr.rows {
-            Some((fr.cursor.x, fr.cursor.y))
-        } else {
-            None
-        };
+    // Soft blink: the block fades between the pane bg and the cursor
+    // color (alpha 1 = legacy solid block).
+    let cursor_col = crate::render::tokens::lerp_color(bg, cursor_col, cursor_alpha);
+    let cursor_at = if cursor_alpha > 0.02
+        && fr.cursor.visible
+        && fr.cursor.x < fr.cols
+        && fr.cursor.y < fr.rows
+    {
+        Some((fr.cursor.x, fr.cursor.y))
+    } else {
+        None
+    };
     let t = meta.transparency.clamp(0.0, 1.0);
     let bg_rgb = from_c32(bg);
     let sel_bg = blend_cell_bg(to_c32(pal.selection_background), bg_rgb, t);
