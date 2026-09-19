@@ -8,7 +8,7 @@ use remote::PaneKind;
 
 use crate::actions;
 use crate::input::{mouse, pointer};
-use crate::render::{colors, grid, tokens};
+use crate::render::{colors, dropzone, grid, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
 
@@ -98,7 +98,14 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         dirty,
         ..
     } = d;
-    let dragging = mouse::divider_interaction(ui, st, area, dirty);
+    // A Ctrl+drag pane move owns the pointer: dividers and raw pointer
+    // routing stand down while the drop target is being picked.
+    let pane_drag = st.win().and_then(|w| w.ui.pane_drag);
+    let dragging = if pane_drag.is_some() {
+        false
+    } else {
+        mouse::divider_interaction(ui, st, area, dirty)
+    };
     if let Some(w) = st.win_mut() {
         w.tree.active_tab = w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1));
     }
@@ -112,8 +119,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let rects = pane_rects(st, area);
 
     // Raw pointer routing (reporting / selection / wheel) over pane content
-    // rects; suppressed while a divider drag owns the pointer.
-    if !dragging {
+    // rects; suppressed while a divider drag or a pane drag owns the
+    // pointer.
+    if !dragging && pane_drag.is_none() {
         let content_rects: Vec<(PaneId, Rect)> = rects
             .iter()
             .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, PANE_HEADER_H))))
@@ -121,7 +129,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         pointer::handle(&ctx, &content_rects, st, sess, cell.h, dirty);
     }
 
-    for (pane, lt) in rects {
+    for &(pane, lt) in &rects {
         let full = grid::egui_rect(lt);
         if full.width() < 4.0 || full.height() < 4.0 {
             continue;
@@ -284,6 +292,53 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 };
                 let handle = along((span * 0.35).clamp(8.0, 64.0));
                 painter.rect_filled(handle, 1.0, handle_col);
+            }
+        }
+    }
+
+    // Ctrl+drag pane move: refresh the drop target from the hovered pane
+    // every frame (full pane rects - a drop may hover a header too) and
+    // execute on release. Painted last so the overlay sits above panes
+    // and dividers.
+    if let Some(pd) = pane_drag {
+        let pos = ui.input(|i| i.pointer.interact_pos());
+        let new_target = pos.and_then(|p| {
+            rects
+                .iter()
+                .rev()
+                .find(|(id, r)| *id != pd.pane && grid::egui_rect(*r).contains(p))
+                .map(|(id, r)| (*id, layout_tree::zone_for(r, p.x, p.y)))
+        });
+        if let Some(w) = st.win_mut() {
+            w.ui.pane_drag = Some(crate::state::PaneDrag {
+                pane: pd.pane,
+                target: new_target,
+            });
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            if let Some((target, zone)) = new_target {
+                actions::do_move_pane(st, tab, pd.pane, target, zone, dirty);
+            }
+            if let Some(w) = st.win_mut() {
+                w.ui.pane_drag = None;
+            }
+        } else if let Some((target, zone)) = new_target {
+            let full = rects
+                .iter()
+                .find(|(id, _)| *id == target)
+                .map(|(_, r)| grid::egui_rect(*r));
+            let src = rects
+                .iter()
+                .find(|(id, _)| *id == pd.pane)
+                .map(|(_, r)| grid::egui_rect(*r));
+            if let (Some(full), Some(src)) = (full, src) {
+                let preview = grid::egui_rect(layout_tree::zone_rect(
+                    &grid::lt_rect(full),
+                    zone,
+                    st.settings.split_ratio,
+                ));
+                dropzone::paint(&painter, &pal, src, full, preview);
+                ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
             }
         }
     }

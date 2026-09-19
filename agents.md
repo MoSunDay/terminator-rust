@@ -42,7 +42,12 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   secondary kills the app, W6 root last-pane close with a sibling alive
   respawns a fresh root tab instead of quitting). CI runs it in
   .github/workflows/ci.yml (zig via PyPI wheel + fetch-vendor.sh for the
-  ghostty pin; fmt/clippy are hard gates since that workflow landed).
+  ghostty pin; fmt/clippy are hard gates since that workflow landed);
+  e2e-dragdrop.sh runs there too (needs scrot + python3-pil).
+- drag-and-drop e2e: `scripts/bin/e2e-dragdrop.sh` (Xvfb + xdotool +
+  scrot/PIL + state.json tree asserts; D1/D2 = Ctrl+drag pane header to
+  sibling edge/center with mid-drag overlay pixel checks, D3 = chip
+  reorder persisted, D4 = alive + quit).
 - opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
   /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
   binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
@@ -215,6 +220,30 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   && interact_pos().is_none_or(...)` so a miss-click cannot strand the
   editor.
 
+- drag-and-drop (2026-09): tab chips are Sense::click_and_drag() - a
+  primary drag latches WindowUi.tab_drag (anchor = tab's lowest pane id,
+  immune to index shifts; drag also selects the tab), the dragged slot
+  stays an empty gap, a ghost chip (selected look) paints after the row,
+  and layout_tree::move_tab runs live as the ghost center passes other
+  chips' centers; active_tab FOLLOWS the moved tab to its new index.
+  While latched, chrome_drag StartDrag is suppressed (no OS window move).
+  Ctrl+primary-drag on a pane HEADER latches WindowUi.pane_drag (plain
+  header drag still StartDrags the OS window; header is Sense::drag so
+  the latch fires on the press frame); screen.rs suppresses divider
+  interaction + raw pointer routing while latched, drop target = topmost
+  pane whose FULL rect (header included) contains the pointer, zone via
+  layout_tree::zone_for (center 50% square = Center/id-swap, else nearest
+  edge = actions::do_move_pane detach+re-split at settings.split_ratio);
+  overlay = render/dropzone.rs SOLID mix-ladder colors (no alpha) painted
+  after dividers. e2e-dragdrop.sh covers both gestures incl. mid-drag
+  overlay pixels (D1 fill mix(bg,accent,0.22)) and state.json tree
+  asserts; chips need >6px movement (egui click/drag disambiguation) so
+  the e2e drags in steps, AND the e2e sleeps ~0.3s between mousedown and
+  the first move: egui hit-tests per frame at pointer.latest_pos(), so a
+  press coalesced with the first move latches the drag on the WRONG chip
+  (or bare chrome -> StartDrag) - that race flaked D3 ~1/9 runs before
+  the settle was added.
+
 - font stack: ui/fonts.rs installs TWO embedded OFL fonts. PRIMARY
   assets/fonts/MapleMonoNF-CN-subset.ttf (7.4MB, 18780 glyphs, from maple-font
   v7.9 MapleMonoNormal-NF-CN-Regular; pyftsubset --no-layout-closure
@@ -263,11 +292,6 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   (auto_degrade owns it); spawn-backoff panes (no session yet) are never
   corpses. The old e2e "click closes dead pane" is UNREACHABLE now
   (oc-exit K6 deleted, K2/K3 assert the auto-close instead).
-- oc gesture drift (3rd round): /usr/local/bin/opencoder (2026-09-16
-  build) exits the idle prompt on a SINGLE Ctrl+C. e2e must PROBE (one
-  press, wait, escalate only if alive) - a spaced double-tap on a
-  single-press build kills the NEXT pane too: auto-close removes the
-  corpse, focus containment hands press #2 to the sibling.
 
 - empty-window restore: state.json `windows:[{tabs:[]}]` (what the quit
   path writes when the last shell exits) must restore as an EMPTY tree
@@ -276,6 +300,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   spawn_pane no-op, screen() respawn branch saw tabs non-empty), so the
   app opened to an empty window forever ("opens to nothing"). do_new_tab
   -> seed_alloc gives the respawned pane a globally-unique id.
+- oc gesture drift (3rd round): /usr/local/bin/opencoder (2026-09-16
+  build) exits the idle prompt on a SINGLE Ctrl+C. e2e must PROBE (one
+  press, wait, escalate only if alive) - a spaced double-tap on a
+  single-press build kills the NEXT pane too: auto-close removes the
+  corpse, focus containment hands press #2 to the sibling.
 - close semantics: closing the LAST pane/tab sets UiState.quitting instead of
   do_new_tab; screen() skips the empty-tabs respawn while quitting so the
   frame can land ViewportCommand::Close (main.rs, every frame; save_if_dirty

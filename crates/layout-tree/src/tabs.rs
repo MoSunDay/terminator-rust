@@ -2,7 +2,7 @@
 //! allocating pane ids, closing panes/tabs, reordering tabs and empty
 //! trees.
 
-use crate::tree::{contains_pane, pane_ids, LayoutTree, Node, PaneId, Tab};
+use crate::tree::{contains_pane, pane_ids, sorted_pane_ids, LayoutTree, Node, PaneId, Tab};
 
 /// Creates a fresh layout with a single tab holding a single pane (id 1,
 /// focused) and makes it the active tab.
@@ -78,6 +78,27 @@ pub fn close_tab(tree: &mut LayoutTree, tab: usize) {
     }
 }
 
+/// Reorders tabs: moves the tab at `from` to index `to`. Returns `false`
+/// (tree unchanged) when either index is out of range or they are equal.
+/// The active tab stays the SAME tab (identity = its lowest pane id, unique
+/// across the whole tree), not the same index.
+pub fn move_tab(tree: &mut LayoutTree, from: usize, to: usize) -> bool {
+    if from == to || from >= tree.tabs.len() || to >= tree.tabs.len() {
+        return false;
+    }
+    let anchor = sorted_pane_ids(&tree.tabs[tree.active_tab].root)
+        .first()
+        .copied();
+    let tab = tree.tabs.remove(from);
+    tree.tabs.insert(to, tab);
+    if let Some(id) = anchor {
+        if let Some(idx) = tree.tabs.iter().position(|t| contains_pane(&t.root, id)) {
+            tree.active_tab = idx;
+        }
+    }
+    true
+}
+
 /// Removes `pane` from tab `tab`. A parent split left with a single child is
 /// replaced by that child. Focus moves to the nearest remaining pane: the
 /// predecessor in pane id order, or the smallest remaining id when the closed
@@ -116,7 +137,8 @@ pub fn close_pane(tree: &mut LayoutTree, tab: usize, pane: PaneId) -> Option<()>
 
 /// Removes `pane` from `node` by value, replacing a split that lost a child
 /// with the surviving child. `None` means the subtree is now empty.
-fn remove_pane_node(node: Node, pane: PaneId) -> Option<Node> {
+/// Also used to detach panes for moves (see [`crate::movepane`]).
+pub(crate) fn remove_pane_node(node: Node, pane: PaneId) -> Option<Node> {
     match node {
         Node::Pane { id } => (id != pane).then_some(node),
         Node::Split {
@@ -301,4 +323,72 @@ mod tests {
         assert_eq!(tree.tabs[0].focused, 3);
     }
 
+    /// Three single-pane tabs: "a" (pane 1), "b" (pane 2), "c" (pane 3),
+    /// with "a" active.
+    fn three_tabs() -> LayoutTree {
+        let mut tree = new_tree("a");
+        assert_eq!(new_tab(&mut tree, "b"), 1);
+        assert_eq!(new_tab(&mut tree, "c"), 2);
+        tree.active_tab = 0;
+        tree
+    }
+
+    #[test]
+    fn move_tab_forward_carries_the_active_tab() {
+        let mut tree = three_tabs(); // active 0 = "a" (pane 1)
+        assert!(move_tab(&mut tree, 0, 2));
+        let titles: Vec<&str> = tree.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, vec!["b", "c", "a"]);
+        assert_eq!(tree.active_tab, 2); // same tab, new index
+        assert!(contains_pane(&tree.tabs[2].root, 1));
+    }
+
+    #[test]
+    fn move_tab_backward_shifts_the_active_index() {
+        let mut tree = three_tabs(); // active 0 = "a"
+        assert!(move_tab(&mut tree, 2, 0)); // [c, a, b]
+        assert_eq!(tree.tabs[0].title, "c");
+        assert_eq!(tree.active_tab, 1); // "a" pushed right
+        assert!(contains_pane(&tree.tabs[1].root, 1));
+    }
+
+    #[test]
+    fn move_tab_reaches_first_and_last() {
+        let mut tree = three_tabs();
+        assert!(move_tab(&mut tree, 1, 0)); // [b, a, c]
+        assert_eq!(tree.tabs[0].title, "b");
+        assert!(move_tab(&mut tree, 0, 2)); // [a, c, b]
+        assert_eq!(tree.tabs[2].title, "b");
+        assert_eq!(tree.tabs.len(), 3);
+    }
+
+    #[test]
+    fn move_tab_invalid_indices_are_noops() {
+        let mut tree = three_tabs();
+        assert!(!move_tab(&mut tree, 0, 3));
+        assert!(!move_tab(&mut tree, 3, 0));
+        assert!(!move_tab(&mut tree, 9, 9));
+        assert!(!move_tab(&mut tree, 1, 1));
+        let titles: Vec<&str> = tree.tabs.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, vec!["a", "b", "c"]);
+        assert_eq!(tree.active_tab, 0);
+    }
+
+    #[test]
+    fn move_tab_dragging_inactive_past_active_keeps_active_tab() {
+        let mut tree = three_tabs();
+        tree.active_tab = 1; // "b"
+        assert!(move_tab(&mut tree, 2, 0)); // [c, a, b]
+        assert_eq!(tree.active_tab, 2);
+        assert!(contains_pane(&tree.tabs[2].root, 2));
+        // Dragging "a" past it the other way: active follows identity again.
+        assert!(move_tab(&mut tree, 1, 2)); // [c, b, a]
+        assert_eq!(tree.active_tab, 1);
+        assert!(contains_pane(&tree.tabs[1].root, 2));
+        // A non-crossing drag leaves the active index untouched.
+        let mut tree = three_tabs();
+        tree.active_tab = 2; // "c"
+        assert!(move_tab(&mut tree, 0, 1)); // [b, a, c]
+        assert_eq!(tree.active_tab, 2);
+    }
 }

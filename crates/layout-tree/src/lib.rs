@@ -12,18 +12,20 @@
 
 pub mod focus;
 pub mod layout;
+pub mod movepane;
 pub mod rect;
 pub mod tabs;
 pub mod tree;
 
 pub use focus::{cycle_focus, move_focus, neighbor_for_cycle, FocusDir};
 pub use layout::{content_rect, layout_tab, pane_at, DEFAULT_DIVIDER_W};
+pub use movepane::{move_pane_to_pane, zone_for, zone_rect, DropZone};
 pub use rect::{
     near_divider, rect_area, rect_center, rect_contains, shrink, split_rect, split_rect_gapped,
     Axis, Rect,
 };
 pub use tabs::{
-    alloc_pane_id, close_pane, close_tab, empty_tree, ensure_next_pane_id, new_tab,
+    alloc_pane_id, close_pane, close_tab, empty_tree, ensure_next_pane_id, move_tab, new_tab,
     new_tree, next_pane_id,
 };
 pub use tree::{
