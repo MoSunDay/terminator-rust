@@ -147,6 +147,24 @@ pub struct DragState {
     pub level: usize,
 }
 
+/// In-flight tab-chip drag: the dragged tab is identified by its stable
+/// anchor (lowest pane id - survives index shifts), `grab_dx` anchors the
+/// ghost chip under the pointer, `w` is the chip width.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabDrag {
+    pub anchor: PaneId,
+    pub grab_dx: f32,
+    pub w: f32,
+}
+
+/// In-flight Ctrl+drag pane move: `target` is refreshed every frame from
+/// the hovered pane (pane id + drop zone); on release the move executes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaneDrag {
+    pub pane: PaneId,
+    pub target: Option<(PaneId, layout_tree::DropZone)>,
+}
+
 /// Remote-pane form fields (inspector window).
 #[derive(Debug, Clone, Default)]
 pub struct RemoteForm {
@@ -172,6 +190,10 @@ pub struct WindowUi {
     pub color_buf: String,
     pub trans_open: Option<PaneId>,
     pub drag: Option<DragState>,
+    /// In-flight tab-chip reorder drag (transient, never persisted).
+    pub tab_drag: Option<TabDrag>,
+    /// In-flight Ctrl+drag pane move (transient, never persisted).
+    pub pane_drag: Option<PaneDrag>,
     /// Pane owning an in-progress pointer drag (selection or motion
     /// reporting) of ANY button; keeps receiving PointerMoved even
     /// outside its rect.
@@ -213,6 +235,8 @@ pub fn window_ui() -> WindowUi {
         color_buf: String::new(),
         trans_open: None,
         drag: None,
+        tab_drag: None,
+        pane_drag: None,
         pointer_pane: None,
         pointer_buttons: 0,
         pointer_last: None,

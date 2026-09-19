@@ -10,7 +10,9 @@ use theme::{Palette, Rgb};
 use crate::actions;
 use crate::render::colors::{self, to_c32};
 use crate::session_map::SessionMap;
-use crate::state::{effective_title, AppState, PaneAction, PaneMeta, UiState, WindowState};
+use crate::state::{
+    effective_title, AppState, PaneAction, PaneDrag, PaneMeta, UiState, WindowState,
+};
 
 const BTN: f32 = 16.0;
 
@@ -73,8 +75,28 @@ pub fn show(
     // (egui hit-test prefers the topmost widget; drags fall through to
     // this background).
     let drag = ui.interact(rect, Id::new("pane_header_drag").with(pane), Sense::drag());
-    if drag.drag_started_by(egui::PointerButton::Primary) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    // Ctrl+press converts the header drag into a pane move (drop target
+    // tracked per frame in screen()); the plain drag still moves the OS
+    // window, and never while a pane drag already owns the pointer.
+    let pane_dragging = st
+        .win()
+        .is_some_and(|w| w.ui.pane_drag.is_some_and(|pd| pd.pane == pane));
+    if drag.drag_started_by(egui::PointerButton::Primary)
+        && st.win().is_none_or(|w| w.ui.pane_drag.is_none())
+    {
+        if ui.input(|i| i.modifiers.ctrl) {
+            if let Some(w) = st.win_mut() {
+                w.ui.pane_drag = Some(PaneDrag { pane, target: None });
+                w.ui.zoom = false;
+            }
+        } else {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+    }
+    if pane_dragging {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if drag.hovered() && ui.input(|i| i.modifiers.ctrl) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
 
     // Quiet chrome: the header is a flat chrome strip (the focused pane is
