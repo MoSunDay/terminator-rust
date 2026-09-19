@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use layout_tree::{
-    close_tab, ensure_next_pane_id, new_tab, new_tree, next_pane_id, set_parent_ratio, split_pane,
-    Axis, LayoutTree, Node, PaneId, MAX_RATIO, MIN_RATIO,
+    close_tab, empty_tree, ensure_next_pane_id, new_tab, new_tree, next_pane_id, set_parent_ratio,
+    split_pane, Axis, LayoutTree, Node, PaneId, MAX_RATIO, MIN_RATIO,
 };
 use log::warn;
 use remote::{PaneKind, RemoteTarget};
@@ -370,12 +370,14 @@ fn from_persisted(p: &Persisted) -> AppState {
 
 /// Rebuild one window's tree from its persisted tabs, remapping pane ids
 /// into the global id space (see [`Builder::next`]). An empty tab list
-/// yields a fresh default tree (the renderer respawns a tab into it).
+/// yields an EMPTY tree: the renderer's respawn path opens a fresh tab
+/// into it, which also registers the pane in `st.panes` — a seeded
+/// `new_tree` here would plant a pane id no session map ever owned.
 fn build_window(id: u64, active_tab: usize, tabs: &[PTab], b: &mut Builder) -> WindowState {
     if tabs.is_empty() {
         return WindowState {
             id,
-            tree: new_tree("shell"),
+            tree: empty_tree(),
             ui: window_ui(),
         };
     }
@@ -751,5 +753,22 @@ mod tests {
         assert_eq!(all.len(), n, "pane ids unique across windows");
         assert_eq!(back.panes.len(), n, "every rebuilt pane has metadata");
         assert!(back.next_pane_id > *all.iter().max().unwrap_or(&0));
+    }
+    /// A persisted window with zero tabs restores as an EMPTY tree for the
+    /// renderer's respawn path. The old seeded `new_tree` here planted a
+    /// pane id that no session map ever owned: no respawn, no session,
+    /// `ctl list` empty - the "opens to nothing" window.
+    #[test]
+    fn empty_window_restores_as_empty_tree_for_respawn() {
+        let p: Persisted = serde_json::from_str(
+            r#"{"theme":"dracula","windows":[{"id":1,"active_tab":0,"tabs":[]}]}"#,
+        )
+        .unwrap();
+        let back = from_persisted(&p);
+        assert_eq!(back.windows.len(), 1);
+        assert!(back.windows[0].tree.tabs.is_empty());
+        assert!(crate::state::all_pane_ids(&back).is_empty());
+        assert!(back.panes.is_empty());
+        assert_eq!(back.next_pane_id, 2);
     }
 }
