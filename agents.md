@@ -18,7 +18,9 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - app: egui UI; binary `terminator-rust`; MULTI-OS-WINDOW: AppState
   {windows: Vec<WindowState{id,tree,WindowUi}>, active=rendering idx,
   focus=user window}; state at ~/.config/terminator-rust/state.json
-  (PWindow[] + legacy tabs mirror); UDS ipc in src/ipc/
+  (PWindow[] + legacy tabs mirror); UDS ipc in src/ipc/;
+  actions::close_exited auto-closes EXITED panes 250ms (EXIT_GRACE)
+  after the exit was seen - exit 42 stays for auto_degrade
 
 ## Build/e2e
 - `cargo build/test --workspace` (PKG_CONFIG_PATH set by .cargo/config.toml)
@@ -254,6 +256,21 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   widget wins the click), StartDrag on primary press. Single tab = NO top
   panel (content starts at y=0; pane header identifies the pane; Inspector
   lives in the pane context menu); a second tab brings the chip row back.
+- dead-pane corpses are gone: an exited session's pane auto-closes via
+  actions::close_exited (EXIT_GRACE 250ms after the exit was SEEN) reusing
+  do_close_pane semantics (root+only window quits, secondary removes
+  itself, root-with-sibling respawns a tab). exit 42 is exempt
+  (auto_degrade owns it); spawn-backoff panes (no session yet) are never
+  corpses. The old e2e "click closes dead pane" is UNREACHABLE now
+  (oc-exit K6 deleted, K2/K3 assert the auto-close instead).
+
+- empty-window restore: state.json `windows:[{tabs:[]}]` (what the quit
+  path writes when the last shell exits) must restore as an EMPTY tree
+  (layout_tree::empty_tree) - persist::build_window's old seeded
+  new_tree planted an UNREGISTERED pane id (st.panes lookup missed ->
+  spawn_pane no-op, screen() respawn branch saw tabs non-empty), so the
+  app opened to an empty window forever ("opens to nothing"). do_new_tab
+  -> seed_alloc gives the respawned pane a globally-unique id.
 - close semantics: closing the LAST pane/tab sets UiState.quitting instead of
   do_new_tab; screen() skips the empty-tabs respawn while quitting so the
   frame can land ViewportCommand::Close (main.rs, every frame; save_if_dirty

@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use layout_tree::{close_pane, close_tab, new_tab, Axis, PaneId};
+use layout_tree::{close_pane, close_tab, new_tab, sorted_pane_ids, Axis, PaneId};
 use log::warn;
 use remote::{PaneKind, EXIT_NO_ZELLIJ};
 
@@ -47,6 +47,7 @@ pub(crate) fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
             Ok(s) => {
                 sess.map.insert(id, s);
                 sess.retry_at.remove(&id);
+                sess.exited_seen.remove(&id);
             }
             Err(e) => {
                 warn!("spawn pane {id}: {e}");
@@ -228,6 +229,7 @@ pub fn do_respawn(st: &mut AppState, sess: &mut SessionMap, pane: PaneId, dirty:
             Ok(s) => {
                 sess.map.insert(pane, s);
                 sess.retry_at.remove(&pane);
+                sess.exited_seen.remove(&pane);
             }
             Err(e) => {
                 warn!("respawn pane {pane}: {e}");
@@ -273,6 +275,53 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
         }
         *dirty = true;
     }
+}
+
+/// A pane whose session finished and whose exit has been visible for at
+/// least [`session_map::EXIT_GRACE`]. Pure predicate for [`close_exited`].
+fn exit_ripe(sess: &SessionMap, id: &PaneId, now: Instant) -> bool {
+    let exited = match sess.map.get(id) {
+        // alive, or auto_degrade owns the exit-42 marker
+        Some(s) => s.exit.is_some_and(|e| e != EXIT_NO_ZELLIJ),
+        // spawn-backoff candidate, not a corpse
+        None => false,
+    };
+    exited
+        && sess
+            .exited_seen
+            .get(id)
+            .is_some_and(|seen| now.duration_since(*seen) >= session_map::EXIT_GRACE)
+}
+
+/// Close panes whose session has exited: the shell is gone, so its pane
+/// goes too instead of lingering as a corpse the user must click away.
+/// Closing the last pane keeps the existing semantics - the only window
+/// quits the app, a secondary removes its OS window, the root with living
+/// siblings respawns a fresh tab next frame. `st.active` is restored.
+pub fn close_exited(st: &mut AppState, sess: &mut SessionMap, ui: &mut UiState, dirty: &mut bool) {
+    let now = Instant::now();
+    for (id, s) in sess.map.iter() {
+        if s.exit.is_some() && !sess.exited_seen.contains_key(id) {
+            sess.exited_seen.insert(*id, now);
+        }
+    }
+    let prev_active = st.active;
+    loop {
+        let hit = st.windows.iter().enumerate().find_map(|(wi, w)| {
+            w.tree.tabs.iter().enumerate().find_map(|(ti, t)| {
+                sorted_pane_ids(&t.root)
+                    .into_iter()
+                    .find(|id| exit_ripe(sess, id, now))
+                    .map(|id| (wi, ti, id))
+            })
+        });
+        let Some((wi, ti, pane)) = hit else {
+            break;
+        };
+        st.active = wi;
+        do_close_pane(st, sess, ui, ti, pane, dirty);
+    }
+    st.active = prev_active;
 }
 
 pub fn apply_action(
@@ -475,5 +524,120 @@ mod close_tab_tests {
         apply_action(&mut st, &mut sess, &mut ui, Action::ClosePane, &mut dirty);
         assert!(st.windows[0].tree.tabs.is_empty());
         assert!(ui.quitting);
+    }
+}
+
+#[cfg(test)]
+mod close_exited_tests {
+    use super::*;
+    use crate::state::{fresh_state, split_tree_pane, ui_state};
+    use std::time::Duration;
+    use vt_pane::{task as vtask, SessionOpts};
+
+    /// A real short-lived session that has already exited.
+    fn dead_session(status: i32) -> vt_pane::Session {
+        let code = status.to_string();
+        let opts = SessionOpts {
+            cols: 10,
+            rows: 5,
+            argv: vec!["/bin/sh".into(), "-c".into(), format!("exit {code}")],
+            env: Vec::new(),
+            scrollback_lines: 100,
+            dark: true,
+        };
+        let mut s = vtask::spawn_session(&opts).expect("spawn sh");
+        for _ in 0..250 {
+            let _ = vtask::pump(&mut s);
+            if s.exit.is_some() {
+                assert_eq!(s.exit, Some(status));
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("test session never exited");
+    }
+
+    /// One window, one tab, panes 1|2 split, both with live meta.
+    fn split_state() -> (AppState, SessionMap, UiState) {
+        let mut st = fresh_state();
+        let _ = split_tree_pane(&mut st, 0, 1, Axis::Vertical);
+        (st, session_map::session_map(), ui_state())
+    }
+
+    /// Mark a pane's session as exited past the grace window.
+    fn ripen(sess: &mut SessionMap, pane: PaneId, status: i32) {
+        sess.map.insert(pane, dead_session(status));
+        sess.exited_seen.insert(
+            pane,
+            Instant::now() - session_map::EXIT_GRACE - Duration::from_millis(50),
+        );
+    }
+
+    #[test]
+    fn exited_pane_closes_after_grace_and_keeps_sibling() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        ripen(&mut sess, 1, 0);
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert!(dirty, "state change must be persisted");
+        assert!(!st.panes.contains_key(&1), "corpse pane removed");
+        assert!(!sess.map.contains_key(&1), "corpse session removed");
+        assert!(!sess.exited_seen.contains_key(&1));
+        assert!(st.panes.contains_key(&2), "sibling untouched");
+        assert_eq!(st.windows[0].tree.tabs.len(), 1);
+        assert!(!ui.quitting);
+        assert_eq!(st.active, 0, "active pointer restored");
+    }
+
+    #[test]
+    fn exit_within_grace_lingers_one_cycle() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        sess.map.insert(1, dead_session(0)); // first sight: no seen-marker yet
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert!(
+            st.panes.contains_key(&1),
+            "pane must survive the first frame after the exit"
+        );
+        assert!(sess.exited_seen.contains_key(&1), "exit was timestamped");
+        // Instantly die + instantly close would fork-loop the respawn.
+    }
+
+    #[test]
+    fn last_pane_exit_quits_the_app() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        // remove pane 2's tab membership by closing via the tree directly
+        let _ = layout_tree::close_pane(&mut st.windows[0].tree, 0, 2);
+        st.panes.remove(&2);
+        ripen(&mut sess, 1, 0);
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert!(st.windows[0].tree.tabs.is_empty());
+        assert!(ui.quitting, "only window + last pane => quit");
+    }
+
+    #[test]
+    fn exit42_marker_is_left_for_auto_degrade() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        ripen(&mut sess, 1, EXIT_NO_ZELLIJ);
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert!(st.panes.contains_key(&1), "degrade path owns exit 42");
+        assert!(sess.map.contains_key(&1));
+    }
+
+    #[test]
+    fn secondary_last_exit_removes_only_that_window() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        crate::windows::spawn(&mut st, &mut sess, &mut dirty);
+        assert_eq!(st.windows.len(), 2);
+        let gone = layout_tree::sorted_pane_ids(&st.windows[1].tree.tabs[0].root)[0];
+        ripen(&mut sess, gone, 0);
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert_eq!(st.windows.len(), 1, "secondary removed itself");
+        assert!(!ui.quitting, "root keeps the app alive");
+        assert!(st.panes.contains_key(&1) && st.panes.contains_key(&2));
+        assert_eq!(st.focus, 0, "focus retargeted to root");
     }
 }
