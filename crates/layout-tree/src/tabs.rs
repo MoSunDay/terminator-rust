@@ -1,5 +1,6 @@
 //! Lifecycle operations on a [`LayoutTree`]: creating trees and tabs,
-//! allocating pane ids and closing panes/tabs.
+//! allocating pane ids, closing panes/tabs, reordering tabs and empty
+//! trees.
 
 use crate::tree::{contains_pane, pane_ids, LayoutTree, Node, PaneId, Tab};
 
@@ -12,6 +13,18 @@ pub fn new_tree(title: &str) -> LayoutTree {
             root: Node::Pane { id: 1 },
             focused: 1,
         }],
+        active_tab: 0,
+        next_pane_id: 2,
+    }
+}
+
+/// Creates an empty layout: no tabs. The renderer's respawn path
+/// (`screen`) opens a fresh tab into it, so a persisted window that had
+/// zero tabs comes back as a live shell tab instead of a tree holding a
+/// pane no session map ever registered.
+pub fn empty_tree() -> LayoutTree {
+    LayoutTree {
+        tabs: Vec::new(),
         active_tab: 0,
         next_pane_id: 2,
     }
@@ -160,6 +173,16 @@ mod tests {
     }
 
     #[test]
+    fn empty_tree_has_no_tabs_and_fresh_allocator() {
+        let tree = empty_tree();
+        assert!(tree.tabs.is_empty());
+        assert_eq!(next_pane_id(&tree), 2);
+        let mut tree = tree;
+        assert_eq!(new_tab(&mut tree, "shell"), 0);
+        assert_eq!(tree.tabs[0].root, Node::Pane { id: 2 });
+    }
+
+    #[test]
     fn new_tree_has_one_focused_pane() {
         let tree = new_tree("main");
         assert_eq!(tree.tabs.len(), 1);
@@ -277,4 +300,5 @@ mod tests {
         assert_eq!(pane_count(&tree.tabs[0].root), 3);
         assert_eq!(tree.tabs[0].focused, 3);
     }
+
 }

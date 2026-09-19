@@ -23,7 +23,8 @@ pub use rect::{
     Axis, Rect,
 };
 pub use tabs::{
-    alloc_pane_id, close_pane, close_tab, ensure_next_pane_id, new_tab, new_tree, next_pane_id,
+    alloc_pane_id, close_pane, close_tab, empty_tree, ensure_next_pane_id, new_tab,
+    new_tree, next_pane_id,
 };
 pub use tree::{
     contains_pane, find_node, find_node_mut, pane_count, pane_ids, parent_axis, parent_ratio,
