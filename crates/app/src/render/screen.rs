@@ -81,6 +81,14 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         actions::do_new_tab(&mut d.st, &mut d.sess, PaneKind::Local, &mut d.dirty);
     }
     actions::ensure_sessions(&d.st, &mut d.sess);
+    // A gone shell closes its own pane (after EXIT_GRACE); closing the
+    // last pane of THIS window removes it mid-pass - stop rendering then
+    // rather than drawing the next window's tree into this viewport.
+    let win_id = d.st.win().map(|w| w.id);
+    actions::close_exited(&mut d.st, &mut d.sess, &mut d.ui, &mut d.dirty);
+    if d.st.win().map(|w| w.id) != win_id {
+        return;
+    }
 
     let area = ui.available_rect_before_wrap();
     let Data {

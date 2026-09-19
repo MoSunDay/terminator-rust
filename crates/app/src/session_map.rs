@@ -24,15 +24,24 @@ pub struct SessionMap {
     pub map: HashMap<PaneId, Session>,
     /// Earliest allowed re-spawn per pane after a spawn failure (backoff).
     pub retry_at: HashMap<PaneId, Instant>,
+    /// First moment each pane's EXITED session was seen; auto-close waits
+    /// [`EXIT_GRACE`] so a shell that dies instantly cannot fork-loop the
+    /// empty-tree respawn (and its last output stays briefly readable).
+    pub exited_seen: HashMap<PaneId, Instant>,
 }
 
 /// Wait after a failed spawn before retrying (stops per-frame fork storms).
 pub const SPAWN_BACKOFF: Duration = Duration::from_secs(2);
 
+/// How long an exited session lingers before `actions::close_exited`
+/// removes its pane.
+pub const EXIT_GRACE: Duration = Duration::from_millis(250);
+
 pub fn session_map() -> SessionMap {
     SessionMap {
         map: HashMap::new(),
         retry_at: HashMap::new(),
+        exited_seen: HashMap::new(),
     }
 }
 
@@ -48,6 +57,7 @@ pub fn terminate(sess: &mut SessionMap, id: PaneId) {
         vtask::terminate(&mut s);
     }
     sess.retry_at.remove(&id);
+    sess.exited_seen.remove(&id);
 }
 
 fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool) -> SessionOpts {
