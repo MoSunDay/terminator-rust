@@ -30,21 +30,12 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let mut master: RawFd = -1;
-    let mut slave: RawFd = -1;
-    // SAFETY: plain C calls with valid out-pointers.
-    let rc = unsafe {
-        libc::openpty(
-            &mut master,
-            &mut slave,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            &winsize,
-        )
-    };
-    if rc != 0 {
-        return Err(io::Error::last_os_error()).context("openpty");
-    }
+    // CLOEXEC on BOTH descriptors (openpty has no flags): a sibling
+    // thread forking while our slave is open would otherwise leak it into
+    // a foreign child, and that holder keeps our master from ever seeing
+    // EOF (exit detection waits for it). The child's dup2(2) clears
+    // FD_CLOEXEC on stdio, so stdio survives exec.
+    let (master, slave) = open_pty_pair(&winsize)?;
 
     let prog = CString::new(argv[0]).context("argv[0] contains NUL")?;
     let cargv: Vec<CString> = argv
@@ -74,8 +65,30 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
         }
     }
 
-    // SAFETY: fork in a single-threaded context here (called before any
-    // reader thread exists).
+    // Pre-fork: build every pointer table and resolve the program NOW.
+    // Once other sessions exist their reader threads are running, and the
+    // forked child must not malloc (a sibling thread can hold the arena
+    // lock at fork time and wedge the child before exec). After the fork
+    // the child only runs async-signal-safe calls.
+    let argvp: Vec<*const libc::c_char> = cargv
+        .iter()
+        .map(|c| c.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+    let envp: Vec<*const libc::c_char> = env
+        .iter()
+        .map(|c| c.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+    // execve has no PATH lookup; resolve the program in the parent.
+    let exec_prog = if prog.to_bytes().contains(&b'/') {
+        prog.clone()
+    } else {
+        resolve_on_path(&prog, &env).unwrap_or_else(|| prog.clone())
+    };
+
+    // SAFETY: the child branch below only calls async-signal-safe
+    // functions on pre-built tables.
     let pid = unsafe { libc::fork() };
     match pid {
         -1 => {
@@ -106,22 +119,9 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
                 libc::signal(libc::SIGQUIT, libc::SIG_DFL);
                 libc::signal(libc::SIGTERM, libc::SIG_DFL);
                 libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-                let argvp: Vec<*const libc::c_char> = cargv
-                    .iter()
-                    .map(|c| c.as_ptr())
-                    .chain(std::iter::once(std::ptr::null()))
-                    .collect();
-                let envp: Vec<*const libc::c_char> = env
-                    .iter()
-                    .map(|c| c.as_ptr())
-                    .chain(std::iter::once(std::ptr::null()))
-                    .collect();
-                // execve has no PATH lookup; resolve the program ourselves.
-                if prog.to_bytes().contains(&b'/') {
-                    libc::execve(prog.as_ptr(), argvp.as_ptr(), envp.as_ptr());
-                } else if let Some(path) = resolve_on_path(&prog, &env) {
-                    libc::execve(path.as_ptr(), argvp.as_ptr(), envp.as_ptr());
-                }
+                // execProg was resolved pre-fork; a failed lookup still
+                // execs the bare name (ENOENT) to reach the same 127.
+                libc::execve(exec_prog.as_ptr(), argvp.as_ptr(), envp.as_ptr());
                 // exec failed: nothing safe left to do.
                 libc::_exit(127);
             }
@@ -200,6 +200,43 @@ pub fn pty_wait(pid: i32, non_blocking: bool) -> Result<Option<i32>> {
 }
 
 /// Find `prog` on the PATH encoded in `env` (`KEY=VALUE` CStrings).
+/// Allocate a pty pair with O_CLOEXEC on both ends.
+fn open_pty_pair(winsize: &libc::winsize) -> Result<(RawFd, RawFd)> {
+    // SAFETY: plain C pty calls, all before fork.
+    unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
+        if master < 0 {
+            return Err(io::Error::last_os_error()).context("posix_openpt");
+        }
+        let fail = |m: RawFd| {
+            libc::close(m);
+            io::Error::last_os_error()
+        };
+        if libc::grantpt(master) != 0 {
+            return Err(fail(master)).context("grantpt");
+        }
+        if libc::unlockpt(master) != 0 {
+            return Err(fail(master)).context("unlockpt");
+        }
+        let mut name = [0 as libc::c_char; 64];
+        if libc::ptsname_r(master, name.as_mut_ptr(), name.len()) != 0 {
+            return Err(fail(master)).context("ptsname_r");
+        }
+        let slave = libc::open(
+            name.as_ptr(),
+            libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+        );
+        if slave < 0 {
+            return Err(fail(master)).context("open pty slave");
+        }
+        if libc::ioctl(slave, libc::TIOCSWINSZ, winsize) != 0 {
+            libc::close(slave);
+            return Err(fail(master)).context("TIOCSWINSZ");
+        }
+        Ok((master, slave))
+    }
+}
+
 fn resolve_on_path(prog: &CString, env: &[CString]) -> Option<CString> {
     let path_val = env
         .iter()

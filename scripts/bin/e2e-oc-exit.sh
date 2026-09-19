@@ -9,10 +9,11 @@
 #   K3: a bare Ctrl+D reaches the child through the kitty-flags encoder
 #       workaround - the idle prompt exits on it (status 0), which is
 #       POSITIVE proof the 0x04 byte arrived; Esc stays inert (probed).
-#   K4: Ctrl+Shift+W force-closes a pane while the TUI is running.
-#   K6: a single click closes a DEAD pane (leftover DEC mouse modes must
-#       not eat the click); the app stays alive while another pane
-#       remains (quit-on-last-close only).
+#   K4: Ctrl+Shift+W force-closes a pane while the TUI is running (a
+#       fresh sibling tab keeps the app alive - quit-on-last-close only).
+#   K2/K3 double as the auto-close check: an exited child's pane closes
+#       itself ~250ms later (EXIT_GRACE) with NO click, and leftover DEC
+#       mouse modes never block the cleanup.
 #   K5: Ctrl+Shift+Q quits the whole app (WM-close equivalent; the
 #       historical gap: there was NO quit shortcut at all).
 # Each pane runs $SHELL = a wrapper that execs the real binary, so the
@@ -215,16 +216,40 @@ sleep 1.5   # let the TUIs settle
 
 # --- K2: Ctrl+D exits opencoder ------------------------------------------
 step "K2: double Ctrl+C exits the focused opencoder (agent1)"
-# opencode (2026-09 upstream) swapped the exit gesture: Ctrl+D/Esc/single
-# Ctrl+C no longer exit the idle prompt - Ctrl+C TWICE does (exit 0).
+# Gesture drift (agents.md): the idle prompt's exit gesture CHANGES
+# BETWEEN BUILDS - some exit on a single Ctrl+C, others need two spaced
+# presses. The step below probes instead of assuming.
 # NOTE: no clicks - opencoder tracks the mouse (1002/1003), a click is
 # reported to it and can leave it busy, where Ctrl+C means cancel.
+# Gesture drift (agents.md): builds differ - some exit the idle prompt
+# on a SINGLE Ctrl+C, others need TWO. Send one, wait, escalate only if
+# still alive: a blind double-tap on a single-Ctrl+C build would kill
+# the NEXT pane too (auto-close + focus containment hands the second
+# press to agent2).
 xdotool key --clearmodifiers ctrl+c
-sleep 0.4
-xdotool key --clearmodifiers ctrl+c
+for _ in $(seq 1 8); do
+    kill -0 "$P1_PID" 2>/dev/null || break
+    sleep 0.25
+done
+if kill -0 "$P1_PID" 2>/dev/null; then
+    xdotool key --clearmodifiers ctrl+c   # two-press build: second one
+fi
 wait_pid_gone "$P1_PID" 40 \
-    || { "$CTL" capture agent1 | tail -5; fail "opencoder survived Ctrl+C x2"; }
-echo "agent1 exited via Ctrl+C x2"
+    || { "$CTL" capture agent1 | tail -5; fail "opencoder survived Ctrl+C"; }
+echo "agent1 exited via Ctrl+C (1 or 2 presses)"
+# Exited panes now close THEMSELVES after EXIT_GRACE (250ms) - no click.
+# The corpse still carries opencoder's DEC mouse modes; cleanup must not
+# be blocked by them.
+for _ in $(seq 1 20); do
+    "$CTL" list 2>/dev/null | grep -q agent1 || break
+    sleep 0.25
+done
+"$CTL" list 2>/dev/null | grep -q agent1 \
+    && { "$CTL" list; fail "dead agent1 pane never auto-closed"; }
+"$CTL" list 2>/dev/null | grep -q agent2 \
+    || fail "agent2 vanished when agent1 auto-closed (over-close?)"
+kill -0 "$APP_PID" 2>/dev/null || fail "app quit on a non-last pane auto-close"
+echo "agent1 pane auto-closed after exit; agent2 alive; app alive"
 
 # --- K3: Ctrl+D delivers 0x04 and exits the child ------------------------
 step "K3: bare Ctrl+D reaches agent2 (kitty-flags encoding path)"
@@ -234,44 +259,51 @@ step "K3: bare Ctrl+D reaches agent2 (kitty-flags encoding path)"
 # agent2 dying right after Ctrl+D is positive proof the 0x04 byte
 # survived the kitty-flags-7 encoder workaround and reached the child
 # (a dropped key would leave the pane alive at the prompt).
-xdotool key --clearmodifiers ctrl+shift+Right   # focus agent2
-sleep 0.4
+# Focus containment guarantees the focused pane is a live survivor
+# (agent2 or agent3 - WHICH one depends on the K2 press count and the
+# build's gesture), so no blind focus navigation: Ctrl+D the focused
+# pane and identify the victim by pid afterwards.
 xdotool key --clearmodifiers ctrl+d
-wait_pid_gone "$P2_PID" 40 \
-    || { "$CTL" capture agent2 | tail -5; fail "Ctrl+D never reached agent2 (encoder regression?)"; }
-echo "agent2 exited via Ctrl+D - 0x04 delivered through the kitty-flags path"
-
-# --- K4: Ctrl+Shift+W closes a live pane ----------------------------------
-step "K4: Ctrl+Shift+W force-closes the running pane (agent3)"
-# Quit-on-last-close semantics: 3 panes exist here, so closing agent3
-# must close ONLY that pane - the app has to survive (checked below).
-kill -0 "$P3_PID" 2>/dev/null || fail "agent3 died before K4 (test bug)"
-xdotool key --clearmodifiers ctrl+shift+Right   # focus agent3
-sleep 0.4
-xdotool key --clearmodifiers ctrl+shift+w
-wait_pid_gone "$P3_PID" 40 \
-    || fail "opencoder survived Ctrl+Shift+W"
-"$CTL" list 2>/dev/null | grep -q agent3 \
-    && { "$CTL" list; fail "agent3 still listed after close"; }
-kill -0 "$APP_PID" 2>/dev/null || fail "app quit on a non-last pane close"
-echo "agent3 pane closed while the TUI was live; app survived"
-
-# --- K6: a click closes a dead pane ---------------------------------------
-step "K6: clicking the dead agent1 pane closes it"
-# agent1's child exited in K2. The corpse still carries opencoder's DEC
-# mouse modes (1002/1003), which must NOT suppress the click-to-close.
-# Layout after K4: agent1 | agent2 (0.34 split) -> agent1 owns the left
-# third; click its content area.
-xdotool mousemove $((X + WIDTH * 15 / 100)) $((Y + HEIGHT * 50 / 100)) click 1
-for _ in $(seq 1 20); do
-    "$CTL" list 2>/dev/null | grep -q agent1 || break
+victim=""
+for _ in $(seq 1 40); do
+    kill -0 "$P2_PID" 2>/dev/null || { victim="agent2"; break; }
+    kill -0 "$P3_PID" 2>/dev/null || { victim="agent3"; break; }
     sleep 0.25
 done
-"$CTL" list 2>/dev/null | grep -q agent1 \
-    && { "$CTL" list; fail "dead agent1 pane survived the click"; }
-kill -0 "$APP_PID" 2>/dev/null \
-    || fail "app quit while agent2's pane still exists"
-echo "dead agent1 pane closed by click; app alive (agent2 pane remains)"
+[ -n "$victim" ] \
+    || { "$CTL" capture agent2 | tail -5; fail "Ctrl+D reached nothing (encoder regression?)"; }
+if [ "$victim" = agent2 ]; then SURV_NAME=agent3; SURV_PID=$P3_PID;
+else SURV_NAME=agent2; SURV_PID=$P2_PID; fi
+echo "$victim exited via Ctrl+D - 0x04 delivered through the kitty-flags path"
+for _ in $(seq 1 20); do
+    "$CTL" list 2>/dev/null | grep -q "$victim" || break
+    sleep 0.25
+done
+"$CTL" list 2>/dev/null | grep -q "$victim" \
+    && { "$CTL" list; fail "dead $victim pane never auto-closed"; }
+"$CTL" list 2>/dev/null | grep -q "$SURV_NAME" \
+    || fail "$SURV_NAME vanished when $victim auto-closed (over-close?)"
+kill -0 "$APP_PID" 2>/dev/null || fail "app quit on a non-last pane auto-close"
+echo "$victim pane auto-closed after exit; $SURV_NAME alive; app alive"
+
+# --- K4: Ctrl+Shift+W closes a live pane ----------------------------------
+step "K4: Ctrl+Shift+W force-closes the running pane ($SURV_NAME)"
+# Both siblings auto-closed above, so $SURV_NAME is the LAST pane of
+# the only tab. Quit-on-last-close would QUIT the app - keep that honest
+# by first opening a fresh sibling tab (oc-wrapper -> opencoder, warm
+# HOME), then switching BACK to the agent tab before closing it.
+kill -0 "$SURV_PID" 2>/dev/null || fail "$SURV_NAME died before K4 (test bug)"
+xdotool key --clearmodifiers ctrl+shift+t     # new tab (takes focus)
+sleep 1.5   # let the fresh opencoder TUI settle (it only must be alive)
+xdotool key --clearmodifiers ctrl+Prior       # PrevTab: back to the agent tab
+sleep 0.4
+xdotool key --clearmodifiers ctrl+shift+w     # close it, not the last pane
+wait_pid_gone "$SURV_PID" 40 \
+    || fail "opencoder survived Ctrl+Shift+W"
+"$CTL" list 2>/dev/null | grep -q "$SURV_NAME" \
+    && { "$CTL" list; fail "$SURV_NAME still listed after close"; }
+kill -0 "$APP_PID" 2>/dev/null || fail "app quit on a non-last pane close"
+echo "$SURV_NAME pane closed while the TUI was live; app survived (sibling tab)"
 
 # --- K5: Ctrl+Shift+Q quits the app ---------------------------------------
 step "K5: Ctrl+Shift+Q quits terminator-rust"

@@ -7,7 +7,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 
 ## Crate map
 - layout-tree: tab/pane tree, splits, focus, `layout_tab` geometry
-- vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`
+- vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`; open_pty = posix_openpt+O_CLOEXEC pair, pre-fork argv/env/PATH tables (child branch is async-signal-safe only)
 - theme: palettes + xterm 256 cube + `blend_background`
 - remote: ssh -tt + zellij bootstrap (exit 42 = no zellij -> degrade)
 - ipc-proto: serde wire types for the UDS control socket (Request/Response)
@@ -263,6 +263,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   (auto_degrade owns it); spawn-backoff panes (no session yet) are never
   corpses. The old e2e "click closes dead pane" is UNREACHABLE now
   (oc-exit K6 deleted, K2/K3 assert the auto-close instead).
+- oc gesture drift (3rd round): /usr/local/bin/opencoder (2026-09-16
+  build) exits the idle prompt on a SINGLE Ctrl+C. e2e must PROBE (one
+  press, wait, escalate only if alive) - a spaced double-tap on a
+  single-press build kills the NEXT pane too: auto-close removes the
+  corpse, focus containment hands press #2 to the sibling.
 
 - empty-window restore: state.json `windows:[{tabs:[]}]` (what the quit
   path writes when the last shell exits) must restore as an EMPTY tree
