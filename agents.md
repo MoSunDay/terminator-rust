@@ -48,6 +48,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   scrot/PIL + state.json tree asserts; D1/D2 = Ctrl+drag pane header to
   sibling edge/center with mid-drag overlay pixel checks, D3 = chip
   reorder persisted, D4 = alive + quit).
+- empty-window restore e2e: `scripts/bin/e2e-empty-restore.sh`
+  (Xvfb + xdotool; E1 = `windows:[{tabs:[]}]` restores a live tab,
+  E2 = exit auto-closes + app quits persisting empty tabs, E3 = the
+  loop relaunches live; wired into ci.yml as e2e-empty-restore).
 - opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
   /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
   binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
