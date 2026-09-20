@@ -62,10 +62,10 @@ pub fn show(
     };
     let degraded = meta.is_some_and(|m| m.degraded);
 
-    // The header strip doubles as a drag handle (the native title bar is
-    // the primary one; this stays as a convenience). Registered first so
-    // the title/buttons on top keep their clicks (egui hit-test prefers
-    // the topmost widget; drags fall through to this background).
+    // Borderless window: the header strip doubles as a drag handle.
+    // Registered first so the title/buttons on top keep their clicks
+    // (egui hit-test prefers the topmost widget; drags fall through to
+    // this background).
     let drag = ui.interact(rect, Id::new("pane_header_drag").with(pane), Sense::drag());
     // A primary press on the header becomes a pane MOVE (drop target
     // tracked per frame in screen(); dropping on a sibling edge flips

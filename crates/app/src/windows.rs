@@ -22,8 +22,10 @@ pub fn builder_for(w: &WindowState) -> ViewportBuilder {
         .with_title(format!("terminator-rust #{}", w.id))
         .with_inner_size([900.0, 600.0])
         .with_position([(60 + w.id * 40) as f32, (40 + w.id * 30) as f32])
-        // Match the root shell: native title bar + transparent surface
-        // (the pane/chrome fills still apply `settings.opacity`).
+        // Match the root shell: borderless + transparent surface (the
+        // tab strip is the drag surface; the pane/chrome fills still
+        // apply `settings.opacity`).
+        .with_decorations(false)
         .with_transparent(true)
 }
 
