@@ -173,11 +173,15 @@ pub struct TabDrag {
 }
 
 /// In-flight Ctrl+drag pane move: `target` is refreshed every frame from
-/// the hovered pane (pane id + drop zone); on release the move executes.
+/// the hovered pane (pane id + drop zone); `dwell` tracks a hover on
+/// another tab's chip (tab index + hover start time) that switches the
+/// active tab mid-drag so the drop lands in that tab. On release the
+/// move executes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PaneDrag {
     pub pane: PaneId,
     pub target: Option<(PaneId, layout_tree::DropZone)>,
+    pub dwell: Option<(usize, f64)>,
 }
 
 /// Remote-pane form fields (inspector window).
@@ -237,6 +241,11 @@ pub struct WindowUi {
     /// Pane the IME platform output was anchored to on the previous
     /// frame (interrupt detection memory).
     pub ime_last_pane: Option<PaneId>,
+    /// Chip-strip horizontal scroll offset (px); 0 while the tabs fit.
+    pub tab_scroll: f32,
+    /// Active tab when the scroll was last auto-followed (keep the active
+    /// chip visible on tab switches, but never fight manual scrolling).
+    pub tab_scroll_tab: usize,
 }
 
 /// Transient app-global UI state; never persisted.
@@ -267,6 +276,8 @@ pub fn window_ui() -> WindowUi {
         ime_cursor: None,
         ime_pane: None,
         ime_last_pane: None,
+        tab_scroll: 0.0,
+        tab_scroll_tab: 0,
     }
 }
 

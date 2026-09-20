@@ -19,7 +19,7 @@ pub mod tree;
 
 pub use focus::{cycle_focus, move_focus, neighbor_for_cycle, FocusDir};
 pub use layout::{content_rect, layout_tab, pane_at, DEFAULT_DIVIDER_W};
-pub use movepane::{move_pane_to_pane, zone_for, zone_rect, DropZone};
+pub use movepane::{move_pane_across_tabs, move_pane_to_pane, zone_for, zone_rect, DropZone};
 pub use rect::{
     near_divider, rect_area, rect_center, rect_contains, shrink, split_rect, split_rect_gapped,
     Axis, Rect,

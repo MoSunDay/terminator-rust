@@ -9,18 +9,22 @@ use crate::render::tokens;
 
 /// Paint the drag overlay: `source` is the dragged pane, `target` the
 /// hovered drop pane, `preview` the rect the dragged pane would occupy.
-/// Solid ladder blends (no alpha) so pixels stay deterministic.
-pub fn paint(painter: &Painter, pal: &Palette, source: Rect, target: Rect, preview: Rect) {
+/// Solid ladder blends (no alpha) so pixels stay deterministic. `source`
+/// is None while a cross-tab drag pulls the pane from a tab that is not
+/// on screen.
+pub fn paint(painter: &Painter, pal: &Palette, source: Option<Rect>, target: Rect, preview: Rect) {
     // Dragged pane: a quiet seam so the source card stays readable.
-    painter.rect_stroke(
-        source,
-        CornerRadius::same(tokens::R_SM),
-        Stroke::new(
-            1.0,
-            to_c32(colors::mix(pal.background, pal.foreground, 0.35)),
-        ),
-        StrokeKind::Inside,
-    );
+    if let Some(source) = source {
+        painter.rect_stroke(
+            source,
+            CornerRadius::same(tokens::R_SM),
+            Stroke::new(
+                1.0,
+                to_c32(colors::mix(pal.background, pal.foreground, 0.35)),
+            ),
+            StrokeKind::Inside,
+        );
+    }
     // Drop target: accent ring.
     painter.rect_stroke(
         target,

@@ -87,7 +87,11 @@ pub fn show(
     {
         if rearranges {
             if let Some(w) = st.win_mut() {
-                w.ui.pane_drag = Some(PaneDrag { pane, target: None });
+                w.ui.pane_drag = Some(PaneDrag {
+                    pane,
+                    target: None,
+                    dwell: None,
+                });
                 w.ui.zoom = false;
             }
         } else {

@@ -7,7 +7,7 @@ use layout_tree::{content_rect, layout_tab, PaneId};
 use remote::PaneKind;
 
 use crate::actions;
-use crate::input::{mouse, pointer};
+use crate::input::{mouse, pointer, resize};
 use crate::render::{colors, dropzone, grid, preedit, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
@@ -101,7 +101,12 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // A Ctrl+drag pane move owns the pointer: dividers and raw pointer
     // routing stand down while the drop target is being picked.
     let pane_drag = st.win().and_then(|w| w.ui.pane_drag);
-    let dragging = if pane_drag.is_some() {
+    // A border resize owns the pointer too: no divider/raw routing/pane
+    // clicks while the pointer is on a window edge strip.
+    let edge = ui
+        .input(|i| i.pointer.interact_pos())
+        .and_then(|p| resize::dir_at(area, p));
+    let dragging = if pane_drag.is_some() || edge.is_some() {
         false
     } else {
         mouse::divider_interaction(ui, st, area, dirty)
@@ -130,9 +135,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let fill_alpha = colors::pane_bg_alpha(st.settings.transparency, st.settings.opacity);
 
     // Raw pointer routing (reporting / selection / wheel) over pane content
-    // rects; suppressed while a divider drag or a pane drag owns the
-    // pointer.
-    if !dragging && pane_drag.is_none() {
+    // rects; suppressed while a divider drag, a pane drag or a border
+    // resize owns the pointer.
+    if !dragging && pane_drag.is_none() && edge.is_none() {
         let content_rects: Vec<(PaneId, Rect)> = rects
             .iter()
             .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, PANE_HEADER_H))))
@@ -344,6 +349,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             w.ui.pane_drag = Some(crate::state::PaneDrag {
                 pane: pd.pane,
                 target: new_target,
+                dwell: pd.dwell,
             });
         }
         if !ui.input(|i| i.pointer.primary_down()) {
@@ -362,12 +368,14 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 .iter()
                 .find(|(id, _)| *id == pd.pane)
                 .map(|(_, r)| grid::egui_rect(*r));
-            if let (Some(full), Some(src)) = (full, src) {
+            if let Some(full) = full {
                 let preview = grid::egui_rect(layout_tree::zone_rect(
                     &grid::lt_rect(full),
                     zone,
                     st.settings.split_ratio,
                 ));
+                // src stays None on a cross-tab drag (the pane is not in
+                // this tab's rects): only the target ring + preview paint.
                 dropzone::paint(&painter, &pal, src, full, preview);
                 ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
             }

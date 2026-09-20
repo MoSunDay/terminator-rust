@@ -44,10 +44,18 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   .github/workflows/ci.yml (zig via PyPI wheel + fetch-vendor.sh for the
   ghostty pin; fmt/clippy are hard gates since that workflow landed);
   e2e-dragdrop.sh runs there too (needs scrot + python3-pil).
+- window-chrome e2e: `scripts/bin/e2e-window-controls.sh` (Xvfb + OPENBOX -
+  bare Xvfb has no WM so Maximized/Minimized/BeginResize/StartDrag are all
+  EWMH no-ops; R1 edge-drag resize, R2/R3 maximize button + chrome
+  double-click toggle, R4 minimize -> iconic + windowactivate restore,
+  S1-S3 tab overflow: chip strip scrolls by wheel while '+"/min/max cells
+  stay pinned at CHROME_RESERVE=153; CI job e2e-window-controls apt adds
+  openbox)
 - drag-and-drop e2e: `scripts/bin/e2e-dragdrop.sh` (Xvfb + xdotool +
   scrot/PIL + state.json tree asserts; D1/D2 = Ctrl+drag pane header to
   sibling edge/center with mid-drag overlay pixel checks, D3 = chip
-  reorder persisted, D4 = alive + quit).
+  reorder persisted, D6/D7/D8 = cross-tab pane migration via chip dwell
+  (edge/Center-swap/source-tab-close), D4 = alive + quit).
 - empty-window restore e2e: `scripts/bin/e2e-empty-restore.sh`
   (Xvfb + xdotool; E1 = `windows:[{tabs:[]}]` restores a live tab,
   E2 = exit auto-closes + app quits persisting empty tabs, E3 = the
@@ -245,6 +253,36 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   was 30 nominal / ~35 rendered and passed on tolerance). e2e band
   literals were recomputed from OBSERVED pixels - trust scrot, not
   arithmetic.
+- window chrome (2026-09-20): edge_cells now ends with min + max/restore
+  buttons (fixed rects, rightmost; ViewportCommand::Minimized(true)/
+  Maximized(toggle) via ui.ctx().send_viewport_cmd - inside a viewport pass
+  that targets the CURRENT window, root pass = ROOT); double-click bare
+  chrome toggles maximize (chrome_drag is Sense::click_and_drag - egui
+  click/double_click flags REQUIRE senses_click, pure-drag never fires
+  them; a double-click's first press may StartDrag - harmless). Window
+  edge resize: input/resize.rs strips (EDGE 6px, CORNER 14) are registered
+  as the LAST widgets of each window pass -> topmost, they steal edge
+  presses from chrome/panes for free (hit-test picks latest widget in a
+  layer); screen.rs still manually suppresses raw pointer::handle /
+  divider / pane_interact when dir_at(area, pos) is Some.
+- tab overflow scroll: chips keep the UNSCROLLED horizontal flow for cursor
+  advance, but interact/paint at vrect = rect.translate(-tab_scroll); clip
+  the horizontal Ui to the strip (egui hit-test uses rect INTERSECT clip,
+  so scrolled-out chips are unclickable for free). WindowUi.tab_scroll +
+  tab_scroll_tab: wheel over the strip scrolls 48px/line (up=left),
+  switching tabs auto-follows via ensure_visible once per switch (manual
+  scrolling wins between switches). CHROME_RESERVE=153 pins the trailing
+  '+/split' group + 4 edge cells right of the strip (trailing_buttons went
+  fixed-rect, ids chrome_newtab/chrome_splitv/chrome_splith).
+- clicking a tab chip to switch did NOT set *dirty (pre-existing): the
+  switch lived only in memory, state.json kept the old active_tab - fixed
+  alongside; any e2e asserting tab state via state.json needs the dirty
+  flag on every active_tab write.
+- e2e chip-click geometry: chip pitch ~= w+5 (w = 20+galley+14); the close
+  button owns [rect.right-14, rect.right] - probe clicks must stay >=15px
+  clear of a clipped chip's right edge (a click in the close zone SILENTLY
+  closes the tab, which reads as 'click did nothing' when asserting
+  active_tab).
 - shortcuts: Ctrl+Shift+Q = global quit (Action::Quit -> ROOT viewport
   Close via send_viewport_cmd_to, so the press works from ANY window;
   to_skey must map Key::Q); Ctrl+Shift+N = new OS window
@@ -275,8 +313,23 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   layout_tree::zone_for (center 50% square = Center/id-swap, else nearest
   edge = actions::do_move_pane detach+re-split at settings.split_ratio);
   overlay = render/dropzone.rs SOLID mix-ladder colors (no alpha) painted
-  after dividers. e2e-dragdrop.sh covers the gestures (D1/D2 ctrl,
-  D5 bare-drag) incl. mid-drag
+  after dividers. CROSS-TAB migration (2026-09-20): dwelling on another
+  tab's chip mid-pane_drag (DWELL_SECS 0.4, PaneDrag.dwell +
+  dwell_step pure fn in ui/tabs.rs) switches active_tab there (accent
+  ring on the hovered chip); drop zones then come from the TARGET tab's
+  panes, do_move_pane locates the source tab via contains_pane and
+  dispatches layout_tree::move_pane_across_tabs (edge = detach +
+  re-split at the target leaf, Center = cross-tab slot SWAP via
+  swap_leaf_ids on both roots; source tab emptied -> close_tab; landed
+  pane focused, active_tab = destination; source tab re-focuses only
+  when its focused pane departed, close_pane-style). dropzone::paint
+  source is Option<Rect> (cross-tab drag has no on-screen source pane,
+  only target ring + preview). zone_for dx/dy are relative to the PANE
+  rect, not the window - a drop at 15% of the area over a HALF-width
+  pane is rel dx 0.3 = still Center (D8 bit this; needs <=12.5%).
+  e2e-dragdrop.sh covers the gestures (D1/D2 ctrl,
+  D5 bare-drag, D6 cross-tab edge + dwell, D7 cross-tab Center swap,
+  D8 source-tab close) incl. mid-drag
   overlay pixels (D1 fill mix(bg,accent,0.22)) and state.json tree
   asserts; chips need >6px movement (egui click/drag disambiguation) so
   the e2e drags in steps, AND the e2e sleeps ~0.3s between mousedown and
