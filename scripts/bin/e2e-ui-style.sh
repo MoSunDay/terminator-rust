@@ -16,7 +16,8 @@
 #   F: the active tab chip fill is the subtle accent tint mix(bg, accent,
 #      0.18).
 #   G: the pane header title is CENTERED in the space left of the C/T/X
-#      buttons (text bbox midpoint vs computed title_rect center).
+#      buttons (text bbox midpoint vs computed title_rect center); the
+#      focused pane's header fill is the accent tint mix(bg, accent, 0.10).
 #   H: the old centered window-title row is GONE - the chrome is a single
 #      chip row (zoom/inspector live at its right edge); no title-colored
 #      text may render in the bare chrome zone (regression guard).
@@ -211,11 +212,11 @@ print(f"B gutter two-tone: {div_hits} px ~= {exp_div}, "
       f"{fld_hits} px ~= {exp_fld} in scan band [{'OK' if ok else 'FAIL'}]")
 
 # E: active-chip underline = accent, 2px tall at the chip bottom edge.
-#    Geometry: single-row chrome = 3px inset + chip row Y+3..Y+27
-#    (CHIP_H=24), so the underline sits at Y+25..Y+27; the wide band stops
-#    short of the pane area (Y+30, hairline ~Y+29), where the focused
+#    Geometry: single-row chrome = 4px inset + chip row Y+4..Y+32
+#    (CHIP_H=28), so the underline sits at Y+30..Y+31; the wide band stops
+#    short of the pane area (Y+42, hairline ~Y+40), where the focused
 #    pane's accent stroke would false-positive.
-hits = sum(1 for yy in range(Y + 17, Y + 29)
+hits = sum(1 for yy in range(Y + 21, Y + 33)
            for x in range(X, X + 220) if close(img.getpixel((x, yy)), ACCENT))
 ok = hits >= 3
 if not ok:
@@ -223,20 +224,21 @@ if not ok:
 print(f"E chip-underline: {hits} px ~= {ACCENT} in scan band [{'OK' if ok else 'FAIL'}]")
 
 # F: active-chip fill = mix(bg, accent, 0.18), sampled inside the chip
-#    (spans roughly x X..X+75, y Y+3..Y+27) off the label and close glyphs.
-check("F chip-fill", X + 45, Y + 9, mix(BG, ACCENT, 0.18))
+#    (spans roughly x X..X+75, y Y+4..Y+32) off the label and close glyphs.
+check("F chip-fill", X + 45, Y + 11, mix(BG, ACCENT, 0.18))
 
 # G: pane header title centered. The focused "red" pane's title draws in
-#    FG over chrome_bg in the header strip right below the chrome bar
-#    (pane area starts ~Y+30, header strip is 24px tall -> scan the band).
-#    title_rect = [pane_left+8, pane_right-56(buttons)-8] -> midpoint is
-#    the computed expectation; tolerance 6px for font rounding.
+#    FG over the focused-header tint in the header strip right below the
+#    chrome bar (pane area starts ~Y+42, header strip is 24px tall ->
+#    scan the band). title_rect = [pane_left+8, pane_right-56(buttons)-8]
+#    -> midpoint is the computed expectation; tolerance 6px for font
+#    rounding.
 title_text = mix(FG, BG, 0.38)
 pane_w = (W - 6) / 2.0            # 50/50 split, 6px divider
 scan_lo, scan_hi = X + 10, int(X + pane_w - 80)   # clear of buttons
 hits = []
 for x in range(scan_lo, scan_hi):
-    for yy in range(Y + 34, Y + 50):
+    for yy in range(Y + 44, Y + 62):
         px = img.getpixel((x, yy))
         if close(px, FG) or close(px, title_text):
             hits.append(x)
@@ -253,11 +255,11 @@ if not ok:
     rc = 1
 
 # H: no window-title row anymore. Scan the bare chrome zone right of the
-#    trailing buttons (they end ~X+140) and left of the zoom/inspector
-#    cells (start ~X+W-57), at the chip-row mid line: expect ZERO
-#    title-colored pixels there.
-hits = [x for x in range(X + 220, X + W - 60)
-        if close(img.getpixel((x, Y + 15)), title_text)]
+#    trailing buttons (their glyphs span ~X+190..X+240) and left of the
+#    zoom/inspector cells (start ~X+W-57), at the chip-row mid line:
+#    expect ZERO title-colored pixels there.
+hits = [x for x in range(X + 260, X + W - 60)
+        if close(img.getpixel((x, Y + 18)), title_text)]
 ok = len(hits) == 0
 print(f"H no-topbar-title: {len(hits)} title-text px in chrome scan [{'OK' if ok else 'FAIL'}]")
 if not ok:
@@ -301,13 +303,13 @@ rc = 0
 def close(got, exp):
     return all(abs(g - e) <= TOL for g, e in zip(got, exp))
 
-# I1: former chip band (Y+17..Y+29) holds no accent chip underline and no
+# I1: former chip band (Y+21..Y+32) holds no accent chip underline and no
 #     active-chip fill: the chips are gone. (The focused pane's accent
 #     frame only lives at the pane edges, never inside this band.)
-accent_px = sum(1 for yy in range(Y + 17, Y + 29) for x in range(X + 10, X + 220)
+accent_px = sum(1 for yy in range(Y + 21, Y + 33) for x in range(X + 10, X + 220)
                 if close(img.getpixel((x, yy)), ACCENT))
 chip_fill = mix(BG, ACCENT, 0.18)
-fill_px = sum(1 for yy in range(Y + 5, Y + 25) for x in range(X + 10, X + 220)
+fill_px = sum(1 for yy in range(Y + 6, Y + 30) for x in range(X + 10, X + 220)
               if close(img.getpixel((x, yy)), chip_fill))
 ok = accent_px == 0 and fill_px == 0
 if not ok:
@@ -315,14 +317,15 @@ if not ok:
 print(f"I no-chips: accent {accent_px} px, chip-fill {fill_px} px in band "
       f"[{'OK' if ok else 'FAIL'}]")
 
-# I2: the pane header now starts at y=0: bare chrome at the far left of the
-#     former chip row (title is centered at ~pane midpoint, clear of x=50).
-exp_chrome = mix(BG, FG, 0.045)
+# I2: the pane header now starts at y=0: the focused pane's header tint
+#     mix(bg, accent, 0.10) at the far left of the former chip row (title
+#     is centered at ~pane midpoint, clear of x=50).
+exp_header = mix(BG, ACCENT, 0.10)
 got = img.getpixel((X + 50, Y + 15))
-ok = close(got, exp_chrome)
+ok = close(got, exp_header)
 if not ok:
     rc = 1
-print(f"I header-at-top: got {got} want {exp_chrome} [{'OK' if ok else 'FAIL'}]")
+print(f"I header-at-top: got {got} want {exp_header} [{'OK' if ok else 'FAIL'}]")
 
 sys.exit(rc)
 PY

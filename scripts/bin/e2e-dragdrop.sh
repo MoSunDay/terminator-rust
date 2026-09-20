@@ -120,9 +120,11 @@ echo "window $WID at ${X},${Y} ${WIDTH}x${HEIGHT}"
 kill -0 "$APP_PID" 2>/dev/null || fail "app died during startup"
 
 # --- derived geometry (mirrors layout_tab / split_rect_gapped) -----------
-# Single-row chrome = 3 + chip 24 + 3 = 30px; pane area below it. A
+# Single-row chrome = 4 + chip 28 + 4 = 36px nominal (egui adds ~5px of
+# panel/item spacing; only the derived header/gut origins matter below,
+# both land inside their targets with that slack). A
 # v-split at 0.5 with a 6px divider: left w = (W-6)/2, right the rest.
-CHROME_H=30; GUT=6
+CHROME_H=36; GUT=6
 AX=$X; AY=$((Y + CHROME_H)); AW=$WIDTH; AH=$((HEIGHT - CHROME_H))
 W1=$(((AW - GUT) / 2))
 P2X=$((AX + W1 + GUT)); P2W=$((AW - W1 - GUT))
@@ -258,9 +260,9 @@ img = Image.open(os.environ["D3SCAN"]).convert("RGB")
 fill = mix(BG, ACCENT, 0.18)          # active-chip fill (tab_active)
 def close(p, e, tol=3):
     return all(abs(a - b) <= tol for a, b in zip(p, e))
-# Chip row Y+3..Y+27 (underline at Y+25..27 excluded): scan for the
+# Chip row Y+4..Y+32 (underline at Y+30..32 excluded): scan for the
 # active chip's fill; text glyphs interrupt runs but min/max still span it.
-xs = [x for yy in range(Y + 5, Y + 24) for x in range(X, X + min(int(os.environ["WIDTH"]), 500))
+xs = [x for yy in range(Y + 6, Y + 30) for x in range(X, X + min(int(os.environ["WIDTH"]), 500))
       if close(img.getpixel((x, yy)), fill)]
 if xs:
     left, right = min(xs), max(xs)
@@ -275,15 +277,15 @@ else:
 # Fallback: known chrome geometry - first chip starts at the row's left
 # edge, chips are 44px+ wide; sanity-assert the row IS chrome at x=400.
 chrome = mix(BG, (248, 248, 242), 0.045)
-if not close(img.getpixel((X + 400, Y + 15)), chrome, 3):
-    print(f"row sanity fail: pixel at (X+400,Y+15) is not bare chrome",
+if not close(img.getpixel((X + 400, Y + 18)), chrome, 3):
+    print(f"row sanity fail: pixel at (X+400,Y+18) is not bare chrome",
           file=sys.stderr)
     sys.exit(1)
 print(X + 60)
 PY
 ) || fail "chip scan failed"
 CHIP1X=$CHIPX
-CHIPY=$((Y + 15))
+CHIPY=$((Y + 18))
 CHIP1_RIGHT=$((CHIP1X + 45))     # ~half the alpha chip's width
 DROPX=$((CHIP1_RIGHT + 140))     # clearly right of chip 2's center
 echo "chip1 press x=$CHIP1X drop x=$DROPX (row y=$CHIPY)"
