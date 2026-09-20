@@ -15,6 +15,11 @@ pub const PANE_HEADER_H: f32 = 24.0;
 /// Divider thickness (layout_tree default).
 pub const DIVIDER_W: f32 = layout_tree::DEFAULT_DIVIDER_W;
 
+/// Default terminal font size (points). 15 makes the embedded Maple
+/// Mono advance (0.6em) land on exactly 9 device pixels at 1x scale, so
+/// the cell pitch is naturally integer (no snapping loss); 20/25 too.
+pub const DEFAULT_FONT_SIZE: f32 = 15.0;
+
 /// Per-pane configuration (persisted). Live process state lives in SessionMap.
 #[derive(Debug, Clone)]
 pub struct PaneMeta {
@@ -254,7 +259,7 @@ pub fn window_ui() -> WindowUi {
         pointer_buttons: 0,
         pointer_last: None,
         mods_frame_end: egui::Modifiers::NONE,
-        font_size: 14.0,
+        font_size: DEFAULT_FONT_SIZE,
         inspector: false,
         ime: None,
         ime_cursor: None,

@@ -11,7 +11,7 @@ use remote::{
 };
 
 use crate::actions;
-use crate::state::Data;
+use crate::state::{Data, DEFAULT_FONT_SIZE};
 
 fn form_target(f: &crate::state::RemoteForm) -> RemoteTarget {
     let label = f.label.trim().to_string();
@@ -115,7 +115,7 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
         d.st.windows
             .get(idx)
             .map(|w| w.ui.font_size)
-            .unwrap_or(14.0);
+            .unwrap_or(DEFAULT_FONT_SIZE);
     if ui
         .add(
             egui::Slider::new(&mut size, 10.0..=24.0)

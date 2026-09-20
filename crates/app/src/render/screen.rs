@@ -10,7 +10,7 @@ use crate::actions;
 use crate::input::{mouse, pointer};
 use crate::render::{colors, dropzone, grid, preedit, tokens};
 use crate::session_map;
-use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
+use crate::state::{AppState, Data, DEFAULT_FONT_SIZE, DIVIDER_W, PANE_HEADER_H};
 
 /// Pane card silhouette: rounded where the header meets the chrome, square
 /// at the window bottom.
@@ -71,7 +71,10 @@ fn draw_viewport_bar(
 pub fn screen(ui: &mut Ui, d: &mut Data) {
     let ctx = ui.ctx().clone();
     let pal = colors::palette_of(&d.st.theme_name);
-    let font_size = d.st.win().map(|w| w.ui.font_size).unwrap_or(14.0);
+    let font_size =
+        d.st.win()
+            .map(|w| w.ui.font_size)
+            .unwrap_or(DEFAULT_FONT_SIZE);
     let cell = grid::measure_cells(&ctx, font_size);
 
     // Lifecycle bookkeeping.
