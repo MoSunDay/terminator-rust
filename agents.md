@@ -174,6 +174,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   sends XSendEvent, which winit DROPS - focus the window
   (`xdotool windowfocus`) and use the global `xdotool key/click` (XTest)
   instead; bit us again driving the live app on the deploy target.
+  `xdotool search --name` matches SUBSTRINGS - on the target the user's
+  PYTHON terminator emulator (tab title "root@ds: ~/terminator-rust")
+  shadows the app; target the app by WM_CLASS ("", "terminator-rust")
+  or a known WID, never by name alone.
 - libghostty default palette green ~(181,189,104) red ~(224,108,117) -
   color tests assert dominance, not VGA values.
 - control socket: $XDG_RUNTIME_DIR/terminator-rust/ipc.sock (fallback
@@ -318,8 +322,13 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   /tmp/.X11-unix sockets make Xvfb refuse to bind) - probe random free
   numbers, and `export DISPLAY` for xdotool/scrot (env DISPLAY=... on the app
   line alone is not enough).
-- window shell: NATIVE decorations ON (WM title bar restored 2026-09-20
-  as the primary drag/close surface) + transparent viewport
+- window shell: BORDERLESS again (re-reverted the same day 2026-09-20,
+  ~1h after restoring them - user pref: the tab strip IS the title bar);
+  window move = bare-chrome drag on the tab row ->
+  ViewportCommand::StartDrag (winit drag_window, cross-platform by
+  construction: macOS performWindowDrag / X11 _NET_WM_MOVERESIZE /
+  Wayland toplevel move - NO platform-specific code; verified live on
+  xfwm4 + openbox) + transparent viewport
   (clear_color = TRANSPARENT); Settings.opacity (0.5..=1.0, default
   1.0 = opaque, persisted via serde default; legacy files load 1.0 too -
   transparency is OPT-IN because a compositor-less X renders transparent
@@ -341,7 +350,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   ALWAYS (Chrome-style: chips, '+', split buttons and zoom/settings cells
   visible even with a single tab - the old zero-chrome rule is deleted);
   the tab-bar background (tabs.rs chrome_drag) and the pane header strip
-  remain drag-handle conveniences next to the WM title bar: Sense::drag
+  ARE the window drag surface: Sense::drag
   registered BEFORE the chips/buttons (topmost widget wins the click),
   StartDrag on primary press. Settings lives in the pane context menu
   (pane header keeps only the X close button).
@@ -438,7 +447,8 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   removes the window, root last-pane close with sibling alive respawns a
   tab, Ctrl+Shift+W on non-last pane keeps app alive (K4), dead-pane
   click closes only it (K6), Ctrl+Shift+Q quits from any window, WM
-  close honored
+  close honored; borderless chrome-drag window move = live-desktop check
+  only (StartDrag needs an EWMH WM - bare Xvfb probes stay 0,0)
 - input: key echo, ^C echo through the egui Copy-fold gate, Ctrl+Shift+E
   split, SGR press/release/motion + wheel byte-exact (less wheel =
   arrows x3), cross-pane drag RELEASE to the press-owner pane, drag-
