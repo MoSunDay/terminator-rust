@@ -23,9 +23,18 @@ pub fn measure_cells(ctx: &egui::Context, font_size: f32) -> CellSize {
     });
     let w = w.max(4.0);
     let h = h.max(6.0);
+    // A fractional cell pitch (Maple 0.6em advance = 8.4pt at font 14)
+    // puts every column at a cycling subpixel phase (0,.4,.8,.2,.6,...):
+    // glyphs rasterize unhinted at those offsets, so ink goes soft and
+    // apparent letter spacing wobbles per column at pixels_per_point 1.0.
+    // Quantize the PITCH to whole device pixels; the glyph size itself
+    // stays untouched (hinting/acl rounds it independently).
+    let w = (w * ppp).round().max(1.0) / ppp;
+    let h = (h * ppp).round().max(1.0) / ppp;
     // A wide cell must span exactly two narrow cells: derive the paint
-    // size by scaling the probe advance to 2*w. Degenerate measurements
-    // (no CJK glyph found, zero advance) fall back to a sane 1.2x.
+    // size by scaling the probe advance to the SNAPPED 2*w. Degenerate
+    // measurements (no CJK glyph found, zero advance) fall back to a
+    // sane 1.2x.
     let scale = if wide_advance > f32::EPSILON {
         2.0 * w / wide_advance
     } else {
@@ -237,26 +246,62 @@ mod tests {
         crate::ui::fonts::install(&ctx);
         ctx.begin_pass(egui::RawInput::default());
         ctx.end_pass().textures_delta.clear();
-        let cell = measure_cells(&ctx, 14.0);
-        let wide_font = FontId::monospace(cell.wide_size);
-        let advance = ctx.fonts_mut(|f| {
-            f.layout_no_wrap("\u{6C49}".to_owned(), wide_font, Color32::WHITE)
+        let ppp = ctx.pixels_per_point();
+
+        // The invariant that matters (any size): a wide glyph painted at
+        // wide_size fills exactly two narrow cells. With the Maple
+        // primary font (adv(汉) == 2*adv(M)) the scale converges to ~1.0,
+        // so wide_size lands on font_size within quantization noise.
+        let probe = |size: f32| {
+            let cell = measure_cells(&ctx, size);
+            let advance = ctx.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    "\u{6C49}".to_owned(),
+                    FontId::monospace(cell.wide_size),
+                    Color32::WHITE,
+                )
                 .rect
                 .width()
-        });
-        // The invariant that matters: a wide glyph painted at wide_size
-        // fills exactly two narrow cells. With the Maple primary font
-        // (adv(汉) == 2*adv(M)) the scale converges to ~1.0, so wide_size
-        // lands on font_size within pixel-quantization noise.
+            });
+            (cell, advance)
+        };
+
+        // Default size: the Maple advance (0.6em) * 15 is exactly 9.0
+        // device pixels, so the snapped pitch is integral with no
+        // rounding loss (ppp == 1.0 in this headless context).
+        let (cell, advance) = probe(crate::state::DEFAULT_FONT_SIZE);
+        assert!(
+            (cell.w * ppp).fract() < 1e-4 && (cell.h * ppp).fract() < 1e-4,
+            "snapped pitch must be whole device pixels (w {}, h {})",
+            cell.w * ppp,
+            cell.h * ppp
+        );
+        assert!(
+            (cell.w * ppp - 9.0).abs() < 1e-4,
+            "Maple 15pt pitch should be exactly 9px, got {}",
+            cell.w * ppp
+        );
         assert!(
             (advance - 2.0 * cell.w).abs() < 0.05,
             "wide advance {advance} should fill two cells ({}pts)",
             2.0 * cell.w
         );
         assert!(
-            (cell.wide_size - 14.0).abs() < 0.2,
+            (cell.wide_size - crate::state::DEFAULT_FONT_SIZE).abs() < 0.2,
             "wide scale should converge to ~1.0 (got {}; ~1.2 means the Noto fallback won the probe)",
             cell.wide_size
+        );
+
+        // 14pt is the snapping case: raw Maple advance 8.4pt quantizes
+        // down to a whole 8px pitch, wide cells to 16px, and the scaled
+        // wide font still fills the two-cell span exactly.
+        let (cell, advance) = probe(14.0);
+        assert_eq!(cell.w * ppp, 8.0);
+        assert_eq!(cell.w_px, 8);
+        assert!(
+            (advance - 2.0 * cell.w).abs() < 0.05,
+            "wide advance {advance} should fill two snapped cells ({}pts)",
+            2.0 * cell.w
         );
     }
 }

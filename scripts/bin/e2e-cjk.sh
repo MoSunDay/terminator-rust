@@ -8,11 +8,11 @@
 #      socket into a real pty, and assert `ctl capture` round-trips the
 #      exact UTF-8 line (wide cells + spacer tails intact).
 #   3. Pixels: scrot + PIL. Real Han glyphs painted at the measured wide
-#      scale have ink ~11-13x12-13px with interior strokes (the Maple
+#      scale have ink ~12-15x13-14px with interior strokes (the Maple
 #      primary renders CJK at exactly 2x the latin advance, so wide_size
-#      == font_size); ASCII at 14pt stays <= 8x12px, and a tofu fallback
+#      == font_size); ASCII at 15pt stays <= 8x12px, and a tofu fallback
 #      (hollow replacement square) has an empty interior. So: >= 3
-#      connected ink components with w>=8.5, h>=10.5, and >= 3 of them
+#      connected ink components with w>=10.5, h>=11.5, and >= 3 of them
 #      carrying >= 8 interior ink pixels.
 # Usage: scripts/bin/e2e-cjk.sh  (repo root; needs Xvfb + xdotool + scrot +
 # python3-PIL + python3-fontTools). E2E_KEEP=1 keeps the scratch dir.
@@ -190,10 +190,11 @@ y0, y1 = Y + 8, Y + H - 8
 rows = [y for y in range(y0, y1) if any(is_fg(px[x, y]) for x in range(x0, x1, 2))]
 bands = []
 for y in rows:
-    # Merge gap 1 only: a wide-CJK line's 16px ink leaves just a 2-row
-    # valley to the next text line; bridging it (old <=3) merges all
-    # lines into one band and a glyph's column run then inherits the
-    # neighbor line's rows (h=30 -> fails the wide-cell filter).
+    # Merge gap 1 only: with the 20px line pitch (15pt default) a
+    # wide-CJK line's ~13px ink leaves a ~7-row valley to the next text
+    # line, but bridging bigger gaps (old <=3) merges all lines into one
+    # band and a glyph's column run then inherits the neighbor line's
+    # rows (h=30 -> fails the wide-cell filter).
     if bands and y - bands[-1][1] <= 1:
         bands[-1][1] = y
     else:
@@ -220,10 +221,12 @@ for (by0, by1) in bands:
         for (ry0, ry1) in yr:
             comps.append((cx0, cx1, ry0, ry1))
 
-# Measured with the Maple primary: Han ink deltas are 10..12 x 11..12
-# while the widest ASCII glyph stays at 7, so 8.5/10.5 split the gap.
+# Measured with the Maple primary at the 15pt default (cell pitch
+# snapped to whole px: 9/18): Han ink deltas are 12..15 x 12..14 while
+# ASCII glyphs stay <= 8 wide (the odd bold prompt rune reaches 9), so
+# 10.5/11.5 split the gap.
 wide = [c for c in comps
-        if 8.5 <= c[1]-c[0] <= 22 and 10.5 <= c[3]-c[2] <= 22]
+        if 10.5 <= c[1]-c[0] <= 26 and 11.5 <= c[3]-c[2] <= 26]
 def interior_ink(c):
     cx0, cx1, cy0, cy1 = c
     mx, my = (cx1-cx0)*0.22, (cy1-cy0)*0.22
