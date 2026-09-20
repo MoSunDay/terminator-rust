@@ -240,5 +240,5 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
             w.ui.inspector = !w.ui.inspector;
         }
     }
-    insp.on_hover_text("Inspector (settings, hosts)");
+    insp.on_hover_text("Settings (theme, font, glass, splits, hosts)");
 }

@@ -174,13 +174,14 @@ img = Image.open(os.environ["SCRCAP"])
 X, Y, W, H = (int(os.environ[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
 px = img.load()
 
-# Single tab -> no tab bar: the first text line's ink starts ~Y+28,
-# directly under the pane header. Scan from Y+8 (chrome/hairline are
-# bg-colored, the centered header title only adds non-wide comps);
-# starting at the old Y+55 clipped the wide glyphs' top rows and made
-# every Han component fail the height filter.
+# Always-on chrome: the chip row occupies Y..~Y+42 (chip label ink,
+# accent underline, zoom/settings glyphs), the pane header title sits at
+# ~Y+49..Y+60 and only adds non-wide comps. Scan from Y+46 - below the
+# chrome hairline (~Y+41) and the focused-card accent stroke (Y+42), so
+# chrome ink can never feed the component list; the first text line's
+# Han ink starts ~Y+69, directly under the pane header.
 x0, x1 = X + 8, X + W - 8
-y0, y1 = Y + 8, Y + H - 8
+y0, y1 = Y + 46, Y + H - 8
 
 # Ink components = (column run) x (row run) inside each band. Column runs
 # come from any-ink-in-band; the row run then isolates the text line, so a

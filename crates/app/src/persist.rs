@@ -9,13 +9,17 @@ use std::path::{Path, PathBuf};
 
 use layout_tree::{
     close_tab, empty_tree, ensure_next_pane_id, new_tab, new_tree, next_pane_id, set_parent_ratio,
-    split_pane, Axis, LayoutTree, Node, PaneId, MAX_RATIO, MIN_RATIO,
+    split_pane, Axis, LayoutTree, Node, PaneId,
 };
 use log::warn;
 use remote::{PaneKind, RemoteTarget};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{fresh_state, new_pane_meta, window_ui, AppState, PaneMeta, WindowState};
+
+mod settings;
+
+use settings::PSettings;
 
 // ---------------------------------------------------------------------------
 // JSON model
@@ -42,69 +46,6 @@ struct PWindow {
     #[serde(default)]
     active_tab: usize,
     tabs: Vec<PTab>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PSettings {
-    /// "v" = left/right split, "h" = top/bottom.
-    split_axis: String,
-    split_ratio: f32,
-    /// Window opacity; absent in pre-transparency state.json files.
-    #[serde(default = "default_opacity")]
-    opacity: f32,
-}
-
-fn default_opacity() -> f32 {
-    // Fully opaque by default: without a compositor (bare X sessions)
-    // transparent pixels render BLACK; transparency is opt-in via the
-    // inspector slider (clamped 0.5..=1.0).
-    1.0
-}
-
-impl Default for PSettings {
-    fn default() -> Self {
-        Self {
-            split_axis: "v".to_string(),
-            split_ratio: 0.5,
-            opacity: default_opacity(),
-        }
-    }
-}
-
-impl PSettings {
-    fn of(s: &crate::state::Settings) -> Self {
-        Self {
-            split_axis: match s.split_axis {
-                Axis::Horizontal => "h".to_string(),
-                Axis::Vertical => "v".to_string(),
-            },
-            split_ratio: s.split_ratio,
-            opacity: s.opacity,
-        }
-    }
-
-    fn to_settings(&self) -> crate::state::Settings {
-        let axis = if self.split_axis == "h" {
-            Axis::Horizontal
-        } else {
-            Axis::Vertical
-        };
-        let ratio = if self.split_ratio.is_finite() {
-            self.split_ratio.clamp(MIN_RATIO, MAX_RATIO)
-        } else {
-            0.5
-        };
-        let opacity = if self.opacity.is_finite() {
-            self.opacity.clamp(0.5, 1.0)
-        } else {
-            default_opacity()
-        };
-        crate::state::Settings {
-            split_axis: axis,
-            split_ratio: ratio,
-            opacity,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,8 +97,6 @@ impl PAxis {
 struct PMeta {
     kind: PKind,
     manual_title: Option<String>,
-    bg: Option<String>,
-    transparency: f32,
     degraded: bool,
 }
 
@@ -186,10 +125,6 @@ fn pm_from(m: &PaneMeta) -> PMeta {
             },
         },
         manual_title: m.manual_title.clone(),
-        bg: m
-            .bg_color
-            .map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)),
-        transparency: m.transparency,
         degraded: m.degraded,
     }
 }
@@ -213,8 +148,6 @@ fn pm_to(p: &PMeta) -> PaneMeta {
     };
     let mut m = new_pane_meta(kind);
     m.manual_title = p.manual_title.clone();
-    m.bg_color = p.bg.as_deref().and_then(|s| theme::parse_hex(s).ok());
-    m.transparency = p.transparency.clamp(0.0, 1.0);
     m.degraded = p.degraded;
     m
 }
@@ -492,7 +425,6 @@ mod tests {
     use super::*;
     use crate::state::split_tree_pane;
     use layout_tree::Axis;
-    use theme::Rgb;
 
     fn sample() -> AppState {
         let mut st = fresh_state();
@@ -501,12 +433,6 @@ mod tests {
         let _ = split_tree_pane(&mut st, 0, 1, Axis::Vertical);
         if let Some(m) = st.panes.get_mut(&1) {
             m.manual_title = Some("editor".to_string());
-            m.bg_color = Some(Rgb {
-                r: 0x20,
-                g: 0x30,
-                b: 0x40,
-            });
-            m.transparency = 0.5;
         }
         st
     }
@@ -553,15 +479,6 @@ mod tests {
         let m1 = m1.copied().unwrap_or(0);
         let meta = st2.panes.get(&m1).unwrap_or(&st2.panes[&1]);
         assert_eq!(meta.manual_title.as_deref(), Some("editor"));
-        assert_eq!(
-            meta.bg_color,
-            Some(Rgb {
-                r: 0x20,
-                g: 0x30,
-                b: 0x40
-            })
-        );
-        assert!((meta.transparency - 0.5).abs() < 1e-6);
     }
 
     #[test]
@@ -623,14 +540,32 @@ mod tests {
         st.settings.split_axis = Axis::Horizontal;
         st.settings.split_ratio = 9.9;
         st.settings.opacity = 0.9;
+        st.settings.font_size = 12.0;
+        st.settings.transparency = 0.5;
+        st.settings.bg_color = Some(theme::Rgb {
+            r: 0x20,
+            g: 0x30,
+            b: 0x40,
+        });
         let back = from_persisted(&to_persisted(&st));
         assert_eq!(back.settings.split_axis, Axis::Horizontal);
         assert_eq!(back.settings.split_ratio, layout_tree::MAX_RATIO);
         assert_eq!(back.settings.opacity, 0.9);
-        // Out-of-range opacity clamps into the slider's bounds.
+        // Global appearance survives save/load with the rest.
+        assert_eq!(back.settings.font_size, 12.0);
+        assert!((back.settings.transparency - 0.5).abs() < 1e-6);
+        assert_eq!(back.settings.bg_color, st.settings.bg_color);
+        // Out-of-range values clamp into their sliders' bounds.
         let mut p = to_persisted(&st);
         p.settings.opacity = 0.1;
-        assert_eq!(from_persisted(&p).settings.opacity, 0.5);
+        p.settings.font_size = 99.0;
+        p.settings.transparency = 7.0;
+        p.settings.bg = Some("nope".to_string());
+        let clamped = from_persisted(&p).settings;
+        assert_eq!(clamped.opacity, 0.5);
+        assert_eq!(clamped.font_size, 24.0);
+        assert_eq!(clamped.transparency, 1.0);
+        assert_eq!(clamped.bg_color, None, "unparseable bg -> theme bg");
     }
 
     #[test]
@@ -644,6 +579,8 @@ mod tests {
         let p = to_persisted(&st);
         let mut v = serde_json::to_value(p).unwrap();
         let obj = v.as_object_mut().unwrap();
+        // The meta keeps legacy per-pane "bg"/"transparency" keys on
+        // purpose: serde ignores them now, proving old files still load.
         let lone = serde_json::json!({
             "title": "extra",
             "focused": 1,

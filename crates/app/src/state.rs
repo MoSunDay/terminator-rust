@@ -21,14 +21,12 @@ pub const DIVIDER_W: f32 = layout_tree::DEFAULT_DIVIDER_W;
 pub const DEFAULT_FONT_SIZE: f32 = 15.0;
 
 /// Per-pane configuration (persisted). Live process state lives in SessionMap.
+/// Pane appearance (bg override, glass) lives in the global
+/// [`Settings`] - uniform for every pane.
 #[derive(Debug, Clone)]
 pub struct PaneMeta {
     pub kind: PaneKind,
     pub manual_title: Option<String>,
-    pub bg_color: Option<Rgb>,
-    /// Pane background transparency ("glass"): 0 = opaque, 1 = fully
-    /// see-through (the desktop shows through; ink stays solid).
-    pub transparency: f32,
     /// Remote pane fell back to a plain ssh shell (no zellij on the host).
     pub degraded: bool,
 }
@@ -43,6 +41,14 @@ pub struct Settings {
     /// Window opacity (0.5..=1.0): alpha of the chrome/pane base fills;
     /// text and selections stay opaque for readability. 1.0 = opaque.
     pub opacity: f32,
+    /// Terminal font size in points, uniform for every window.
+    pub font_size: f32,
+    /// Terminal background transparency ("glass"): 0 = opaque, 1 = fully
+    /// see-through (the desktop shows through; ink stays solid). Uniform
+    /// for all panes.
+    pub transparency: f32,
+    /// Terminal background color override for all panes; None = theme bg.
+    pub bg_color: Option<Rgb>,
 }
 
 impl Default for Settings {
@@ -51,6 +57,9 @@ impl Default for Settings {
             split_axis: Axis::Vertical,
             split_ratio: 0.5,
             opacity: 1.0,
+            font_size: DEFAULT_FONT_SIZE,
+            transparency: 0.0,
+            bg_color: None,
         }
     }
 }
@@ -192,9 +201,6 @@ pub struct WindowUi {
     /// Why the current rename was refused (duplicate / digits-only);
     /// shown in red under the editor until accepted or cancelled.
     pub pane_edit_note: Option<&'static str>,
-    pub color_open: Option<PaneId>,
-    pub color_buf: String,
-    pub trans_open: Option<PaneId>,
     pub drag: Option<DragState>,
     /// In-flight tab-chip reorder drag (transient, never persisted).
     pub tab_drag: Option<TabDrag>,
@@ -215,9 +221,8 @@ pub struct WindowUi {
     /// for events that landed mid-batch, e.g. a fast ctrl+c whose ctrl
     /// release shares the frame with the folded Event::Copy).
     pub mods_frame_end: egui::Modifiers,
-    pub font_size: f32,
-    /// Inspector panel open in THIS window. The panel is drawn in the
-    /// owning window's own render pass, so its slider edits this window.
+    /// Settings panel open in THIS window. The panel is drawn in the
+    /// owning window's own render pass, so it edits this window's view.
     pub inspector: bool,
     /// Live IME preedit (composition) text for this window; None while
     /// no composition is in flight (cleared on commit and whenever a
@@ -250,9 +255,6 @@ pub fn window_ui() -> WindowUi {
         tab_edit: None,
         pane_edit: None,
         pane_edit_note: None,
-        color_open: None,
-        color_buf: String::new(),
-        trans_open: None,
         drag: None,
         tab_drag: None,
         pane_drag: None,
@@ -260,7 +262,6 @@ pub fn window_ui() -> WindowUi {
         pointer_buttons: 0,
         pointer_last: None,
         mods_frame_end: egui::Modifiers::NONE,
-        font_size: DEFAULT_FONT_SIZE,
         inspector: false,
         ime: None,
         ime_cursor: None,
@@ -281,8 +282,6 @@ pub fn new_pane_meta(kind: PaneKind) -> PaneMeta {
     PaneMeta {
         kind,
         manual_title: None,
-        bg_color: None,
-        transparency: 0.0,
         degraded: false,
     }
 }

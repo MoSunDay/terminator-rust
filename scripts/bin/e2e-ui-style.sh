@@ -2,29 +2,33 @@
 # Headless e2e for the themed UI surface of terminator-rust: real Xvfb
 # rendering, verified pixel-exact with scrot + PIL against palette-derived
 # expectations (dracula: fg 248,248,242 / bg 40,42,54 / highlight 189,147,249):
-#   A: per-pane background blended with transparency - left pane carries
-#      bg #ff0000 + transparency 0.5 -> mix 50/50 with the theme bg
-#      (blend_background / with_alpha_over).
+#   A: the global terminal background (settings bg "#ff0000" + glass 0.5)
+#      paints every pane: #ff0000 at alpha 0.5 over the opaque theme-bg
+#      page panel -> mix 50/50 with the theme bg (effective_bg /
+#      pane_bg_alpha / with_opacity).
 #   B: the split gutter is two-tone - chrome_bg field (mix(bg, fg, 0.045))
 #      with a 2px rounded grab handle (mix(bg, fg, 0.13)) centered in the
 #      strip (idle color; the hover step only paints under the pointer).
-#   C: the plain right pane paints the theme background untouched.
+#   C: the background override is UNIFORM - the right pane paints the
+#      same blended red as the left (appearance is global now, not
+#      per-pane).
 #   D: the chrome top bar paints chrome_bg (mix(bg, fg, 0.045)); sampled at
 #      30% width, clear of the chips and the trailing icon buttons.
 #   E: the active tab chip carries a 2px accent underline (rounded caps,
 #      inset clear of the pill corners) flush at its bottom edge.
 #   F: the active tab chip fill is the subtle accent tint mix(bg, accent,
 #      0.18).
-#   G: the pane header title is CENTERED in the space left of the C/T/X
-#      buttons (text bbox midpoint vs computed title_rect center); the
-#      focused pane's header fill is the accent tint mix(bg, accent, 0.10).
+#   G: the pane header title is CENTERED in the space left of the X
+#      close button (text bbox midpoint vs computed title_rect center);
+#      the focused pane's header fill is the accent tint mix(bg, accent,
+#      0.10).
 #   H: the old centered window-title row is GONE - the chrome is a single
-#      chip row (zoom/inspector live at its right edge); no title-colored
+#      chip row (zoom/settings live at its right edge); no title-colored
 #      text may render in the bare chrome zone (regression guard).
-#   I: with the last-but-one tab closed the tab bar disappears entirely -
-#      no accent chip underline in the former chip band, and the bare
-#      chrome color continues into the pane-header row at y=0 (single-tab
-#      zero-chrome rule).
+#   I: the chrome bar is ALWAYS on: with the last-but-one tab closed the
+#      chip row stays (active-chip underline + fill still painted) and
+#      the pane content is pushed below it (single-tab windows render
+#      the same ~42px chrome as multi-tab ones).
 # TERMINATOR_OPAQUE=1 pins window opacity 1.0: with no compositor in Xvfb
 # the translucent fills would blend over garbage; pinned opaque the pixel
 # expectations are byte-identical to the pre-transparency values.
@@ -75,19 +79,22 @@ export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
-# Preset: dracula theme, settings, a vertical 50/50 Split whose left pane
-# blends #ff0000 at 50% transparency, PLUS a second single-pane tab - the
-# chrome checks need the tab bar visible, and check I closes "extra" to
-# verify the bar hides at one tab. Pane ids are re-allocated on load;
-# manual_title "red" is the stable ctl addressing key.
+# Preset: dracula theme, a vertical 50/50 Split PLUS a second single-pane
+# tab, with the global terminal background set to #ff0000 at 50% glass -
+# checks A/C assert the override applies UNIFORMLY to both panes (the
+# appearance lives in settings now; the legacy per-pane "bg"/
+# "transparency" keys below are dead weight serde ignores - kept to prove
+# old files still load). Check I closes "extra" to verify the bar STAYS
+# at one tab. Pane ids are re-allocated on load; manual_title "red" is
+# the stable ctl addressing key.
 cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
 {
   "theme": "dracula",
-  "settings": { "split_axis": "v", "split_ratio": 0.5 },
+  "settings": { "split_axis": "v", "split_ratio": 0.5, "bg": "#ff0000", "transparency": 0.5 },
   "tabs": [
     { "title": "style", "focused": 1,
       "root": { "Split": { "axis": "v", "ratio": 0.5,
-        "first":  { "Pane": { "id": 1, "meta": { "kind": "Local", "manual_title": "red",  "bg": "#ff0000", "transparency": 0.5, "degraded": false } } },
+        "first":  { "Pane": { "id": 1, "meta": { "kind": "Local", "manual_title": "red",  "bg": null, "transparency": 0.0, "degraded": false } } },
         "second": { "Pane": { "id": 2, "meta": { "kind": "Local", "manual_title": null,   "bg": null,       "transparency": 0.0, "degraded": false } } } } } },
       { "title": "extra", "focused": 3,
         "root": { "Pane": { "id": 3, "meta": { "kind": "Local", "manual_title": null, "bg": null, "transparency": 0.0, "degraded": false } } } }
@@ -182,13 +189,17 @@ def check(name, x, y, exp):
         rc = 1
     print(f"{name}: got {got} want {exp} [{'OK' if ok else 'FAIL'}]")
 
-# A: left pane deep area - #ff0000 blended 50/50 over dracula bg
-#    (40+0.5*215, 42-21, 54-27) = (147.5, 21, 27); rounding may give 148.
-#    Kept as a literal: this exercises blend_background, not mix().
+# A: left pane deep area - the global bg override #ff0000 painted at
+#    glass alpha pane_bg_alpha(0.5, 1.0)=0.5 over the opaque theme-bg
+#    page panel: (40+0.5*215, 42-21, 54-27) = (147.5, 21, 27); rounding
+#    may give 148. Kept as a literal: this exercises effective_bg +
+#    pane_bg_alpha + with_opacity, not mix().
 check("A blend-red-over-bg", int(X + W * 0.25), int(Y + H * 0.55), (147, 21, 27))
 
-# C: right pane paints the plain theme background.
-check("C theme-bg", int(X + W * 0.75), int(Y + H * 0.55), BG)
+# C: the override is uniform - the right pane paints the same blended
+#    red (appearance is global; a per-pane resurface would repaint the
+#    plain theme bg here).
+check("C uniform-bg", int(X + W * 0.75), int(Y + H * 0.55), (147, 21, 27))
 
 # D: chrome top bar fill = mix(bg, fg, 0.045); x=30% is bare chrome between
 #    the tab chips and the right-edge icon cells.
@@ -230,12 +241,12 @@ check("F chip-fill", X + 45, Y + 11, mix(BG, ACCENT, 0.18))
 # G: pane header title centered. The focused "red" pane's title draws in
 #    FG over the focused-header tint in the header strip right below the
 #    chrome bar (pane area starts ~Y+42, header strip is 24px tall ->
-#    scan the band). title_rect = [pane_left+8, pane_right-56(buttons)-8]
+#    scan the band). title_rect = [pane_left+8, pane_right-24(X btn)-8]
 #    -> midpoint is the computed expectation; tolerance 6px for font
 #    rounding.
 title_text = mix(FG, BG, 0.38)
 pane_w = (W - 6) / 2.0            # 50/50 split, 6px divider
-scan_lo, scan_hi = X + 10, int(X + pane_w - 80)   # clear of buttons
+scan_lo, scan_hi = X + 10, int(X + pane_w - 40)   # clear of the X button
 hits = []
 for x in range(scan_lo, scan_hi):
     for yy in range(Y + 44, Y + 62):
@@ -246,7 +257,7 @@ for x in range(scan_lo, scan_hi):
 ok = len(hits) >= 3
 if ok:
     mid = (hits[0] + hits[-1]) / 2.0
-    exp = X + 8 + (pane_w - 64 - 8) / 2.0
+    exp = X + 8 + (pane_w - 24 - 8) / 2.0
     ok = abs(mid - exp) <= 6
     print(f"G pane-title-center: text {hits[0]}..{hits[-1]} mid {mid:.0f} want {exp:.0f} [{'OK' if ok else 'FAIL'}]")
 else:
@@ -269,11 +280,11 @@ sys.exit(rc)
 PY
 step "pixel assertions passed"
 
-# --- I: single tab hides the chrome bar entirely --------------------------
+# --- I: the chrome bar stays with a single tab ----------------------------
 # Switch to the "extra" tab and close its only pane (Ctrl+Shift+W): the
-# tab vanishes with it, leaving ONE tab - the bar must disappear and the
-# pane header must start at y=0 with the same bare-chrome color.
-step "I: single tab -> no chrome row"
+# tab vanishes with it, leaving ONE tab - the bar must STAY (always-on
+# chrome) and the pane content must start below it (~Y+42), not at y=0.
+step "I: single tab keeps the chrome row"
 xdotool key --clearmodifiers ctrl+Page_Down
 sleep 0.5
 xdotool key --clearmodifiers ctrl+shift+w
@@ -303,29 +314,39 @@ rc = 0
 def close(got, exp):
     return all(abs(g - e) <= TOL for g, e in zip(got, exp))
 
-# I1: former chip band (Y+21..Y+32) holds no accent chip underline and no
-#     active-chip fill: the chips are gone. (The focused pane's accent
+# I1: the chip row STAYS after the last-but-one tab closes: the former
+#     chip band still holds the active-chip accent underline and the
+#     active-chip fill. (Observed at one tab: fill Y+4..Y+29, underline
+#     Y+30..Y+31 - inside the bands below. The focused pane's accent
 #     frame only lives at the pane edges, never inside this band.)
 accent_px = sum(1 for yy in range(Y + 21, Y + 33) for x in range(X + 10, X + 220)
                 if close(img.getpixel((x, yy)), ACCENT))
 chip_fill = mix(BG, ACCENT, 0.18)
 fill_px = sum(1 for yy in range(Y + 6, Y + 30) for x in range(X + 10, X + 220)
               if close(img.getpixel((x, yy)), chip_fill))
-ok = accent_px == 0 and fill_px == 0
+ok = accent_px >= 1 and fill_px >= 1
 if not ok:
     rc = 1
-print(f"I no-chips: accent {accent_px} px, chip-fill {fill_px} px in band "
+print(f"I bar-stays: accent {accent_px} px, chip-fill {fill_px} px in band "
       f"[{'OK' if ok else 'FAIL'}]")
 
-# I2: the pane header now starts at y=0: the focused pane's header tint
-#     mix(bg, accent, 0.10) at the far left of the former chip row (title
-#     is centered at ~pane midpoint, clear of x=50).
+# I2: content is pushed below the bar: the pixel where the focused pane
+#     header used to start (y=0 layout) is now active-chip fill, NOT the
+#     focused-header tint; the tint itself only appears lower down
+#     (observed Y+44..Y+64; pane content starts ~Y+66).
 exp_header = mix(BG, ACCENT, 0.10)
 got = img.getpixel((X + 50, Y + 15))
-ok = close(got, exp_header)
+ok = close(got, chip_fill)
 if not ok:
     rc = 1
-print(f"I header-at-top: got {got} want {exp_header} [{'OK' if ok else 'FAIL'}]")
+print(f"I content-pushed-down: (X+50,Y+15) got {got} want chip-fill {chip_fill} "
+      f"[{'OK' if ok else 'FAIL'}]")
+header_low = sum(1 for yy in range(Y + 42, Y + 71)
+                 if close(img.getpixel((X + 50, yy)), exp_header))
+if header_low < 1:
+    rc = 1
+print(f"I header-below-bar: {header_low} focused-header-tint px at x=X+50 in "
+      f"Y+42..Y+70 [{'OK' if header_low >= 1 else 'FAIL'}]")
 
 sys.exit(rc)
 PY

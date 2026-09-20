@@ -1,11 +1,11 @@
-//! Per-pane header strip: title, rename, badges, color/transparency popups,
-//! close button and the pane context menu.
+//! Per-pane header strip: title, rename, badges, close button and the
+//! pane context menu.
 
 use std::collections::BTreeMap;
 
-use egui::{Button, Id, Key, Popup, Rect, Sense, TextEdit, Ui, Vec2};
+use egui::{Button, Id, Key, Rect, Sense, TextEdit, Ui, Vec2};
 use layout_tree::PaneId;
-use theme::{Palette, Rgb};
+use theme::Palette;
 
 use crate::actions;
 use crate::render::colors::{self, to_c32};
@@ -36,14 +36,6 @@ fn reject_reason(
     None
 }
 
-fn parse_rgb(s: &str) -> Option<Rgb> {
-    theme::parse_hex(s.trim()).ok()
-}
-
-fn hex(c: Rgb) -> String {
-    format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
-}
-
 /// Draw the header for `pane` in `rect` (full width, PANE_HEADER_H tall).
 #[allow(clippy::too_many_arguments)]
 pub fn show(
@@ -70,10 +62,10 @@ pub fn show(
     };
     let degraded = meta.is_some_and(|m| m.degraded);
 
-    // Borderless window: the header strip doubles as a drag handle.
-    // Registered first so the title/buttons on top keep their clicks
-    // (egui hit-test prefers the topmost widget; drags fall through to
-    // this background).
+    // The header strip doubles as a drag handle (the native title bar is
+    // the primary one; this stays as a convenience). Registered first so
+    // the title/buttons on top keep their clicks (egui hit-test prefers
+    // the topmost widget; drags fall through to this background).
     let drag = ui.interact(rect, Id::new("pane_header_drag").with(pane), Sense::drag());
     // A primary press on the header becomes a pane MOVE (drop target
     // tracked per frame in screen(); dropping on a sibling edge flips
@@ -145,7 +137,7 @@ pub fn show(
         badges.push(format!("exit {code}"));
     }
 
-    let btn_w = BTN * 3.0 + 8.0;
+    let btn_w = BTN + 8.0;
     let badge_w = badges
         .iter()
         .map(|b| 26.0 + b.len() as f32 * 6.5)
@@ -256,117 +248,15 @@ pub fn show(
         }
     }
 
-    // C / T / X buttons.
-    let mut r = rect.right_top() + Vec2::new(-BTN - 4.0, (rect.height() - BTN) / 2.0);
+    // X close button (appearance lives in the global Settings panel).
+    let r = rect.right_top() + Vec2::new(-BTN - 4.0, (rect.height() - BTN) / 2.0);
     let close = ui.put(
         Rect::from_min_size(r, Vec2::splat(BTN)),
         Button::new("X").small(),
     );
-    r.x -= BTN + 2.0;
-    let trans = ui.put(
-        Rect::from_min_size(r, Vec2::splat(BTN)),
-        Button::new("T").small(),
-    );
-    r.x -= BTN + 2.0;
-    let color = ui.put(
-        Rect::from_min_size(r, Vec2::splat(BTN)),
-        Button::new("C").small(),
-    );
 
     if close.clicked() {
         actions::do_close_pane(st, sess, uist, tab, pane, dirty);
-        return;
-    }
-    if trans.clicked() {
-        if let Some(w) = st.win_mut() {
-            w.ui.trans_open = if w.ui.trans_open == Some(pane) {
-                None
-            } else {
-                Some(pane)
-            };
-        }
-    }
-    if color.clicked() {
-        let wi = st.active_idx();
-        let AppState { panes, windows, .. } = st;
-        if let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) {
-            wui.color_open = if wui.color_open == Some(pane) {
-                None
-            } else {
-                Some(pane)
-            };
-            wui.color_buf = panes
-                .get(&pane)
-                .and_then(|m| m.bg_color)
-                .map(hex)
-                .unwrap_or_default();
-        }
-    }
-
-    color_popup(&color, pane, st, pal, dirty);
-    trans_popup(&trans, pane, st, dirty);
-}
-
-fn color_popup(
-    anchor: &egui::Response,
-    pane: PaneId,
-    st: &mut AppState,
-    pal: &Palette,
-    dirty: &mut bool,
-) {
-    // Popups read the window ui (open flag / hex buffer) while applying
-    // colors to the pane map: split AppState into disjoint field borrows.
-    let wi = st.active_idx();
-    let AppState { panes, windows, .. } = st;
-    let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) else {
-        return;
-    };
-    let mut open = wui.color_open == Some(pane);
-    Popup::from_response(anchor)
-        .id(Id::new("pane_color").with(pane))
-        .open_bool(&mut open)
-        .show(|p| {
-            p.set_min_width(190.0);
-            p.label("Background override");
-            p.horizontal_wrapped(|p| {
-                for sw in colors::swatches(pal) {
-                    let c = to_c32(sw);
-                    if p.add(Button::new("  ").fill(c))
-                        .on_hover_text(hex(sw))
-                        .clicked()
-                    {
-                        if let Some(m) = panes.get_mut(&pane) {
-                            m.bg_color = Some(sw);
-                        }
-                        wui.color_buf = hex(sw);
-                        *dirty = true;
-                    }
-                }
-            });
-            p.horizontal(|p| {
-                p.add(
-                    TextEdit::singleline(&mut wui.color_buf)
-                        .desired_width(80.0)
-                        .hint_text("#rrggbb"),
-                );
-                if parse_rgb(&wui.color_buf).is_some() && p.button("apply").clicked() {
-                    if let Some(rgb) = parse_rgb(&wui.color_buf) {
-                        if let Some(m) = panes.get_mut(&pane) {
-                            m.bg_color = Some(rgb);
-                        }
-                        *dirty = true;
-                    }
-                }
-                if p.button("clear").clicked() {
-                    if let Some(m) = panes.get_mut(&pane) {
-                        m.bg_color = None;
-                    }
-                    *dirty = true;
-                }
-            });
-        });
-    if !open && wui.color_open == Some(pane) {
-        wui.color_open = None;
     }
 }
 
@@ -375,34 +265,6 @@ fn color_popup(
 /// the OS-window drag (there is nothing to drop against).
 pub fn header_starts_pane_move(ctrl: bool, tab_panes: usize) -> bool {
     ctrl || tab_panes >= 2
-}
-
-fn trans_popup(anchor: &egui::Response, pane: PaneId, st: &mut AppState, dirty: &mut bool) {
-    let wi = st.active_idx();
-    let AppState { panes, windows, .. } = st;
-    let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) else {
-        return;
-    };
-    let mut open = wui.trans_open == Some(pane);
-    Popup::from_response(anchor)
-        .id(Id::new("pane_trans").with(pane))
-        .open_bool(&mut open)
-        .show(|p| {
-            p.set_min_width(180.0);
-            let mut value = panes.get(&pane).map(|m| m.transparency).unwrap_or(0.0);
-            if p.add(egui::Slider::new(&mut value, 0.0..=1.0).text("transparency"))
-                .changed()
-            {
-                if let Some(m) = panes.get_mut(&pane) {
-                    m.transparency = value;
-                }
-                *dirty = true;
-            }
-            p.label("0 = opaque, 1 = glass (see through to the desktop)");
-        });
-    if !open && wui.trans_open == Some(pane) {
-        wui.trans_open = None;
-    }
 }
 
 /// Pane context menu (attached to the pane body by the renderer).
@@ -445,10 +307,10 @@ pub fn menu(
             w.ui.zoom = !w.ui.zoom;
         }
     }
-    // Single-tab chrome hides the tab bar (and its inspector cell), so the
-    // pane menu carries the always-available entry point. The flag is
+    // The tab bar's settings cell is the primary entry point; the pane
+    // menu keeps a redundant one for quick access. The flag is
     // per-window: the panel opens in THIS window.
-    if ui.button("Inspector").clicked() {
+    if ui.button("Settings").clicked() {
         if let Some(w) = st.win_mut() {
             w.ui.inspector = !w.ui.inspector;
         }
