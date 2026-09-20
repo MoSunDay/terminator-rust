@@ -82,8 +82,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   caps, inset past the pill corners) + fill; expectations are COMPUTED
   in-script from dracula constants via a mix() helper - token retunes
   touch only colors.rs/tokens.rs, geometry changes touch the script;
-  presets a dracula Split state.json;
-  checks I1/I2 assert the single-tab zero-chrome layout)
+  presets a dracula Split state.json (pane bg/transparency now live in
+  settings); checks I1/I2 assert the chip row STAYS with a single tab:
+  chip fill at (X+50,Y+15), underline band Y+30..Y+31, pane header tint
+  pushed down to Y+44..Y+64, content from ~Y+66)
 - deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
   repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
   XDG autostart for the desktop user, pid-kill restart, ctl smoke).
@@ -316,28 +318,33 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   /tmp/.X11-unix sockets make Xvfb refuse to bind) - probe random free
   numbers, and `export DISPLAY` for xdotool/scrot (env DISPLAY=... on the app
   line alone is not enough).
-- window shell (borderless batch): eframe decorations off + transparent
-  viewport (clear_color = TRANSPARENT); Settings.opacity (0.5..=1.0, default
+- window shell: NATIVE decorations ON (WM title bar restored 2026-09-20
+  as the primary drag/close surface) + transparent viewport
+  (clear_color = TRANSPARENT); Settings.opacity (0.5..=1.0, default
   1.0 = opaque, persisted via serde default; legacy files load 1.0 too -
   transparency is OPT-IN because a compositor-less X renders transparent
   pixels black) multiplies alpha through
   render/colors.rs::with_opacity on chrome/pane base fills ONLY - Color32 is
   premultiplied, so text/cursor/selection/focus stroke stay opaque.
-  Per-pane transparency (header popup slider) is REAL glass since
-  2026-09-20: fill alpha = colors::pane_bg_alpha(meta.transparency,
-  settings.opacity) (0 = opaque, 1 = see-through), applied uniformly to
+  Transparency is GLOBAL glass since 2026-09-20 (Settings.transparency +
+  optional Settings.bg_color for ALL panes; the per-pane header popup
+  slider is deleted): fill alpha = colors::pane_bg_alpha(
+  settings.transparency, settings.opacity) (0 = opaque, 1 = see-through),
+  applied uniformly to
   the pane bg AND ANSI cell/selection bgs; theme::blend_background is
   now color-only (tint or theme bg - the old blend-into-theme-bg
   semantics is GONE); cursor-block glyph ink reuses the bg rgb at FULL
-  alpha or text goes invisible on glass. e2e presets run t=0 ->
-  byte-identical pixels.
+  alpha or text goes invisible on glass. e2e presets run t=0 in
+  settings -> byte-identical pixels.
   TERMINATOR_OPAQUE=1 pins 1.0 at startup; every Xvfb e2e script exports it
-  (no compositor -> no blending -> unstable pixels). With no titlebar the
-  tab-bar background (tabs.rs chrome_drag) and the pane header strip are the
-  drag handles: Sense::drag registered BEFORE the chips/buttons (topmost
-  widget wins the click), StartDrag on primary press. Single tab = NO top
-  panel (content starts at y=0; pane header identifies the pane; Inspector
-  lives in the pane context menu); a second tab brings the chip row back.
+  (no compositor -> no blending -> unstable pixels). The tab row renders
+  ALWAYS (Chrome-style: chips, '+', split buttons and zoom/settings cells
+  visible even with a single tab - the old zero-chrome rule is deleted);
+  the tab-bar background (tabs.rs chrome_drag) and the pane header strip
+  remain drag-handle conveniences next to the WM title bar: Sense::drag
+  registered BEFORE the chips/buttons (topmost widget wins the click),
+  StartDrag on primary press. Settings lives in the pane context menu
+  (pane header keeps only the X close button).
 - dead-pane corpses are gone: an exited session's pane auto-closes via
   actions::close_exited (EXIT_GRACE 250ms after the exit was SEEN) reusing
   do_close_pane semantics (root+only window quits, secondary removes
@@ -399,11 +406,13 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - `st.active` = window being rendered (set inside windows::render);
   `st.focus` = user-focused window (viewport focused==Some(true)); the
   IPC drain runs on `active = focus` between render passes.
-- inspector is PER-WINDOW (WindowUi.inspector): each window's pass draws
+- the Settings panel (renamed from Inspector; the per-window flag is
+  STILL WindowUi.inspector) is PER-WINDOW: each window's pass draws
   its own panel (root: main.rs after render(0); secondary: inside the
   show_viewport_immediate callback - the callback runs as that viewport's
-  own pass, so egui::Window layers land THERE and the font slider writes
-  windows[idx]). Two open inspectors coexist via Id salted with win_id.
+  own pass, so egui::Window layers land THERE) but everything it edits is
+  GLOBAL (font size writes st.settings.font_size - uniform + persisted).
+  Two open panels coexist via Id salted with win_id.
 - windows::render bails early when its window vanished mid-pass
   (keyboard action removed it) - never render the NEXT window's tree
   into the dying viewport. Secondary viewport destruction lags a few
@@ -422,8 +431,9 @@ on deploy target 192.168.31.196 (2 X windows, per-window typing
 isolation, window close keeps the app, opacity 1.0 = mocha bg not
 black, ctl list/capture; remote px differ only via wallpaper blend).
 - rendering: catppuccin + ANSI 256 bg exact px, CJK cmap (Han/kana/
-  hangul) + real Han ink px, single tab = zero chrome (header y=0),
-  pane-title centering (ui-style G), no window-title row (H)
+  hangul) + real Han ink px, always-on chrome row (one tab keeps the
+  bar; ui-style I), pane-title centering (ui-style G), no window-title
+  row (H)
 - windows/lifecycle: Ctrl+Shift+N second OS window, last-pane close
   removes the window, root last-pane close with sibling alive respawns a
   tab, Ctrl+Shift+W on non-last pane keeps app alive (K4), dead-pane
