@@ -8,7 +8,7 @@ use remote::PaneKind;
 
 use crate::actions;
 use crate::input::{mouse, pointer};
-use crate::render::{colors, dropzone, grid, tokens};
+use crate::render::{colors, dropzone, grid, preedit, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
 
@@ -114,6 +114,13 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         .win()
         .and_then(|w| w.tree.tabs.get(tab))
         .map(|t| t.focused);
+    // IME anchor defaults to none each frame: the focused pane's live
+    // session (loop below) refreshes it, so a dead pane or an empty tree
+    // leaves IME unanchored.
+    if let Some(w) = st.win_mut() {
+        w.ui.ime_cursor = None;
+        w.ui.ime_pane = None;
+    }
     let cursor_a = tokens::cursor_alpha(ctx.input(|i| i.time) as f32);
     let painter = ui.painter().clone();
     let rects = pane_rects(st, area);
@@ -179,6 +186,28 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         );
                     }
                 }
+                // IME anchor + composition overlay for the focused pane:
+                // the popup anchors at the live cursor cell and any
+                // in-flight preedit paints right above it.
+                if Some(pane) == focused {
+                    if let Some(anchor) = grid::cursor_rect(content, &fr, cell) {
+                        let preedit = st.win().and_then(|w| w.ui.ime.clone());
+                        if let Some(w) = st.win_mut() {
+                            w.ui.ime_cursor = Some(anchor);
+                            w.ui.ime_pane = Some(pane);
+                        }
+                        if let Some(text) = preedit.filter(|t| !t.is_empty()) {
+                            preedit::paint(
+                                &painter,
+                                anchor,
+                                &text,
+                                font_size,
+                                colors::to_c32(pal.foreground),
+                                colors::to_c32(pal.block_highlight),
+                            );
+                        }
+                    }
+                }
             }
             _ => {
                 // A corpse without an exit code yet is a spawn in backoff,
@@ -221,17 +250,17 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
 
         let zoomed = st.win().is_some_and(|w| w.ui.zoom);
         if Some(pane) == focused && !zoomed {
-            // Card focus: a 1px accent stroke plus a 3px accent bar on
+            // Card focus: a 1.5px accent stroke plus a 2px accent bar on
             // the header's left edge (Warp/Ghostty convention) - quieter
             // than the old full-ring hard stroke.
             painter.rect_stroke(
                 full,
                 CARD_RADIUS,
-                Stroke::new(1.0, colors::to_c32(pal.block_highlight)),
+                Stroke::new(1.5, colors::to_c32(pal.block_highlight)),
                 StrokeKind::Inside,
             );
             painter.rect_filled(
-                Rect::from_min_size(full.min, egui::vec2(3.0, PANE_HEADER_H)),
+                Rect::from_min_size(full.min, egui::vec2(2.0, PANE_HEADER_H)),
                 1.0,
                 colors::to_c32(pal.block_highlight),
             );

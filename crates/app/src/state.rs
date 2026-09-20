@@ -213,6 +213,19 @@ pub struct WindowUi {
     /// Inspector panel open in THIS window. The panel is drawn in the
     /// owning window's own render pass, so its slider edits this window.
     pub inspector: bool,
+    /// Live IME preedit (composition) text for this window; None while
+    /// no composition is in flight (cleared on commit and whenever a
+    /// text field takes the keyboard).
+    pub ime: Option<String>,
+    /// Focused pane's cursor cell rect in egui points, refreshed by the
+    /// render pass each frame; the IME popup anchors here.
+    pub ime_cursor: Option<egui::Rect>,
+    /// Pane the IME anchor belonged to last frame; a change interrupts
+    /// any in-flight composition.
+    pub ime_pane: Option<PaneId>,
+    /// Pane the IME platform output was anchored to on the previous
+    /// frame (interrupt detection memory).
+    pub ime_last_pane: Option<PaneId>,
 }
 
 /// Transient app-global UI state; never persisted.
@@ -243,6 +256,10 @@ pub fn window_ui() -> WindowUi {
         mods_frame_end: egui::Modifiers::NONE,
         font_size: 14.0,
         inspector: false,
+        ime: None,
+        ime_cursor: None,
+        ime_pane: None,
+        ime_last_pane: None,
     }
 }
 

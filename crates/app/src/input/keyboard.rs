@@ -1,6 +1,6 @@
 //! egui key/text events -> terminal input, after global shortcut routing.
 
-use egui::{Context, Event};
+use egui::{Context, Event, ImeEvent};
 use layout_tree::PaneId;
 use libghostty_vt::key::{Action as GAction, Key as GKey, Mods as GMods};
 use log::warn;
@@ -131,6 +131,11 @@ pub fn handle(
         w.ui.mods_frame_end = ctx.input(|i| i.modifiers);
     }
     if ctx.egui_wants_keyboard_input() {
+        // A text field has focus and owns IME; any stale pane preedit
+        // must not linger (the overlay would keep painting).
+        if let Some(w) = st.win_mut() {
+            w.ui.ime = None;
+        }
         return; // a text field has focus; let it keep the keys
     }
     let events = ctx.input(|i| i.events.clone());
@@ -273,6 +278,34 @@ pub fn handle(
                 if let Some(p) = focused {
                     if let Some(s) = sess.map.get_mut(&p) {
                         send_keypress(p, s, gk, mods, utf8);
+                    }
+                }
+            }
+            Event::Ime(ImeEvent::Preedit { text, .. }) => {
+                // An empty preedit is the composition-ended signal on X11.
+                if let Some(w) = st.win_mut() {
+                    w.ui.ime = if text.is_empty() {
+                        None
+                    } else {
+                        Some(text.clone())
+                    };
+                }
+            }
+            Event::Ime(ImeEvent::Commit(text)) => {
+                // IME commit: raw UTF-8 bytes straight to the child -
+                // never through the key encoder (it mangles multi-byte
+                // text) nor bracketed paste. Plain text: no shortcut
+                // routing, no scroll intercept.
+                if let Some(w) = st.win_mut() {
+                    w.ui.ime = None;
+                }
+                if let Some(p) = focused {
+                    if let Some(s) = sess.map.get_mut(&p) {
+                        if let Err(e) = vtask::write(s, text.as_bytes()) {
+                            warn!("ime commit to pane {p}: {e}");
+                        } else {
+                            vt_pane::mouse::follow_output(s);
+                        }
                     }
                 }
             }
@@ -422,5 +455,99 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(s.exit.is_none(), "cat died without SIGINT");
+    }
+
+    #[test]
+    fn ime_preedit_latches_and_clears() {
+        let Some((mut st, mut sess, mut ui)) = harness() else {
+            return;
+        };
+        let ctx = Context::default();
+        dispatch(
+            &ctx,
+            Modifiers::NONE,
+            Event::Ime(ImeEvent::Preedit {
+                text: "han".to_string(),
+                active_range_chars: Some(0..3),
+            }),
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(st.windows[0].ui.ime.as_deref(), Some("han"));
+        // Empty preedit = composition ended (X11 convention).
+        dispatch(
+            &ctx,
+            Modifiers::NONE,
+            Event::Ime(ImeEvent::Preedit {
+                text: String::new(),
+                active_range_chars: None,
+            }),
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(st.windows[0].ui.ime, None);
+    }
+
+    #[test]
+    fn ime_commit_reaches_pty_as_raw_utf8() {
+        let Some((mut st, mut sess, mut ui)) = harness() else {
+            return;
+        };
+        let ctx = Context::default();
+        {
+            let Some(s) = sess.map.get_mut(&1) else {
+                return;
+            };
+            assert!(wait_grid(s, "READY"), "session did not start echoing");
+        }
+        dispatch(
+            &ctx,
+            Modifiers::NONE,
+            Event::Ime(ImeEvent::Commit("\u{6C49}\u{5B57}".to_string())),
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        let Some(s) = sess.map.get_mut(&1) else {
+            return;
+        };
+        // The commit bypasses the key encoder: raw UTF-8 bytes through
+        // the pty come back as the two Han characters on the grid.
+        assert!(
+            wait_grid(s, "\u{6C49}\u{5B57}"),
+            "ime commit bytes never echoed: {:?}",
+            grid_text(s)
+        );
+    }
+
+    #[test]
+    fn ime_commit_clears_pending_preedit() {
+        let Some((mut st, mut sess, mut ui)) = harness() else {
+            return;
+        };
+        let ctx = Context::default();
+        dispatch(
+            &ctx,
+            Modifiers::NONE,
+            Event::Ime(ImeEvent::Preedit {
+                text: "han".to_string(),
+                active_range_chars: Some(0..3),
+            }),
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert!(st.windows[0].ui.ime.is_some());
+        dispatch(
+            &ctx,
+            Modifiers::NONE,
+            Event::Ime(ImeEvent::Commit("h".to_string())),
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        assert_eq!(st.windows[0].ui.ime, None, "commit must clear preedit");
     }
 }
