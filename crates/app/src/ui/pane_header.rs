@@ -295,7 +295,7 @@ pub fn show(
     }
 
     color_popup(&color, pane, st, pal, dirty);
-    trans_popup(&trans, pane, st, pal, dirty);
+    trans_popup(&trans, pane, st, dirty);
 }
 
 fn color_popup(
@@ -361,13 +361,7 @@ fn color_popup(
     }
 }
 
-fn trans_popup(
-    anchor: &egui::Response,
-    pane: PaneId,
-    st: &mut AppState,
-    pal: &Palette,
-    dirty: &mut bool,
-) {
+fn trans_popup(anchor: &egui::Response, pane: PaneId, st: &mut AppState, dirty: &mut bool) {
     let wi = st.active_idx();
     let AppState { panes, windows, .. } = st;
     let Some(WindowState { ui: wui, .. }) = windows.get_mut(wi) else {
@@ -380,7 +374,7 @@ fn trans_popup(
         .show(|p| {
             p.set_min_width(180.0);
             let mut value = panes.get(&pane).map(|m| m.transparency).unwrap_or(0.0);
-            if p.add(egui::Slider::new(&mut value, 0.0..=1.0).text("pane bg"))
+            if p.add(egui::Slider::new(&mut value, 0.0..=1.0).text("transparency"))
                 .changed()
             {
                 if let Some(m) = panes.get_mut(&pane) {
@@ -388,13 +382,7 @@ fn trans_popup(
                 }
                 *dirty = true;
             }
-            p.label("0 = solid pane bg, 1 = theme bg");
-            if panes.get(&pane).is_some_and(|m| m.bg_color.is_none()) {
-                p.colored_label(
-                    to_c32(pal.bright[3]),
-                    "no pane bg set: transparency blends the pane bg with the theme bg — set a pane bg color first (C), otherwise the slider has no visual effect",
-                );
-            }
+            p.label("0 = opaque, 1 = glass (see through to the desktop)");
         });
     if !open && wui.trans_open == Some(pane) {
         wui.trans_open = None;

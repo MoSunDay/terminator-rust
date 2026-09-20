@@ -1,10 +1,12 @@
 //! Terminal Frame -> egui painter grid drawing.
 
 use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
-use theme::{mix, Palette, Rgb};
+use theme::Palette;
 use vt_pane::Frame as VtFrame;
 
-use crate::render::colors::{cell_colors, effective_bg, from_c32, to_c32, vt_rgb, with_opacity};
+use crate::render::colors::{
+    cell_colors, effective_bg, pane_bg_alpha, to_c32, vt_rgb, with_opacity,
+};
 use crate::state::{CellSize, PaneMeta};
 
 /// Measure the monospace cell metrics from egui fonts.
@@ -98,17 +100,9 @@ pub struct DrawArgs<'a> {
     pub font_size: f32,
     /// Cursor visibility alpha (0 = hidden, 1 = solid block).
     pub cursor_alpha: f32,
-    /// Window opacity applied to the pane base fill only.
+    /// Window opacity; the pane glass alpha is
+    /// `pane_bg_alpha(meta.transparency, opacity)` (pane bg + cell bgs).
     pub opacity: f32,
-}
-
-/// Fade explicit cell backgrounds toward the pane background by the
-/// pane's transparency, so ANSI-colored cells stay see-through.
-fn blend_cell_bg(cbg: Color32, pane_bg: Rgb, t: f32) -> Color32 {
-    if t <= 0.0 {
-        return cbg;
-    }
-    to_c32(mix(pane_bg, from_c32(cbg), 1.0 - t))
 }
 
 /// Draw one terminal snapshot into `rect`.
@@ -124,7 +118,11 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     let cell = a.cell;
     let font_size = a.font_size;
     let cursor_alpha = a.cursor_alpha;
-    let bg = with_opacity(effective_bg(pal, meta), a.opacity);
+    let fill_alpha = pane_bg_alpha(meta.transparency, a.opacity);
+    let bg = with_opacity(effective_bg(pal, meta), fill_alpha);
+    // Cursor-block glyph ink uses the bg COLOR at full alpha: on glass the
+    // semi-transparent fill would render the glyph invisible.
+    let bg_ink = Color32::from_rgb(bg.r(), bg.g(), bg.b());
     painter.rect_filled(rect, 0.0, bg);
     let default_fg = to_c32(pal.foreground);
     let cursor_col = fr
@@ -144,9 +142,10 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     } else {
         None
     };
-    let t = meta.transparency.clamp(0.0, 1.0);
-    let bg_rgb = from_c32(bg);
-    let sel_bg = blend_cell_bg(to_c32(pal.selection_background), bg_rgb, t);
+    // Glass is uniform: the selection and explicit ANSI cell backgrounds
+    // keep their color but share the pane fill alpha, so the whole pane
+    // area sees through equally (ink stays opaque).
+    let sel_bg = with_opacity(to_c32(pal.selection_background), fill_alpha);
     let font = FontId::monospace(font_size);
     let wide_font = FontId::monospace(cell.wide_size);
     for (y, row) in fr.cells.iter().enumerate() {
@@ -159,7 +158,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
                 let cbg = if cd.selected {
                     Some(sel_bg)
                 } else {
-                    cbg.map(|c| blend_cell_bg(c, bg_rgb, t))
+                    cbg.map(|c| with_opacity(c, fill_alpha))
                 };
                 if let Some(cbg) = cbg {
                     let r = cell_rect(rect, x as u16, y as u16, cell, 1);
@@ -177,7 +176,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
             let cbg = if cd.selected {
                 Some(sel_bg)
             } else {
-                cbg.map(|c| blend_cell_bg(c, bg_rgb, t))
+                cbg.map(|c| with_opacity(c, fill_alpha))
             };
             if let Some(cbg) = cbg {
                 painter.rect_filled(r, 0.0, cbg);
@@ -187,7 +186,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
                 painter.rect_filled(r, 2.0, cursor_col);
             }
             if !cd.text.is_empty() {
-                let glyph = if is_cursor { bg } else { fg };
+                let glyph = if is_cursor { bg_ink } else { fg };
                 // Wide cells paint at the scaled size so the glyph fills
                 // exactly the two-cell span; narrow cells are unchanged.
                 let cell_font = if cd.wide { &wide_font } else { &font };
