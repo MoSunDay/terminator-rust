@@ -93,9 +93,9 @@ impl eframe::App for Terminator {
         }
     }
 
-    /// Transparent clear: the window is borderless and the panel fills are
-    /// alpha-blended by `settings.opacity`, so the compositor shows the
-    /// desktop through. Pixels are fully covered by the panels either way.
+    /// Transparent clear: panel fills are alpha-blended by
+    /// `settings.opacity`, so the compositor shows the desktop through.
+    /// Pixels are fully covered by the panels either way.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
@@ -107,10 +107,8 @@ fn main() -> eframe::Result {
         viewport: ViewportBuilder::default()
             .with_title("terminator-rust")
             .with_inner_size([1200.0, 800.0])
-            // Borderless: no system title bar; dragging happens on the
-            // chrome (tab bar / pane headers), closing via Ctrl+Shift+Q,
-            // the taskbar, or closing the last pane.
-            .with_decorations(false)
+            // Native title bar: the WM owns drag/resize/close. The chrome
+            // and pane-header drags remain as conveniences.
             .with_transparent(true),
         ..Default::default()
     };

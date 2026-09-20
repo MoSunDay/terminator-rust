@@ -22,9 +22,8 @@ pub fn builder_for(w: &WindowState) -> ViewportBuilder {
         .with_title(format!("terminator-rust #{}", w.id))
         .with_inner_size([900.0, 600.0])
         .with_position([(60 + w.id * 40) as f32, (40 + w.id * 30) as f32])
-        // Match the root shell: borderless + transparent (the pane/chrome
-        // fills still apply `settings.opacity`).
-        .with_decorations(false)
+        // Match the root shell: native title bar + transparent surface
+        // (the pane/chrome fills still apply `settings.opacity`).
         .with_transparent(true)
 }
 
@@ -83,8 +82,8 @@ pub fn remove_window(d: &mut Data, idx: usize) {
 }
 
 /// Render the body of window `idx` into `ui` (root or a secondary
-/// viewport): keyboard handling for THIS viewport's input, the optional tab
-/// bar, and the pane area. `st.active` points at `idx` for the duration so
+/// viewport): keyboard handling for THIS viewport's input, the tab bar,
+/// and the pane area. `st.active` points at `idx` for the duration so
 /// every `st.win*()` helper resolves into this window's tree.
 pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     let Some(id) = d.st.windows.get(idx).map(|w| w.id) else {
@@ -112,22 +111,20 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
         opacity,
     );
     let page_bg = render::colors::with_opacity(render::colors::to_c32(pal.background), opacity);
-    // Single tab: zero chrome up top - the pane header already identifies
-    // the pane, so content starts at y=0; multi-tab brings the bar back.
-    if d.st.windows.get(idx).is_some_and(|w| w.tree.tabs.len() > 1) {
-        egui::Panel::top("tab_bar")
-            .frame(egui::Frame::NONE.fill(chrome))
-            .show(ui, |ui| ui::tabs::bar(ui, d));
-    }
+    // The tab bar is always on (Chrome-style): chips + "+" + the edge
+    // cells show even with a single tab.
+    egui::Panel::top("tab_bar")
+        .frame(egui::Frame::NONE.fill(chrome))
+        .show(ui, |ui| ui::tabs::bar(ui, d));
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(page_bg))
         .show(ui, |panel| render::screen::screen(panel, d));
     // IME anchor sync last: screen() just refreshed the focused pane's
     // cursor rect. A no-op while a rename editor owns the keyboard.
     input::ime::sync(ui.ctx(), d, idx);
-    // Window-definition hairline: the borderless shell gets a faint 1px
-    // outline so its extent reads against a same-colored desktop. Painted
-    // last so it sits above every panel fill.
+    // Window-definition hairline: a faint 1px inner edge so the window's
+    // extent still reads against a same-colored desktop. Painted last so
+    // it sits above every panel fill.
     ui.painter().rect_stroke(
         win_rect,
         0.0,

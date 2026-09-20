@@ -45,9 +45,10 @@ fn chip_label(tab: &Tab) -> String {
 
 fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     let row = ui.max_rect();
-    // Borderless window: dragging the bare chrome (not a chip or button)
-    // moves the window. Registered first so widgets added later (and thus
-    // on top) keep their clicks; drags fall through to this background.
+    // Dragging the bare chrome (not a chip or button) moves the window -
+    // the native title bar is the primary drag surface, this stays as a
+    // convenience. Registered first so widgets added later (and thus on
+    // top) keep their clicks; drags fall through to this background.
     // A chip reorder drag owns the pointer: no window move then.
     let chip_reorder = d.st.win().is_some_and(|w| w.ui.tab_drag.is_some());
     let drag = ui.interact(row, Id::new("chrome_drag"), Sense::drag());
