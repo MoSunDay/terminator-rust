@@ -199,8 +199,6 @@ mod tests {
         let meta = PaneMeta {
             kind: PaneKind::Local,
             manual_title: None,
-            bg_color: None,
-            transparency: 0.0,
             degraded: false,
         };
         assert!(spawn_meta(&meta, "dracula", 10, 5).is_ok());

@@ -10,7 +10,7 @@ use crate::actions;
 use crate::input::{mouse, pointer};
 use crate::render::{colors, dropzone, grid, preedit, tokens};
 use crate::session_map;
-use crate::state::{AppState, Data, DEFAULT_FONT_SIZE, DIVIDER_W, PANE_HEADER_H};
+use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
 
 /// Pane card silhouette: rounded where the header meets the chrome, square
 /// at the window bottom.
@@ -71,10 +71,7 @@ fn draw_viewport_bar(
 pub fn screen(ui: &mut Ui, d: &mut Data) {
     let ctx = ui.ctx().clone();
     let pal = colors::palette_of(&d.st.theme_name);
-    let font_size =
-        d.st.win()
-            .map(|w| w.ui.font_size)
-            .unwrap_or(DEFAULT_FONT_SIZE);
+    let font_size = d.st.settings.font_size;
     let cell = grid::measure_cells(&ctx, font_size);
 
     // Lifecycle bookkeeping.
@@ -127,6 +124,10 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let cursor_a = tokens::cursor_alpha(ctx.input(|i| i.time) as f32);
     let painter = ui.painter().clone();
     let rects = pane_rects(st, area);
+    // Uniform pane appearance: one opaque bg + one fill alpha for every
+    // pane (theme or global override, times the glass/opacity ladders).
+    let pane_bg = colors::effective_bg(&pal, st.settings.bg_color);
+    let fill_alpha = colors::pane_bg_alpha(st.settings.transparency, st.settings.opacity);
 
     // Raw pointer routing (reporting / selection / wheel) over pane content
     // rects; suppressed while a divider drag or a pane drag owns the
@@ -149,8 +150,6 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
 
         pane_header::show(ui, header, pane, tab, st, sess, uist, &pal, dirty);
 
-        let fallback = crate::state::new_pane_meta(PaneKind::Local);
-        let meta = st.panes.get(&pane).unwrap_or(&fallback);
         // No session at all (spawn backoff) or the child exited.
         let dead = sess.map.get(&pane).is_none_or(|s| s.exit.is_some());
         match sess.map.get_mut(&pane) {
@@ -162,11 +161,11 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                     &grid::DrawArgs {
                         fr: &fr,
                         pal: &pal,
-                        meta,
                         cell,
                         font_size,
                         cursor_alpha: if Some(pane) == focused { cursor_a } else { 0.0 },
-                        opacity: st.settings.opacity,
+                        bg: pane_bg,
+                        fill_alpha,
                     },
                 );
                 // Scrollback review indicator over the grid, right edge.
@@ -222,7 +221,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 grid::draw_dead(
                     &painter,
                     content,
-                    colors::with_opacity(colors::effective_bg(&pal, meta), st.settings.opacity),
+                    colors::with_opacity(pane_bg, fill_alpha),
                     colors::to_c32(colors::title_text(&pal)),
                     &msg,
                 );

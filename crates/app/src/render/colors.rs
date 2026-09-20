@@ -8,8 +8,6 @@ use theme::{
 use vt_pane::term::Color as VtColor;
 use vt_pane::CellData;
 
-use crate::state::PaneMeta;
-
 pub fn to_c32(c: Rgb) -> Color32 {
     Color32::from_rgb(c.r, c.g, c.b)
 }
@@ -139,16 +137,16 @@ pub fn palette_hex(p: &Palette) -> [String; 9] {
     ]
 }
 
-/// Effective pane background: pane color over theme, blended by transparency.
-pub fn effective_bg(p: &Palette, meta: &PaneMeta) -> Color32 {
-    to_c32(blend_background(p, meta.bg_color))
+/// Effective pane background: global color override over theme bg.
+pub fn effective_bg(p: &Palette, bg: Option<Rgb>) -> Color32 {
+    to_c32(blend_background(p, bg))
 }
 
-/// Glass alpha of pane background fills: the pane's transparency
-/// (`0` = opaque, `1` = fully see-through glass — the desktop shows
-/// through the pane) multiplied by the window opacity. Non-finite
-/// inputs fail safe to opaque. Text, cursor and selection ink stay
-/// opaque for readability (same policy as [`with_opacity`]).
+/// Glass alpha of pane background fills: the global terminal
+/// transparency (`0` = opaque, `1` = fully see-through glass — the
+/// desktop shows through the pane) multiplied by the window opacity.
+/// Non-finite inputs fail safe to opaque. Text, cursor and selection
+/// ink stay opaque for readability (same policy as [`with_opacity`]).
 pub fn pane_bg_alpha(transparency: f32, opacity: f32) -> f32 {
     let t = if transparency.is_finite() {
         transparency.clamp(0.0, 1.0)
@@ -215,7 +213,8 @@ pub fn with_opacity(c: Color32, opacity: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
-/// Swatch candidates for the pane color popup: palette 16 colors + basics.
+/// Swatch candidates for the settings background picker: palette 16
+/// colors + basics.
 pub fn swatches(p: &Palette) -> Vec<Rgb> {
     let mut out: Vec<Rgb> = p.normal.to_vec();
     out.extend(p.bright);

@@ -35,7 +35,7 @@ pub fn sync(ctx: &Context, theme_name: &str, uist: &mut UiState) {
     style.visuals.extreme_bg_color = colors::to_c32(pal.background);
     style.visuals.hyperlink_color = accent;
     style.visuals.window_stroke = Stroke::new(1.0, line);
-    // Floating layers (Inspector window, popups, context menus): soft
+    // Floating layers (Settings window, popups, context menus): soft
     // elevation shadow + unified rounding from the token scale.
     style.visuals.window_shadow = tokens::shadow(tokens::Layer::Window);
     style.visuals.popup_shadow = tokens::shadow(tokens::Layer::Popup);

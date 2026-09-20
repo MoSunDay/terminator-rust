@@ -133,12 +133,6 @@ pub fn do_close_pane(
             if wui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
                 wui.pane_edit = None;
             }
-            if wui.color_open == Some(pane) {
-                wui.color_open = None;
-            }
-            if wui.trans_open == Some(pane) {
-                wui.trans_open = None;
-            }
             *dirty = true;
         }
         prune_tab_edit(tree, wui);
@@ -175,12 +169,6 @@ pub fn do_close_tab(
                 session_map::terminate(sess, pane);
                 if wui.pane_edit.as_ref().is_some_and(|(p, _)| *p == pane) {
                     wui.pane_edit = None;
-                }
-                if wui.color_open == Some(pane) {
-                    wui.color_open = None;
-                }
-                if wui.trans_open == Some(pane) {
-                    wui.trans_open = None;
                 }
             }
         }

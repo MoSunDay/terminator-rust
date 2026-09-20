@@ -1,5 +1,5 @@
-//! Inspector window: theme picker, font size, remote connect form and the
-//! saved-host registry.
+//! Settings window: theme picker, font size, terminal background (glass),
+//! splits, remote connect form and the saved-host registry.
 
 use std::path::Path;
 
@@ -11,7 +11,7 @@ use remote::{
 };
 
 use crate::actions;
-use crate::state::{Data, DEFAULT_FONT_SIZE};
+use crate::state::Data;
 
 fn form_target(f: &crate::state::RemoteForm) -> RemoteTarget {
     let label = f.label.trim().to_string();
@@ -59,12 +59,12 @@ fn section_title(ui: &mut egui::Ui, pal: &theme::Palette, title: &str) {
     ui.add_space(3.0);
 }
 
-/// Show the inspector window of OS window `idx` when its per-window
+/// Show the settings window of OS window `idx` when its per-window
 /// `inspector` flag is set. Must be called from THAT window's render pass
 /// (root pass for the root window, the viewport callback for secondaries):
 /// egui::Window layers land in whichever viewport is rendering, so the
-/// panel - and its per-window font slider - stay with their owner even
-/// when several windows have it open at once.
+/// panel stays with its owner even when several windows have one open at
+/// once (the settings it edits are global).
 pub fn show(ctx: &Context, d: &mut Data, idx: usize) {
     let Some(win_id) = d.st.windows.get(idx).map(|w| w.id) else {
         return;
@@ -74,15 +74,16 @@ pub fn show(ctx: &Context, d: &mut Data, idx: usize) {
     }
     let reg_path = default_registry_path();
     let mut open = true;
-    Window::new("Inspector")
-        // Per-owner id: two windows can each keep an inspector open, and
+    Window::new("Settings")
+        // Per-owner id: two windows can each keep the panel open, and
         // their area state (position/size) must not fight over one id.
         .id(egui::Id::new("inspector").with(win_id))
         .open(&mut open)
         .resizable(false)
         .show(ctx, |ui| {
-            theme_section(ui, d, idx);
+            theme_section(ui, d);
             splits_section(ui, d);
+            bg_section(ui, d);
             form_section(ui, d, &reg_path);
             registry_section(ui, d, &reg_path);
         });
@@ -91,7 +92,7 @@ pub fn show(ctx: &Context, d: &mut Data, idx: usize) {
     }
 }
 
-fn theme_section(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
+fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
     let pal = crate::render::colors::palette_of(&d.st.theme_name);
     section_title(ui, &pal, "Appearance");
     let current = d.st.theme_name.clone();
@@ -108,14 +109,9 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     if d.st.theme_name != current {
         d.dirty = true;
     }
-    // Font size lives in the (per-window) WindowUi of the window that
-    // owns this panel; slider works on a local copy and writes back on
-    // change.
-    let mut size =
-        d.st.windows
-            .get(idx)
-            .map(|w| w.ui.font_size)
-            .unwrap_or(DEFAULT_FONT_SIZE);
+    // Font size is a global setting (uniform across every window); the
+    // slider works on a local copy and writes back on change.
+    let mut size = d.st.settings.font_size;
     if ui
         .add(
             egui::Slider::new(&mut size, 10.0..=24.0)
@@ -124,9 +120,8 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
         )
         .changed()
     {
-        if let Some(w) = d.st.windows.get_mut(idx) {
-            w.ui.font_size = size;
-        }
+        d.st.settings.font_size = size;
+        d.dirty = true;
         // Font metrics are re-measured every frame; nothing else to do.
     }
 }
@@ -177,6 +172,71 @@ fn splits_section(ui: &mut egui::Ui, d: &mut Data) {
         || s != d.st.settings;
     d.st.settings = s;
     if changed {
+        d.dirty = true;
+    }
+}
+
+/// Terminal background (glass): transparency + background override, both
+/// global (uniform for every pane). Same edit-a-copy-of-Settings pattern
+/// as `splits_section`; the hex field buffer lives in egui's temp memory
+/// so a per-frame re-render cannot wipe what the user is typing.
+fn bg_section(ui: &mut egui::Ui, d: &mut Data) {
+    let pal = crate::render::colors::palette_of(&d.st.theme_name);
+    section_title(ui, &pal, "Terminal background");
+    let mut s = d.st.settings;
+    let mut touched = false;
+    if ui
+        .add(egui::Slider::new(&mut s.transparency, 0.0..=1.0).text("0 = opaque, 1 = glass"))
+        .changed()
+    {
+        touched = true;
+    }
+    ui.label("Background override:");
+    // Palette swatch row: one click applies the color (and re-seeds the
+    // hex field to match, like the old per-pane popup did).
+    let buf_id = egui::Id::new("settings_bg_hex");
+    let mut buf = ui.ctx().data_mut(|data| {
+        data.get_temp_mut_or_insert_with(buf_id, || {
+            s.bg_color.map(theme::rgb_to_hex).unwrap_or_default()
+        })
+        .clone()
+    });
+    ui.horizontal_wrapped(|ui| {
+        for sw in crate::render::colors::swatches(&pal) {
+            let fill = crate::render::colors::to_c32(sw);
+            if ui
+                .add(egui::Button::new("  ").fill(fill))
+                .on_hover_text(theme::rgb_to_hex(sw))
+                .clicked()
+            {
+                s.bg_color = Some(sw);
+                buf = theme::rgb_to_hex(sw);
+                touched = true;
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.add(
+            TextEdit::singleline(&mut buf)
+                .desired_width(80.0)
+                .hint_text("#rrggbb"),
+        );
+        if ui.button("apply").clicked() {
+            // Valid hex only; a bad value keeps the previous override.
+            if let Ok(rgb) = theme::parse_hex(buf.trim()) {
+                s.bg_color = Some(rgb);
+                touched = true;
+            }
+        }
+        if ui.button("clear").clicked() {
+            s.bg_color = None;
+            buf.clear();
+            touched = true;
+        }
+    });
+    ui.ctx().data_mut(|data| data.insert_temp(buf_id, buf));
+    d.st.settings = s;
+    if touched {
         d.dirty = true;
     }
 }

@@ -21,7 +21,7 @@ cd "$(dirname "$0")/../.."
 ROOT=$(mktemp -d /tmp/term-e2e-mk-XXXXXX)
 APP=target/debug/terminator-rust
 CTL=target/debug/terminator-ctl
-DISPLAY_N=":$$"          # unique per run; no clash with parallel scripts
+DISPLAY_N=""              # probed below (stale sockets break ":$$")
 XVFB_PID=""
 APP_PID=""
 
@@ -95,8 +95,22 @@ cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
 JSON
 
 # --- Xvfb + app ----------------------------------------------------------
-step "launch Xvfb $DISPLAY_N + app"
-Xvfb "$DISPLAY_N" -screen 0 1200x800x24 & XVFB_PID=$!
+step "launch Xvfb + app"
+# Random display probe: a fixed/PID-derived number can collide with a
+# stale /tmp/.X11-unix socket left by an earlier crashed run.
+for _ in $(seq 1 12); do
+    N=$((100 + RANDOM % 880))
+    [ -S "/tmp/.X11-unix/X$N" ] && continue
+    Xvfb ":$N" -screen 0 1200x800x24 & XVFB_PID=$!
+    sleep 0.7
+    if kill -0 "$XVFB_PID" 2>/dev/null && DISPLAY=":$N" xdpyinfo >/dev/null 2>&1; then
+        DISPLAY_N=":$N"
+        break
+    fi
+    kill "$XVFB_PID" 2>/dev/null || true
+    XVFB_PID=""
+done
+[ -n "$DISPLAY_N" ] || fail "no free X display for Xvfb"
 sleep 0.7
 export DISPLAY="$DISPLAY_N"   # for xdotool (the app gets it via env below)
 # NOTE: this `&` launch leaves SIGINT/SIGQUIT = SIG_IGN in the app (bash

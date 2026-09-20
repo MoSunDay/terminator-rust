@@ -4,10 +4,8 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use theme::Palette;
 use vt_pane::Frame as VtFrame;
 
-use crate::render::colors::{
-    cell_colors, effective_bg, pane_bg_alpha, to_c32, vt_rgb, with_opacity,
-};
-use crate::state::{CellSize, PaneMeta};
+use crate::render::colors::{cell_colors, to_c32, vt_rgb, with_opacity};
+use crate::state::CellSize;
 
 /// Measure the monospace cell metrics from egui fonts.
 pub fn measure_cells(ctx: &egui::Context, font_size: f32) -> CellSize {
@@ -95,14 +93,15 @@ pub fn cursor_rect(origin: Rect, fr: &VtFrame, cell: CellSize) -> Option<Rect> {
 pub struct DrawArgs<'a> {
     pub fr: &'a VtFrame,
     pub pal: &'a Palette,
-    pub meta: &'a PaneMeta,
     pub cell: CellSize,
     pub font_size: f32,
     /// Cursor visibility alpha (0 = hidden, 1 = solid block).
     pub cursor_alpha: f32,
-    /// Window opacity; the pane glass alpha is
-    /// `pane_bg_alpha(meta.transparency, opacity)` (pane bg + cell bgs).
-    pub opacity: f32,
+    /// Opaque effective pane background (theme or global override).
+    pub bg: Color32,
+    /// Pane fill alpha: `pane_bg_alpha(settings.transparency,
+    /// settings.opacity)` (pane bg + cell bgs), computed by the caller.
+    pub fill_alpha: f32,
 }
 
 /// Draw one terminal snapshot into `rect`.
@@ -114,12 +113,11 @@ pub struct DrawArgs<'a> {
 pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     let fr = a.fr;
     let pal = a.pal;
-    let meta = a.meta;
     let cell = a.cell;
     let font_size = a.font_size;
     let cursor_alpha = a.cursor_alpha;
-    let fill_alpha = pane_bg_alpha(meta.transparency, a.opacity);
-    let bg = with_opacity(effective_bg(pal, meta), fill_alpha);
+    let fill_alpha = a.fill_alpha;
+    let bg = with_opacity(a.bg, fill_alpha);
     // Cursor-block glyph ink uses the bg COLOR at full alpha: on glass the
     // semi-transparent fill would render the glyph invisible.
     let bg_ink = Color32::from_rgb(bg.r(), bg.g(), bg.b());
