@@ -300,6 +300,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   (column-run x row-run) components and expect >=3 wide (w-delta >=8.5;
   ASCII tops out at 7) + >=3 stroked (a tofu square passes width but has a
   hollow interior).
+- cell pitch quantization: epaint rasterizes UNHINTED glyphs at exact
+  float positions - a fractional cell.w (Maple 0.6em = 8.4pt at font 14)
+  cycles the subpixel phase per column (measured H deltas {8,9} stdev
+  0.49 -> reads as fuzzy text + uneven letter spacing at ppp 1.0);
+  grid.rs measure_cells snaps w/h to whole DEVICE pixels and derives the
+  wide scale from the snapped w (wide cell == 2 narrow cells always).
+  DEFAULT_FONT_SIZE 15 makes the Maple pitch naturally integer
+  (0.6em*15 = 9.0px; 20/25 exact too; 14 snaps 8.4->8 with a 4.8% wide
+  squeeze absorbed by wide_size). e2e-cjk ink filters tuned for 15pt
+  (wide split 10.5/11.5, Han 12-15px). After: H deltas {9} stdev 0.
   Xvfb in scripts: NEVER derive the display number from $$ (stale
   /tmp/.X11-unix sockets make Xvfb refuse to bind) - probe random free
   numbers, and `export DISPLAY` for xdotool/scrot (env DISPLAY=... on the app
