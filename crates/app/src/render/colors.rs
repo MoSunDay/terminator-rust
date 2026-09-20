@@ -14,15 +14,6 @@ pub fn to_c32(c: Rgb) -> Color32 {
     Color32::from_rgb(c.r, c.g, c.b)
 }
 
-/// egui Color32 -> theme Rgb (for re-blending with theme helpers).
-pub fn from_c32(c: Color32) -> Rgb {
-    Rgb {
-        r: c.r(),
-        g: c.g(),
-        b: c.b(),
-    }
-}
-
 pub fn vt_rgb(c: VtColor) -> Rgb {
     Rgb {
         r: c.r,
@@ -150,11 +141,26 @@ pub fn palette_hex(p: &Palette) -> [String; 9] {
 
 /// Effective pane background: pane color over theme, blended by transparency.
 pub fn effective_bg(p: &Palette, meta: &PaneMeta) -> Color32 {
-    to_c32(blend_background(
-        p,
-        meta.bg_color,
-        meta.transparency.clamp(0.0, 1.0),
-    ))
+    to_c32(blend_background(p, meta.bg_color))
+}
+
+/// Glass alpha of pane background fills: the pane's transparency
+/// (`0` = opaque, `1` = fully see-through glass — the desktop shows
+/// through the pane) multiplied by the window opacity. Non-finite
+/// inputs fail safe to opaque. Text, cursor and selection ink stay
+/// opaque for readability (same policy as [`with_opacity`]).
+pub fn pane_bg_alpha(transparency: f32, opacity: f32) -> f32 {
+    let t = if transparency.is_finite() {
+        transparency.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let o = if opacity.is_finite() {
+        opacity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    (1.0 - t) * o
 }
 
 /// Linear channel mix: `a` toward `b` by `t` (0 -> a, 1 -> b), rounded.
@@ -254,6 +260,18 @@ mod tests {
             "premultiplied r dims: {}",
             a.r()
         );
+    }
+
+    #[test]
+    fn pane_bg_alpha_glass_times_window_opacity() {
+        assert_eq!(pane_bg_alpha(0.0, 1.0), 1.0, "t=0: opaque");
+        assert_eq!(pane_bg_alpha(1.0, 1.0), 0.0, "t=1: full glass");
+        assert_eq!(pane_bg_alpha(0.5, 1.0), 0.5, "half glass");
+        assert_eq!(pane_bg_alpha(0.5, 0.8), 0.4, "window opacity multiplies");
+        assert_eq!(pane_bg_alpha(-5.0, 1.0), 1.0, "clamped low = opaque");
+        assert_eq!(pane_bg_alpha(5.0, 1.0), 0.0, "clamped high = glass");
+        assert_eq!(pane_bg_alpha(f32::NAN, 1.0), 1.0, "NaN t fails safe");
+        assert_eq!(pane_bg_alpha(0.5, f32::NAN), 0.5, "NaN opacity fails safe");
     }
 
     #[test]

@@ -26,7 +26,8 @@ pub struct PaneMeta {
     pub kind: PaneKind,
     pub manual_title: Option<String>,
     pub bg_color: Option<Rgb>,
-    /// 0 = pane bg fully opaque, 1 = pure theme background.
+    /// Pane background transparency ("glass"): 0 = opaque, 1 = fully
+    /// see-through (the desktop shows through; ink stays solid).
     pub transparency: f32,
     /// Remote pane fell back to a plain ssh shell (no zellij on the host).
     pub degraded: bool,

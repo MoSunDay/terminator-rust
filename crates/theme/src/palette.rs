@@ -154,17 +154,12 @@ pub fn indexed_color(p: &Palette, idx: u8) -> Rgb {
     }
 }
 
-/// Effective pane background for visual (cross-platform, no WM compositing)
-/// transparency: `effective_bg = with_alpha_over(pane_color, background, 1 - t)`.
-///
-/// `pane_color` is the user's chosen pane tint; `transparency` `0.0` = fully
-/// opaque pane color, `1.0` = fully shows the theme background. When no pane
-/// color is set the palette background is used, so the result is always the
-/// theme background regardless of transparency.
-pub fn blend_background(p: &Palette, pane_color: Option<Rgb>, transparency: f32) -> Rgb {
-    let pane = pane_color.unwrap_or(p.background);
-    let alpha = 1.0 - transparency.clamp(0.0, 1.0);
-    with_alpha_over(pane, p.background, alpha)
+/// Pane background COLOR: the user's pane tint if set, else the theme
+/// background. Always opaque — real see-through ("glass") alpha is the
+/// renderer's job (`app::render::colors::pane_bg_alpha` combines the pane
+/// transparency with the window opacity at fill time).
+pub fn blend_background(p: &Palette, pane_color: Option<Rgb>) -> Rgb {
+    pane_color.unwrap_or(p.background)
 }
 
 /// Relative-luminance test on the background; dark palettes report
@@ -306,29 +301,13 @@ mod tests {
     }
 
     #[test]
-    fn blend_background_with_pane_color() {
+    fn blend_background_is_the_pane_tint_or_theme_bg() {
         let p = test_palette();
         let tint = rgb(200, 100, 50);
-        // t = 0: opaque user pane color.
-        assert_eq!(blend_background(&p, Some(tint), 0.0), tint);
-        // t = 1: fully transparent, shows the theme background.
-        assert_eq!(blend_background(&p, Some(tint), 1.0), p.background);
-        // out-of-range transparency is clamped.
-        assert_eq!(blend_background(&p, Some(tint), -5.0), tint);
-        assert_eq!(blend_background(&p, Some(tint), 5.0), p.background);
-        // halfway: tint over black background at alpha 0.5.
-        assert_eq!(
-            blend_background(&p, Some(tint), 0.5),
-            with_alpha_over(tint, p.background, 0.5)
-        );
-    }
-
-    #[test]
-    fn blend_background_without_pane_color() {
-        let p = test_palette();
-        assert_eq!(blend_background(&p, None, 0.0), p.background);
-        assert_eq!(blend_background(&p, None, 1.0), p.background);
-        assert_eq!(blend_background(&p, None, 0.37), p.background);
+        // The pane tint replaces the theme bg outright (glass alpha is
+        // applied by the renderer, not blended here).
+        assert_eq!(blend_background(&p, Some(tint)), tint);
+        assert_eq!(blend_background(&p, None), p.background);
     }
 
     #[test]
