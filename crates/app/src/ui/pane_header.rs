@@ -75,16 +75,25 @@ pub fn show(
     // (egui hit-test prefers the topmost widget; drags fall through to
     // this background).
     let drag = ui.interact(rect, Id::new("pane_header_drag").with(pane), Sense::drag());
-    // Ctrl+press converts the header drag into a pane move (drop target
-    // tracked per frame in screen()); the plain drag still moves the OS
-    // window, and never while a pane drag already owns the pointer.
+    // A primary press on the header becomes a pane MOVE (drop target
+    // tracked per frame in screen(); dropping on a sibling edge flips
+    // the split axis) whenever the tab has another pane to rearrange
+    // against or Ctrl forces it; a lone pane has nothing to rearrange,
+    // so its header keeps the OS-window drag. Never while a pane drag
+    // already owns the pointer.
     let pane_dragging = st
         .win()
         .is_some_and(|w| w.ui.pane_drag.is_some_and(|pd| pd.pane == pane));
+    let tab_panes = st
+        .win()
+        .and_then(|w| w.tree.tabs.get(tab))
+        .map(|t| layout_tree::pane_count(&t.root))
+        .unwrap_or(1);
+    let rearranges = header_starts_pane_move(ui.input(|i| i.modifiers.ctrl), tab_panes);
     if drag.drag_started_by(egui::PointerButton::Primary)
         && st.win().is_none_or(|w| w.ui.pane_drag.is_none())
     {
-        if ui.input(|i| i.modifiers.ctrl) {
+        if rearranges {
             if let Some(w) = st.win_mut() {
                 w.ui.pane_drag = Some(PaneDrag { pane, target: None });
                 w.ui.zoom = false;
@@ -95,7 +104,7 @@ pub fn show(
     }
     if pane_dragging {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if drag.hovered() && ui.input(|i| i.modifiers.ctrl) {
+    } else if drag.hovered() && rearranges {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
 
@@ -361,6 +370,13 @@ fn color_popup(
     }
 }
 
+/// Header primary-drag intent: rearrange panes when Ctrl is held or the
+/// tab holds more than one pane to rearrange against; a lone pane keeps
+/// the OS-window drag (there is nothing to drop against).
+pub fn header_starts_pane_move(ctrl: bool, tab_panes: usize) -> bool {
+    ctrl || tab_panes >= 2
+}
+
 fn trans_popup(anchor: &egui::Response, pane: PaneId, st: &mut AppState, dirty: &mut bool) {
     let wi = st.active_idx();
     let AppState { panes, windows, .. } = st;
@@ -451,6 +467,16 @@ mod tests {
     use super::*;
     use crate::state::{fresh_state, split_tree_pane};
     use layout_tree::Axis;
+
+    #[test]
+    fn header_drag_rearranges_with_a_sibling_or_ctrl() {
+        assert!(header_starts_pane_move(false, 2), "sibling pane -> move");
+        assert!(header_starts_pane_move(true, 1), "ctrl forces the move");
+        assert!(
+            !header_starts_pane_move(false, 1),
+            "lone pane keeps the window drag"
+        );
+    }
 
     #[test]
     fn reject_reason_blocks_digits_and_duplicates_only() {
