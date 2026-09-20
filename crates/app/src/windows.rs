@@ -90,6 +90,9 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     let Some(id) = d.st.windows.get(idx).map(|w| w.id) else {
         return;
     };
+    // Window outline target: capture the full rect BEFORE the panels
+    // below partition it (the border is painted at the end of the pass).
+    let win_rect = ui.max_rect();
     d.st.active = idx;
     // Which window does the user consider "the" terminal? The IPC drain and
     // inspector between render passes act on the focused window.
@@ -119,6 +122,24 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(page_bg))
         .show(ui, |panel| render::screen::screen(panel, d));
+    // IME anchor sync last: screen() just refreshed the focused pane's
+    // cursor rect. A no-op while a rename editor owns the keyboard.
+    input::ime::sync(ui.ctx(), d, idx);
+    // Window-definition hairline: the borderless shell gets a faint 1px
+    // outline so its extent reads against a same-colored desktop. Painted
+    // last so it sits above every panel fill.
+    ui.painter().rect_stroke(
+        win_rect,
+        0.0,
+        egui::Stroke::new(
+            1.0,
+            render::colors::with_opacity(
+                render::colors::to_c32(render::colors::hairline(&pal)),
+                opacity,
+            ),
+        ),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// Drive every secondary window as an immediate viewport. Removal (WM close

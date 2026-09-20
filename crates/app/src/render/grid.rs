@@ -70,6 +70,16 @@ fn cell_rect(origin: Rect, x: u16, y: u16, cell: CellSize, span: u16) -> Rect {
     )
 }
 
+/// Focused-pane cursor cell rect (the IME anchor), None while the cursor
+/// is hidden or outside the grid (same guard as the drawn cursor block).
+pub fn cursor_rect(origin: Rect, fr: &VtFrame, cell: CellSize) -> Option<Rect> {
+    if fr.cursor.visible && fr.cursor.x < fr.cols && fr.cursor.y < fr.rows {
+        Some(cell_rect(origin, fr.cursor.x, fr.cursor.y, cell, 1))
+    } else {
+        None
+    }
+}
+
 /// Bundled arguments of [`draw_frame`] (keeps the call sites readable).
 pub struct DrawArgs<'a> {
     pub fr: &'a VtFrame,
@@ -113,8 +123,9 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
         .map(vt_rgb)
         .map_or(to_c32(pal.cursor), to_c32);
     // Soft blink: the block fades between the pane bg and the cursor
-    // color (alpha 1 = legacy solid block).
-    let cursor_col = crate::render::tokens::lerp_color(bg, cursor_col, cursor_alpha);
+    // color (alpha 1 = legacy solid block). Peak capped at 0.9 so even
+    // the fully-on block keeps a hint of the background under it.
+    let cursor_col = crate::render::tokens::lerp_color(bg, cursor_col, cursor_alpha.min(0.9));
     let cursor_at = if cursor_alpha > 0.02
         && fr.cursor.visible
         && fr.cursor.x < fr.cols
@@ -164,7 +175,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
             }
             let is_cursor = cursor_at == Some((ux, uy));
             if is_cursor {
-                painter.rect_filled(r, 0.0, cursor_col);
+                painter.rect_filled(r, 2.0, cursor_col);
             }
             if !cd.text.is_empty() {
                 let glyph = if is_cursor { bg } else { fg };
