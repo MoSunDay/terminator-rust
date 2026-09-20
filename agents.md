@@ -52,6 +52,13 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   (Xvfb + xdotool; E1 = `windows:[{tabs:[]}]` restores a live tab,
   E2 = exit auto-closes + app quits persisting empty tabs, E3 = the
   loop relaunches live; wired into ci.yml as e2e-empty-restore).
+- IME e2e: `scripts/bin/e2e-ime.sh` (REAL XIM chain: Xvfb + dbus
+  session bus (private fork fallback) + ibus-daemon --xim + engine
+  libpinyin + LANG=zh_CN.UTF-8; M1 composing 'hanzi' never reaches the
+  pty, M2 preedit ink purple-hue-detected vs a baseline scrot, M3 space
+  commits 汉字 + bare Shift_L toggles libpinyin EN for ASCII, M4 quit;
+  CI job e2e-ime apt: ibus ibus-libpinyin dbus x11-utils locales +
+  locale-gen zh_CN.UTF-8 - XIM locale negotiation needs it).
 - opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
   /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
   binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
@@ -210,6 +217,28 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   os.write) - writing /dev/pts/N (slave) simulates terminal OUTPUT,
   keys never reach the child, and every "inert" observed that way is
   void.
+- IME (pane input method): winit X11 XIM is COMPLETE (XFilterEvent
+  swallows composing keys; the ime rect's min is the XIM spot) but
+  needs an XIM server (XMODIFIERS=@im=ibus|fcitx) - bare Xvfb has
+  none, Ime events never fire there. egui-winit allows IME iff
+  PlatformOutput.ime is Some EVERY frame (per viewport, nobody
+  validates it - no TextEdit needed); app/input/ime.rs writes it
+  (purpose Terminal) anchored at grid::cursor_rect; rename editors own
+  IME via the egui_wants_keyboard_input early return, which also
+  clears the pane preedit. Ime::Commit delivers RAW UTF-8 bytes
+  (vtask::write) - never the key encoder (CJK lands Unidentified+utf8)
+  nor bracketed paste (commit is typed input); Preedit with empty text
+  = composition ended. e2e realities: the 2px accent preedit underline
+  ANTIALIASES (exact-color match finds zero pixels - hue detector vs
+  baseline scrot), and libpinyin starts in CN mode (all latin keys
+  compose: probe shell liveness via ctl, ASCII needs the bare Shift_L
+  EN toggle).
+- chrome row height: nominal constants are NOT the rendered height -
+  egui adds the row's trailing item_spacing.y plus a 1px panel offset
+  (CHIP_H 28 + 2x4 insets = 36 nominal, ~41 rendered; the old 24+2x3
+  was 30 nominal / ~35 rendered and passed on tolerance). e2e band
+  literals were recomputed from OBSERVED pixels - trust scrot, not
+  arithmetic.
 - shortcuts: Ctrl+Shift+Q = global quit (Action::Quit -> ROOT viewport
   Close via send_viewport_cmd_to, so the press works from ANY window;
   to_skey must map Key::Q); Ctrl+Shift+N = new OS window
