@@ -10,7 +10,7 @@ use crate::render::tokens;
 use crate::state::{self, AppState, Data, WindowState};
 use crate::ui::tabs_widgets;
 
-const CHIP_H: f32 = 24.0;
+const CHIP_H: f32 = 28.0;
 const CHIP_PAD_X: f32 = 10.0;
 const CHIP_MIN_W: f32 = 44.0;
 const CHIP_GAP: f32 = 5.0;
@@ -54,7 +54,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     if !chip_reorder && drag.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
-    ui.add_space(3.0);
+    ui.add_space(4.0);
     // Chip slot centers (center_x, tab index) plus the first chip's top:
     // consumed by the ghost/reorder pass after the row is allocated.
     let mut centers: Vec<(f32, usize)> = Vec::new();
@@ -135,7 +135,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             let painter = ui.painter().clone();
             let galley = painter.layout_no_wrap(
                 label,
-                FontId::proportional(11.5),
+                FontId::proportional(12.0),
                 egui::Color32::PLACEHOLDER,
             );
             let w = (CHIP_PAD_X * 2.0 + galley.size().x + CLOSE_W).max(CHIP_MIN_W);
@@ -311,7 +311,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             }
         }
     }
-    ui.add_space(3.0);
+    ui.add_space(4.0);
     // Hairline under the merged chrome row (was under the removed title
     // row): a quiet seam above the pane area.
     ui.painter().hline(
@@ -339,7 +339,7 @@ fn ghost_chip(ui: &mut Ui, pal: &Palette, label: &str, left: f32, top: f32, w: f
     painter.rect_filled(underline, 1.0, to_c32(pal.block_highlight));
     let galley = painter.layout_no_wrap(
         label.to_owned(),
-        FontId::proportional(11.5),
+        FontId::proportional(12.0),
         egui::Color32::PLACEHOLDER,
     );
     let text_rect = Align2::CENTER_CENTER.align_size_within_rect(galley.size(), rect);

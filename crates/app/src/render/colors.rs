@@ -188,6 +188,11 @@ pub fn hairline(p: &Palette) -> Rgb {
 pub fn tab_active(p: &Palette) -> Rgb {
     mix(p.background, p.block_highlight, 0.18)
 }
+/// Focused pane header fill: same accent source as the active chip, one
+/// step quieter so the chip still reads as "owning" the content.
+pub fn focus_header(p: &Palette) -> Rgb {
+    mix(p.background, p.block_highlight, 0.10)
+}
 /// Dimmed chrome text (window title, inactive tab labels).
 pub fn title_text(p: &Palette) -> Rgb {
     mix(p.foreground, p.background, 0.38)
@@ -301,6 +306,16 @@ mod tests {
                 r: 67,
                 g: 61,
                 b: 89
+            }
+        );
+        // Hand-computed: mix((40,42,54), (189,147,249), 0.10) -> (55,53,74)
+        // - the focused pane header tint, one step under the active chip.
+        assert_eq!(
+            focus_header(&p),
+            Rgb {
+                r: 55,
+                g: 53,
+                b: 74
             }
         );
         let bg = chrome_bg(&p);

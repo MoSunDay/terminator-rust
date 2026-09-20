@@ -101,8 +101,13 @@ pub fn show(
 
     // Quiet chrome: the header is a flat chrome strip (the focused pane is
     // already framed by its accent stroke) with a hairline over the
-    // content; focus reads through the title color. Top corners round to
-    // meet the pane card stroke.
+    // content; focus reads through the title color AND a faint accent
+    // tint on the fill. Top corners round to meet the pane card stroke.
+    let header_fill = if focused {
+        colors::focus_header(pal)
+    } else {
+        colors::chrome_bg(pal)
+    };
     ui.painter().rect_filled(
         rect,
         egui::CornerRadius {
@@ -111,7 +116,7 @@ pub fn show(
             sw: 0,
             se: 0,
         },
-        colors::with_opacity(to_c32(colors::chrome_bg(pal)), st.settings.opacity),
+        colors::with_opacity(to_c32(header_fill), st.settings.opacity),
     );
     ui.painter().hline(
         rect.x_range(),
