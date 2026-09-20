@@ -207,10 +207,22 @@ REMOTE
     run_user "$OPT_ROOT" "$DESKTOP_DISPLAY" "$RUNTIME_DIR" "$LOG_FILE" <<'REMOTE' \
         || fail "app launch failed"
 root=$1; disp=$2; rt=$3; log=$4
+# winit XIM only connects when XMODIFIERS points at a live IM daemon.
+# The ssh launch path misses the desktop session env (autostart-launched
+# instances inherit it), so probe the desktop user's daemon and mirror it.
+im=""
+me=$(id -un)
+if pgrep -u "$me" -x fcitx5 >/dev/null 2>&1 \
+    || pgrep -u "$me" -x fcitx >/dev/null 2>&1; then
+    im="@im=fcitx"
+elif pgrep -u "$me" -x ibus-daemon >/dev/null 2>&1; then
+    im="@im=ibus"
+fi
+[ -n "$im" ] && export XMODIFIERS="$im"
 DISPLAY="$disp" XDG_RUNTIME_DIR="$rt" \
     setsid nohup "$root/current/bin/terminator-rust" \
     >> "$log" 2>&1 </dev/null &
-echo "launched on DISPLAY=$disp, log $log"
+echo "launched on DISPLAY=$disp, log $log${im:+, XMODIFIERS=$im}"
 REMOTE
     local i up=0
     for i in $(seq 1 30); do
