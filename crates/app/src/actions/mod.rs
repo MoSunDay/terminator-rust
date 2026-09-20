@@ -4,7 +4,8 @@
 use std::time::Instant;
 
 use layout_tree::{
-    close_pane, close_tab, move_pane_to_pane, new_tab, sorted_pane_ids, Axis, DropZone, PaneId,
+    close_pane, close_tab, contains_pane, move_pane_across_tabs, move_pane_to_pane, new_tab,
+    sorted_pane_ids, Axis, DropZone, PaneId,
 };
 use log::warn;
 use remote::{PaneKind, EXIT_NO_ZELLIJ};
@@ -202,8 +203,12 @@ fn handle_empty_window(st: &mut AppState, ui: &mut UiState, dirty: &mut bool) {
 }
 
 /// Drop of the Ctrl+drag pane move: `pane` lands next to `target`
-/// (edge split) or swaps with it (Center). Sessions and pane meta are
-/// keyed by pane id, so this is pure tree surgery + dirty flag.
+/// (edge split) or swaps with it (Center). The pane may hail from
+/// ANOTHER tab (the drag dwelled on a chip and switched the active tab
+/// mid-flight): its home tab is located first — a same-tab drop goes
+/// through `move_pane_to_pane`, a cross-tab one through
+/// `move_pane_across_tabs`. Sessions and pane meta are keyed by pane id,
+/// so this is pure tree surgery + dirty flag.
 pub fn do_move_pane(
     st: &mut AppState,
     tab: usize,
@@ -214,13 +219,25 @@ pub fn do_move_pane(
 ) {
     let wi = st.active_idx();
     let ratio = st.settings.split_ratio;
-    let moved = st
-        .windows
-        .get_mut(wi)
-        .is_some_and(|w| move_pane_to_pane(&mut w.tree, tab, pane, target, zone, ratio));
+    // The drag may have switched the active tab mid-flight (chip dwell):
+    // locate the pane's home tab; `tab` is where it should land.
+    let src = st.windows.get(wi).and_then(|w| {
+        w.tree
+            .tabs
+            .iter()
+            .position(|t| contains_pane(&t.root, pane))
+    });
+    let moved = st.windows.get_mut(wi).is_some_and(|w| match src {
+        Some(s) if s == tab => move_pane_to_pane(&mut w.tree, tab, pane, target, zone, ratio),
+        Some(s) => move_pane_across_tabs(&mut w.tree, s, pane, tab, target, zone, ratio),
+        None => false,
+    });
     if moved {
         if let Some(w) = st.windows.get_mut(wi) {
             w.ui.zoom = false;
+            // A cross-tab move can close the emptied source tab and orphan
+            // a rename editor anchored on it.
+            prune_tab_edit(&w.tree, &mut w.ui);
         }
         *dirty = true;
     }
@@ -543,81 +560,7 @@ mod close_tab_tests {
 }
 
 #[cfg(test)]
-mod move_pane_tests {
-    use super::*;
-    use crate::state::fresh_state;
-
-    /// One tab shaped v(1|2), focus on pane 1.
-    fn two_pane_state() -> AppState {
-        let mut st = fresh_state();
-        let tree = &mut st.windows[0].tree;
-        tree.tabs.clear();
-        tree.tabs.push(layout_tree::Tab {
-            title: "work".into(),
-            focused: 1,
-            root: layout_tree::Node::Split {
-                axis: Axis::Vertical,
-                ratio: 0.5,
-                first: Box::new(layout_tree::Node::Pane { id: 1 }),
-                second: Box::new(layout_tree::Node::Pane { id: 2 }),
-            },
-        });
-        tree.active_tab = 0;
-        st
-    }
-
-    #[test]
-    fn right_edge_move_reorders_root_and_focuses_moved_pane() {
-        let mut st = two_pane_state();
-        st.settings.split_ratio = 0.3;
-        st.windows[0].ui.zoom = true;
-        let mut dirty = false;
-        do_move_pane(&mut st, 0, 1, 2, DropZone::Right, &mut dirty);
-        assert_eq!(
-            st.windows[0].tree.tabs[0].root,
-            layout_tree::Node::Split {
-                axis: Axis::Vertical,
-                ratio: 0.3,
-                first: Box::new(layout_tree::Node::Pane { id: 2 }),
-                second: Box::new(layout_tree::Node::Pane { id: 1 }),
-            },
-            "pane 1 detaches and lands in the right half at the split ratio"
-        );
-        assert_eq!(st.windows[0].tree.tabs[0].focused, 1);
-        assert!(!st.windows[0].ui.zoom, "a move leaves zoomed mode");
-        assert!(dirty);
-    }
-
-    #[test]
-    fn center_swap_exchanges_ids_without_reshaping() {
-        let mut st = two_pane_state();
-        let mut dirty = false;
-        do_move_pane(&mut st, 0, 1, 2, DropZone::Center, &mut dirty);
-        assert_eq!(
-            st.windows[0].tree.tabs[0].root,
-            layout_tree::Node::Split {
-                axis: Axis::Vertical,
-                ratio: 0.5,
-                first: Box::new(layout_tree::Node::Pane { id: 2 }),
-                second: Box::new(layout_tree::Node::Pane { id: 1 }),
-            },
-            "only the leaf ids exchange: axis and ratio untouched"
-        );
-        assert_eq!(st.windows[0].tree.tabs[0].focused, 1);
-        assert!(dirty);
-    }
-
-    #[test]
-    fn move_onto_itself_is_a_noop() {
-        let mut st = two_pane_state();
-        let before = st.windows[0].tree.tabs[0].root.clone();
-        let mut dirty = false;
-        do_move_pane(&mut st, 0, 1, 1, DropZone::Right, &mut dirty);
-        assert_eq!(st.windows[0].tree.tabs[0].root, before);
-        assert!(!dirty, "rejected move leaves the dirty flag alone");
-    }
-}
-
+mod move_pane_tests;
 #[cfg(test)]
 mod close_exited_tests {
     use super::*;

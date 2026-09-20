@@ -16,6 +16,17 @@ const CHIP_MIN_W: f32 = 44.0;
 const CHIP_GAP: f32 = 5.0;
 const CLOSE_W: f32 = 14.0;
 const ACCENT_H: f32 = 2.0; // active-chip underline height
+/// Chrome width reserved right of the chips: 4 edge cells (5 + 4*16 + 3*4)
+/// + gap 8 + trailing button group (3*16 + 2*4) + gap 8.
+const CHROME_RESERVE: f32 = 153.0;
+/// Chip-strip wheel step per wheel line.
+const WHEEL_STEP: f32 = 48.0;
+/// Width the rename TextEdit occupies in the chip flow (desired_width
+/// 110 + frame padding); used only for overflow premeasurement.
+const CHIP_EDIT_W: f32 = 118.0;
+/// How long a pane-drag must hover another tab's chip before the active
+/// tab switches there (browser tab-drag dwell).
+const DWELL_SECS: f64 = 0.4;
 /// Chip silhouette: full pill - the bar bg matches the chip field, so the
 /// rounding reads as a soft silhouette instead of a tab-flap.
 const CHIP_RADIUS: CornerRadius = CornerRadius {
@@ -51,8 +62,14 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     // drags fall through to this background.
     // A chip reorder drag owns the pointer: no window move then.
     let chip_reorder = d.st.win().is_some_and(|w| w.ui.tab_drag.is_some());
-    let drag = ui.interact(row, Id::new("chrome_drag"), Sense::drag());
-    if !chip_reorder && drag.drag_started_by(egui::PointerButton::Primary) {
+    // click_and_drag: double-click-to-maximize needs the click half of
+    // the sense; the drag half keeps the window-move gesture.
+    let drag = ui.interact(row, Id::new("chrome_drag"), Sense::click_and_drag());
+    if drag.double_clicked() {
+        let maximized = ui.input(|i| i.viewport().maximized == Some(true));
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    } else if !chip_reorder && drag.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
     ui.add_space(4.0);
@@ -60,7 +77,87 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     // consumed by the ghost/reorder pass after the row is allocated.
     let mut centers: Vec<(f32, usize)> = Vec::new();
     let mut chip_top: Option<f32> = None;
+    // Chip rects (rect, tab index) for the pane-drag dwell pass: hover
+    // hit-testing on the allocated row after the chip loop. Values are
+    // the SCROLLED (visible) rects.
+    let mut chip_rects: Vec<(Rect, usize)> = Vec::new();
+
+    // --- Chip-strip overflow scrolling -----------------------------------
+    // Precompute the unscrolled chip spans (relative to row.left()) with
+    // the same width formula the paint loop uses, so the strip only
+    // scrolls when the tabs really overflow the space left of the pinned
+    // chrome.
+    let painter = ui.painter().clone();
+    let count = d.st.win().map(|w| w.tree.tabs.len()).unwrap_or(0);
+    let mut spans: Vec<(f32, f32)> = Vec::with_capacity(count); // (left, right) rel
+    let mut flow = 0.0f32;
+    for i in 0..count {
+        let Some(tab) = d.st.win().and_then(|w| w.tree.tabs.get(i)) else {
+            continue;
+        };
+        let editing = d.st.win().is_some_and(|w| {
+            w.ui.tab_edit
+                .as_ref()
+                .is_some_and(|(a, _)| *a == state::tab_anchor(tab))
+        });
+        let w = if editing {
+            CHIP_EDIT_W
+        } else {
+            let galley = painter.layout_no_wrap(
+                chip_label(tab),
+                FontId::proportional(12.0),
+                egui::Color32::PLACEHOLDER,
+            );
+            (CHIP_PAD_X * 2.0 + galley.size().x + CLOSE_W).max(CHIP_MIN_W)
+        };
+        spans.push((flow, flow + w));
+        flow += w + CHIP_GAP;
+    }
+    let total_w = flow - if spans.is_empty() { 0.0 } else { CHIP_GAP };
+    let strip = Rect::from_min_max(
+        pos2(row.left(), row.top() + 4.0),
+        pos2(row.right() - CHROME_RESERVE, row.bottom()),
+    );
+    let strip_w = (strip.right() - row.left()).max(0.0);
+    let overflow = (total_w - strip_w).max(0.0);
+    let mut scroll = d.st.win().map(|w| w.ui.tab_scroll).unwrap_or(0.0);
+    // Wheel over the strip scrolls the chips (horizontal tracks px.x,
+    // the usual vertical wheel drives the same axis).
+    if ui
+        .input(|i| i.pointer.interact_pos())
+        .is_some_and(|p| strip.contains(p))
+    {
+        let px = ui.input(|i| {
+            i.events.iter().fold(egui::Vec2::ZERO, |acc, e| match e {
+                egui::Event::MouseWheel { unit, delta, .. } => acc + wheel_px(*unit, *delta),
+                _ => acc,
+            })
+        });
+        scroll = clamp_scroll(scroll + (px.x - px.y), overflow);
+    }
+    // Auto-follow: switching tabs snaps the strip just enough to reveal
+    // the active chip - once per switch, so manual scrolling wins between
+    // them.
+    let active_tab = d.st.win().map(|w| w.tree.active_tab).unwrap_or(0);
+    if let Some(w) = d.st.win_mut() {
+        if w.ui.tab_scroll_tab != active_tab {
+            w.ui.tab_scroll_tab = active_tab;
+            if let Some(&(l, r)) = spans.get(active_tab) {
+                scroll = ensure_visible(scroll, l, r, strip_w).clamp(0.0, overflow);
+            }
+        }
+        w.ui.tab_scroll = scroll;
+    }
+    // Chip flow clip: off-view chips neither paint nor receive clicks
+    // (egui hit-tests rect ∩ clip), and their ink never bleeds under the
+    // pinned right-side chrome.
+    let strip_span = Rect::from_min_max(
+        pos2(row.left(), row.top()),
+        pos2(row.right() - CHROME_RESERVE, row.bottom()),
+    );
     ui.horizontal(|ui| {
+        let saved_clip = ui.clip_rect();
+        ui.set_clip_rect(saved_clip.intersect(strip_span));
         ui.spacing_mut().item_spacing.x = CHIP_GAP;
         let Data {
             st,
@@ -145,16 +242,28 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 // chips shift around it live while the ghost follows the
                 // pointer (painted after the row, above the edge cells).
                 let (rect, _) = ui.allocate_exact_size(vec2(w, CHIP_H), Sense::hover());
-                centers.push((rect.center().x, i));
-                chip_top = chip_top.or(Some(rect.top()));
+                let vrect = rect.translate(vec2(-scroll, 0.0));
+                centers.push((vrect.center().x, i));
+                chip_top = chip_top.or(Some(vrect.top()));
+                chip_rects.push((vrect, i));
+                continue;
+            }
+            // Flow slot (unscrolled cursor advance) + the visible rect the
+            // chip is actually painted/hit-tested at. Fully off-view chips
+            // keep their bookkeeping entries (reorder centers, dwell
+            // hit-rects) but skip interaction and painting.
+            let (rect, _) = ui.allocate_exact_size(vec2(w, CHIP_H), Sense::hover());
+            let vrect = rect.translate(vec2(-scroll, 0.0));
+            centers.push((vrect.center().x, i));
+            chip_top = chip_top.or(Some(vrect.top()));
+            chip_rects.push((vrect, i));
+            if vrect.right() <= strip.left() || vrect.left() >= strip.right() {
                 continue;
             }
             // click_and_drag: egui disambiguates by pointer movement, so
             // click-to-switch / double-click rename / middle-click close
             // all keep working next to the reorder drag.
-            let (rect, resp) = ui.allocate_exact_size(vec2(w, CHIP_H), Sense::click_and_drag());
-            centers.push((rect.center().x, i));
-            chip_top = chip_top.or(Some(rect.top()));
+            let resp = ui.interact(vrect, Id::new("tab_chip").with(i), Sense::click_and_drag());
             // Chrome behavior: a drag also selects the tab. The latch is
             // keyed by the tab anchor, immune to the index shifts the
             // reorder itself causes.
@@ -163,8 +272,8 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                     if let Some(w) = st.win_mut() {
                         w.ui.tab_drag = Some(state::TabDrag {
                             anchor,
-                            grab_dx: px - rect.left(),
-                            w: rect.width(),
+                            grab_dx: px - vrect.left(),
+                            w: vrect.width(),
                         });
                         w.tree.active_tab = i;
                         w.ui.zoom = false;
@@ -173,16 +282,19 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 }
             }
             if selected {
-                painter.rect_filled(rect, CHIP_RADIUS, to_c32(colors::tab_active(pal)));
+                painter.rect_filled(vrect, CHIP_RADIUS, to_c32(colors::tab_active(pal)));
                 // Rounded-cap accent underline flush at the chip bottom:
                 // this tab owns the content below. Inset clear of the pill
                 // corners so the caps stay on the straight edge.
                 let underline = Rect::from_min_max(
                     pos2(
-                        rect.left() + f32::from(tokens::R_MD) + 2.0,
-                        rect.bottom() - ACCENT_H,
+                        vrect.left() + f32::from(tokens::R_MD) + 2.0,
+                        vrect.bottom() - ACCENT_H,
                     ),
-                    pos2(rect.right() - f32::from(tokens::R_MD) - 2.0, rect.bottom()),
+                    pos2(
+                        vrect.right() - f32::from(tokens::R_MD) - 2.0,
+                        vrect.bottom(),
+                    ),
                 );
                 painter.rect_filled(underline, 1.0, to_c32(pal.block_highlight));
             } else {
@@ -193,7 +305,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 );
                 if t > 0.0 {
                     painter.rect_filled(
-                        rect,
+                        vrect,
                         CHIP_RADIUS,
                         tokens::lerp_color(chrome_base, chrome_hover, t),
                     );
@@ -207,15 +319,15 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             let galley_rect = Align2::LEFT_CENTER.align_size_within_rect(
                 galley.size(),
                 Rect::from_min_max(
-                    pos2(rect.left() + CHIP_PAD_X, rect.top()),
-                    pos2(rect.right() - CLOSE_W, rect.bottom()),
+                    pos2(vrect.left() + CHIP_PAD_X, vrect.top()),
+                    pos2(vrect.right() - CLOSE_W, vrect.bottom()),
                 ),
             );
             painter.galley(galley_rect.min, galley, text_col);
 
             // Close affordance: right-hand strip, revealed on hover/active.
             let close_rect = Rect::from_center_size(
-                pos2(rect.right() - CLOSE_W * 0.5, rect.center().y),
+                pos2(vrect.right() - CLOSE_W * 0.5, vrect.center().y),
                 vec2(12.0, 12.0),
             );
             let close_resp = ui.interact(close_rect, Id::new("tab_close").with(i), Sense::click());
@@ -233,6 +345,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 if let Some(w) = st.win_mut() {
                     w.tree.active_tab = i;
                     w.ui.zoom = false;
+                    *dirty = true; // active_tab is persisted
                 }
             }
             close_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -249,9 +362,61 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             actions::do_close_tab(st, sess, uist, i, dirty);
         }
 
+        // Restore the clip before the pinned chrome widgets: they live
+        // right of the strip and must not be clipped away.
+        ui.set_clip_rect(saved_clip);
         ui.add_space(8.0);
-        tabs_widgets::trailing_buttons(ui, st, sess, pal, dirty);
+        // Anchor the button group at the chip row's top (first allocated
+        // chip), keeping the pre-scroll vertical alignment.
+        let group_top = chip_top.unwrap_or(strip.top());
+        tabs_widgets::trailing_buttons(
+            ui,
+            pos2(row.right() - CHROME_RESERVE + 8.0, group_top),
+            st,
+            sess,
+            pal,
+            dirty,
+        );
         tabs_widgets::edge_cells(ui, row.right(), st);
+        // Pane-move cross-tab targeting: dwelling on another tab's chip for
+        // a beat switches the active tab mid-drag (browser-style) — the
+        // drop zones then come from THAT tab's panes and the pane
+        // migrates there. Chip rects are translated vrects, so keep the
+        // dwell ring clipped to the strip (it must not ride over the
+        // pinned chrome when the hovered chip is half scrolled out).
+        ui.set_clip_rect(saved_clip.intersect(strip_span));
+        if let Some(pd) = st.win().and_then(|w| w.ui.pane_drag) {
+            let now = ui.input(|i| i.time);
+            let pos = ui.input(|i| i.pointer.interact_pos());
+            let hover_hit =
+                pos.and_then(|p| chip_rects.iter().copied().find(|(r, _)| r.contains(p)));
+            let hover = hover_hit.map(|(_, i)| i);
+            let active = st.win().map(|w| w.tree.active_tab).unwrap_or(0);
+            let (dwell, switch) = dwell_step(hover, pd.dwell, active, now);
+            // Drop-target affordance: the hovered chip of a NON-active tab
+            // gets an accent ring while the dwell is pending.
+            if let Some((rect, _)) = hover_hit.filter(|(_, i)| *i != active) {
+                ui.painter().rect_stroke(
+                    rect,
+                    CHIP_RADIUS,
+                    egui::Stroke::new(1.5, to_c32(pal.block_highlight)),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if let Some(w) = st.win_mut() {
+                if switch {
+                    if let Some((_, i)) = hover_hit {
+                        w.tree.active_tab = i;
+                        w.ui.zoom = false;
+                        w.ui.pane_drag = Some(state::PaneDrag { dwell: None, ..pd });
+                        *dirty = true; // active_tab is persisted
+                    }
+                } else {
+                    w.ui.pane_drag = Some(state::PaneDrag { dwell, ..pd });
+                }
+            }
+        }
+        ui.set_clip_rect(saved_clip);
     });
     // In-flight chip drag: live reorder + ghost chip. Runs after the row
     // closure so the ghost paints above the trailing buttons/edge cells;
@@ -347,6 +512,65 @@ fn ghost_chip(ui: &mut Ui, pal: &Palette, label: &str, left: f32, top: f32, w: f
     painter.galley(text_rect.min, galley, to_c32(pal.foreground));
 }
 
+/// Hover-dwell state for the pane-drag tab switch: returns the new dwell
+/// state and whether the active tab should switch to the hovered chip's
+/// tab now. Arms (or keeps) the timer only while a NON-active chip is
+/// hovered; anything else clears it.
+fn dwell_step(
+    hover: Option<usize>,
+    dwell: Option<(usize, f64)>,
+    active: usize,
+    now: f64,
+) -> (Option<(usize, f64)>, bool) {
+    match hover {
+        Some(i) if i != active => {
+            // Same chip as before keeps the armed start time; hopping to
+            // another chip restarts the clock.
+            let armed = match dwell {
+                Some((j, t)) if j == i => (i, t),
+                _ => (i, now),
+            };
+            if now - armed.1 >= DWELL_SECS {
+                (None, true)
+            } else {
+                (Some(armed), false)
+            }
+        }
+        _ => (None, false),
+    }
+}
+
+/// Clamp a chip-strip scroll offset into `0..=overflow`; NaN (never
+/// allocated, corrupt state) reads as "no scroll".
+fn clamp_scroll(scroll: f32, overflow: f32) -> f32 {
+    if scroll.is_nan() || overflow.is_nan() || overflow <= 0.0 {
+        return 0.0;
+    }
+    scroll.clamp(0.0, overflow)
+}
+
+/// Scroll offset that brings the `[left, right]` span (unscrolled chip
+/// coordinates) inside a strip window `area_w` wide: reveal the left
+/// edge, else pull back until the right edge shows, else keep.
+fn ensure_visible(scroll: f32, left: f32, right: f32, area_w: f32) -> f32 {
+    if left < scroll {
+        left
+    } else if right > scroll + area_w {
+        right - area_w
+    } else {
+        scroll
+    }
+}
+
+/// Wheel delta converted to strip pixels for each unit egui reports.
+fn wheel_px(unit: egui::MouseWheelUnit, delta: egui::Vec2) -> egui::Vec2 {
+    match unit {
+        egui::MouseWheelUnit::Line => delta * WHEEL_STEP,
+        egui::MouseWheelUnit::Page => delta * (WHEEL_STEP * 10.0),
+        egui::MouseWheelUnit::Point => delta,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +587,78 @@ mod tests {
             "split creates the second pane"
         );
         assert_eq!(chip_label(&tree.tabs[0]), "work [2]");
+    }
+
+    #[test]
+    fn dwell_step_arms_and_keeps_start_time() {
+        // A fresh hover on another tab's chip arms the timer at `now`.
+        let (dwell, switch) = dwell_step(Some(1), None, 0, 10.0);
+        assert_eq!(dwell, Some((1, 10.0)));
+        assert!(!switch, "not due yet");
+        // Staying on the same chip keeps the ORIGINAL start time.
+        let (dwell, switch) = dwell_step(Some(1), dwell, 0, 10.2);
+        assert_eq!(dwell, Some((1, 10.0)));
+        assert!(!switch);
+    }
+
+    #[test]
+    fn dwell_step_switches_when_due() {
+        let (dwell, switch) = dwell_step(Some(1), Some((1, 10.0)), 0, 10.5);
+        assert_eq!(dwell, None, "the switch consumes the timer");
+        assert!(switch);
+    }
+
+    #[test]
+    fn dwell_step_restarts_on_chip_change() {
+        let (dwell, _) = dwell_step(Some(2), Some((1, 10.0)), 0, 10.3);
+        assert_eq!(dwell, Some((2, 10.3)), "hopping chips re-arms from now");
+    }
+
+    #[test]
+    fn dwell_step_clears_on_active_tab_hover() {
+        let (dwell, switch) = dwell_step(Some(0), Some((0, 10.0)), 0, 10.9);
+        assert_eq!(dwell, None);
+        assert!(!switch, "hovering the active tab never switches");
+    }
+
+    #[test]
+    fn dwell_step_clears_without_hover() {
+        let (dwell, switch) = dwell_step(None, Some((1, 10.0)), 0, 10.9);
+        assert_eq!(dwell, None);
+        assert!(!switch);
+    }
+
+    #[test]
+    fn clamp_scroll_bounds_and_nan() {
+        assert_eq!(clamp_scroll(-10.0, 100.0), 0.0);
+        assert_eq!(clamp_scroll(50.0, 100.0), 50.0);
+        assert_eq!(clamp_scroll(500.0, 100.0), 100.0);
+        assert_eq!(clamp_scroll(f32::NAN, 100.0), 0.0);
+        assert_eq!(clamp_scroll(50.0, f32::NAN), 0.0);
+        assert_eq!(clamp_scroll(50.0, 0.0), 0.0, "no overflow = no scroll");
+    }
+
+    #[test]
+    fn ensure_visible_branches() {
+        // Chip starts left of the window: reveal its left edge.
+        assert_eq!(ensure_visible(200.0, 50.0, 120.0, 300.0), 50.0);
+        // Chip ends past the window's right edge: pull left until it fits.
+        assert_eq!(ensure_visible(0.0, 50.0, 400.0, 300.0), 100.0);
+        // Already inside: untouched.
+        assert_eq!(ensure_visible(50.0, 80.0, 300.0, 300.0), 50.0);
+    }
+
+    #[test]
+    fn wheel_px_units() {
+        let d = egui::Vec2::new(1.0, -2.0);
+        assert_eq!(wheel_px(egui::MouseWheelUnit::Point, d), d);
+        assert_eq!(
+            wheel_px(egui::MouseWheelUnit::Line, d),
+            egui::Vec2::new(48.0, -96.0)
+        );
+        assert_eq!(
+            wheel_px(egui::MouseWheelUnit::Page, d),
+            egui::Vec2::new(480.0, -960.0)
+        );
     }
 }

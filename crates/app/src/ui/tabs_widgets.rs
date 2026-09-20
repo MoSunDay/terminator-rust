@@ -86,9 +86,12 @@ fn split_icon(p: &Painter, c: Pos2, axis: Axis, color: Color32) {
     p.rect_stroke(second, 2.0, stroke, StrokeKind::Middle);
 }
 
-/// End-of-row icon buttons: new tab + explicit-axis splits.
+/// End-of-row icon buttons: new tab + explicit-axis splits. Fixed-rect
+/// cells pinned right of the chip strip (which scrolls under them):
+/// `interact()` on computed rects, the layout cursor is untouched.
 pub fn trailing_buttons(
     ui: &mut Ui,
+    left: Pos2,
     st: &mut AppState,
     sess: &mut SessionMap,
     pal: &Palette,
@@ -102,8 +105,16 @@ pub fn trailing_buttons(
             colors::title_text(pal)
         })
     };
+    // Three ICON cells with a 4px gutter, anchored at `left`.
+    let cell = |i: i32| {
+        Rect::from_min_size(
+            pos2(left.x + i as f32 * (ICON + 4.0), left.y),
+            vec2(ICON, ICON),
+        )
+    };
 
-    let (rect, resp) = ui.allocate_exact_size(vec2(ICON, ICON), Sense::click());
+    let rect = cell(0);
+    let resp = ui.interact(rect, Id::new("chrome_newtab"), Sense::click());
     hover_fill(
         ui,
         rect,
@@ -121,7 +132,8 @@ pub fn trailing_buttons(
     }
     resp.on_hover_text("New tab (Ctrl+Shift+T)");
 
-    let (rect, resp) = ui.allocate_exact_size(vec2(ICON, ICON), Sense::click());
+    let rect = cell(1);
+    let resp = ui.interact(rect, Id::new("chrome_splitv"), Sense::click());
     hover_fill(
         ui,
         rect,
@@ -148,7 +160,8 @@ pub fn trailing_buttons(
     }
     resp.on_hover_text("Split left / right (Ctrl+Shift+E)");
 
-    let (rect, resp) = ui.allocate_exact_size(vec2(ICON, ICON), Sense::click());
+    let rect = cell(2);
+    let resp = ui.interact(rect, Id::new("chrome_splith"), Sense::click());
     hover_fill(
         ui,
         rect,
@@ -176,14 +189,23 @@ pub fn trailing_buttons(
     resp.on_hover_text("Split top / bottom (Ctrl+Shift+O)");
 }
 
-/// Right-edge anchor cells (zoom left of inspector), pinned to the row
-/// end at the old title-row place. `interact()` on fixed rects: the
+/// Right-edge anchor cells, pinned to the row end: window controls
+/// (maximize/restore, minimize) outermost, then the inspector and zoom
+/// cells at the old title-row place. `interact()` on fixed rects: the
 /// layout cursor is untouched.
 pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
     let pal = colors::palette_of(&st.theme_name);
     let band = ui.min_rect();
     let iy = (band.top() + band.bottom()) / 2.0 - ICON / 2.0;
-    let insp_rect = Rect::from_min_size(pos2(row_right - 5.0 - ICON, iy), vec2(ICON, ICON));
+    let max_rect = Rect::from_min_size(pos2(row_right - 5.0 - ICON, iy), vec2(ICON, ICON));
+    let min_rect = Rect::from_min_size(
+        pos2(max_rect.left() - 4.0 - ICON, max_rect.top()),
+        vec2(ICON, ICON),
+    );
+    let insp_rect = Rect::from_min_size(
+        pos2(min_rect.left() - 4.0 - ICON, min_rect.top()),
+        vec2(ICON, ICON),
+    );
     let zoom_rect = Rect::from_min_size(
         pos2(insp_rect.left() - 4.0 - ICON, insp_rect.top()),
         vec2(ICON, ICON),
@@ -241,4 +263,64 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
         }
     }
     insp.on_hover_text("Settings (theme, font, glass, splits, hosts)");
+
+    // Minimize: bottom bar glyph. The command goes to the CURRENT
+    // viewport (send_viewport_cmd resolves inside the immediate pass).
+    let min_col = |hovered: bool| {
+        to_c32(if hovered {
+            pal.foreground
+        } else {
+            colors::title_text(&pal)
+        })
+    };
+    let min = ui.interact(min_rect, Id::new("chrome_min"), Sense::click());
+    hover_fill(
+        ui,
+        min_rect,
+        Id::new("chrome_min_h"),
+        min.hovered(),
+        &pal,
+        tokens::R_MD,
+    );
+    let c = min_rect.center();
+    let line = Stroke::new(1.5, min_col(min.hovered()));
+    painter.line_segment(
+        [pos2(c.x - 4.5, c.y + 4.0), pos2(c.x + 4.5, c.y + 4.0)],
+        line,
+    );
+    if min.clicked() {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+    }
+    min.on_hover_text("Minimize");
+
+    // Maximize / restore: single square when normal, two offset squares
+    // when maximized.
+    let maximized = ui.input(|i| i.viewport().maximized == Some(true));
+    let max = ui.interact(max_rect, Id::new("chrome_max"), Sense::click());
+    hover_fill(
+        ui,
+        max_rect,
+        Id::new("chrome_max_h"),
+        max.hovered(),
+        &pal,
+        tokens::R_MD,
+    );
+    let stroke = Stroke::new(1.4, min_col(max.hovered()));
+    let c = max_rect.center();
+    if maximized {
+        // Restore: back pane offset up-right, front pane down-left.
+        let back = Rect::from_center_size(pos2(c.x + 3.0, c.y - 3.0), vec2(7.0, 7.0));
+        let front = Rect::from_center_size(pos2(c.x - 2.0, c.y + 2.0), vec2(9.0, 9.0));
+        painter.rect_stroke(back, 2.0, stroke, StrokeKind::Middle);
+        painter.rect_stroke(front, 2.0, stroke, StrokeKind::Middle);
+    } else {
+        let r = Rect::from_center_size(c, vec2(9.0, 9.0));
+        painter.rect_stroke(r, 2.0, stroke, StrokeKind::Middle);
+    }
+    if max.clicked() {
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    }
+    max.on_hover_text(if maximized { "Restore" } else { "Maximize" });
 }

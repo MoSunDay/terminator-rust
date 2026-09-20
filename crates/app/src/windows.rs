@@ -139,6 +139,9 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
         ),
         egui::StrokeKind::Inside,
     );
+    // Borderless resize handles: registered last so they sit above every
+    // widget and steal edge presses from the chrome/panes below.
+    input::resize::strips(ui, win_rect);
 }
 
 /// Drive every secondary window as an immediate viewport. Removal (WM close
