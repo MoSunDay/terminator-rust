@@ -260,15 +260,17 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   and layout_tree::move_tab runs live as the ghost center passes other
   chips' centers; active_tab FOLLOWS the moved tab to its new index.
   While latched, chrome_drag StartDrag is suppressed (no OS window move).
-  Ctrl+primary-drag on a pane HEADER latches WindowUi.pane_drag (plain
-  header drag still StartDrags the OS window; header is Sense::drag so
-  the latch fires on the press frame); screen.rs suppresses divider
+  Primary-drag on a pane HEADER latches WindowUi.pane_drag when the tab
+  has >=2 panes OR Ctrl is held (header_starts_pane_move; a LONE pane
+  keeps StartDrag = OS window move - nothing to rearrange); screen.rs
+  suppresses divider
   interaction + raw pointer routing while latched, drop target = topmost
   pane whose FULL rect (header included) contains the pointer, zone via
   layout_tree::zone_for (center 50% square = Center/id-swap, else nearest
   edge = actions::do_move_pane detach+re-split at settings.split_ratio);
   overlay = render/dropzone.rs SOLID mix-ladder colors (no alpha) painted
-  after dividers. e2e-dragdrop.sh covers both gestures incl. mid-drag
+  after dividers. e2e-dragdrop.sh covers the gestures (D1/D2 ctrl,
+  D5 bare-drag) incl. mid-drag
   overlay pixels (D1 fill mix(bg,accent,0.22)) and state.json tree
   asserts; chips need >6px movement (egui click/drag disambiguation) so
   the e2e drags in steps, AND the e2e sleeps ~0.3s between mousedown and
@@ -321,6 +323,14 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   pixels black) multiplies alpha through
   render/colors.rs::with_opacity on chrome/pane base fills ONLY - Color32 is
   premultiplied, so text/cursor/selection/focus stroke stay opaque.
+  Per-pane transparency (header popup slider) is REAL glass since
+  2026-09-20: fill alpha = colors::pane_bg_alpha(meta.transparency,
+  settings.opacity) (0 = opaque, 1 = see-through), applied uniformly to
+  the pane bg AND ANSI cell/selection bgs; theme::blend_background is
+  now color-only (tint or theme bg - the old blend-into-theme-bg
+  semantics is GONE); cursor-block glyph ink reuses the bg rgb at FULL
+  alpha or text goes invisible on glass. e2e presets run t=0 ->
+  byte-identical pixels.
   TERMINATOR_OPAQUE=1 pins 1.0 at startup; every Xvfb e2e script exports it
   (no compositor -> no blending -> unstable pixels). With no titlebar the
   tab-bar background (tabs.rs chrome_drag) and the pane header strip are the
