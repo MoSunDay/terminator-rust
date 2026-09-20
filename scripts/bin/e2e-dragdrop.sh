@@ -13,6 +13,10 @@
 #   D3: drag the ACTIVE tab chip past the second chip - the tab order
 #       reorders live and persists (titles ["beta","alpha"]), and the
 #       dragged tab stays the active one.
+#   D5: PLAIN primary drag (no modifiers) of a pane header onto the
+#       sibling's right half - same move as D1: with >=2 panes in the
+#       tab the bare gesture rearranges panes (a lone pane would keep
+#       the OS-window drag).
 #   D4: the app is still alive after all gestures; Ctrl+Shift+Q quits it.
 # Preset (persist.rs serde tags, ids remapped on load in preorder): one
 # window, tab "alpha" = v-split 0.5 with panes 1,2, tab "beta" = pane 3.
@@ -224,6 +228,32 @@ got = shape(w["tabs"][0]["root"])
 ok = (got["axis"] == "v" and abs(got["ratio"] - 0.5) <= 0.01
       and got["first"] == 1 and got["second"] == 2)
 print(f"D2 root after center swap: {got} [{'OK' if ok else 'FAIL'}]")
+sys.exit(0 if ok else 1)
+PY
+
+# --- D5: plain drag (no modifiers) pane 1 header -> pane 2 right edge ----
+step "D5: plain-drag pane 1 header onto pane 2 right half"
+xdotool mousemove "$HX1" "$HY1"
+sleep 0.3                       # settle: press must not coalesce with the move
+xdotool mousedown 1             # >=2 panes in tab: bare press latches the move
+sleep 0.2
+xdotool mousemove "$TX1" "$MIDY"
+sleep 0.6
+xdotool mouseup 1
+sleep 0.6                       # drop executes + dirty state saves
+python3 - "$STATE" <<'PY'
+import json, sys
+w = json.load(open(sys.argv[1]))["windows"][0]
+def shape(n):
+    if "Pane" in n:
+        return n["Pane"]["id"]
+    s = n["Split"]
+    return {"axis": s["axis"], "ratio": round(s["ratio"], 3),
+            "first": shape(s["first"]), "second": shape(s["second"])}
+got = shape(w["tabs"][0]["root"])
+ok = (got["axis"] == "v" and abs(got["ratio"] - 0.5) <= 0.01
+      and got["first"] == 2 and got["second"] == 1)
+print(f"D5 root after plain move: {got} [{'OK' if ok else 'FAIL'}]")
 sys.exit(0 if ok else 1)
 PY
 
