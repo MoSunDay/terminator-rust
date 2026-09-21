@@ -221,6 +221,12 @@ pub struct WindowUi {
     pub pointer_last: Option<u8>,
     /// In-flight app-driven edge resize (transient, never persisted).
     pub edge: Option<crate::input::resize::Gesture>,
+    /// Window-move gesture latch: StartDrag fires once per drag gesture
+    /// only after real pointer travel (ui::WINDOW_DRAG_MIN_PX), so plain
+    /// clicks keep the WM's click-to-focus.
+    pub window_move_armed: bool,
+    /// Accumulated response-local drag travel of the current gesture.
+    pub window_move_travel: f32,
     /// Modifier state as of the END of the previous frame's input handling;
     /// seed for reconstructing per-event mods (egui 0.36 aggregates
     /// ModifiersChanged into a post-batch `i.modifiers`, which is wrong
@@ -262,6 +268,8 @@ pub struct UiState {
 
 pub fn window_ui() -> WindowUi {
     WindowUi {
+        window_move_armed: false,
+        window_move_travel: 0.0,
         zoom: false,
         tab_edit: None,
         pane_edit: None,

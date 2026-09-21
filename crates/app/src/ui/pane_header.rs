@@ -82,10 +82,10 @@ pub fn show(
         .map(|t| layout_tree::pane_count(&t.root))
         .unwrap_or(1);
     let rearranges = header_starts_pane_move(ui.input(|i| i.modifiers.ctrl), tab_panes);
-    if drag.drag_started_by(egui::PointerButton::Primary)
-        && st.win().is_none_or(|w| w.ui.pane_drag.is_none())
-    {
-        if rearranges {
+    if rearranges {
+        if drag.drag_started_by(egui::PointerButton::Primary)
+            && st.win().is_none_or(|w| w.ui.pane_drag.is_none())
+        {
             if let Some(w) = st.win_mut() {
                 w.ui.pane_drag = Some(PaneDrag {
                     pane,
@@ -94,8 +94,24 @@ pub fn show(
                 });
                 w.ui.zoom = false;
             }
-        } else {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+    } else {
+        // Lone-pane header = window title bar: window move only after a
+        // REAL drag (ui::arm_window_drag) so clicks keep activating.
+        let dragging = drag.dragged_by(egui::PointerButton::Primary);
+        let delta = drag.drag_delta().length();
+        let down = ui.input(|i| i.pointer.any_down());
+        let fresh = ui.input(|i| i.pointer.any_pressed());
+        if let Some(w) = st.win_mut() {
+            crate::ui::arm_window_drag(
+                ui.ctx(),
+                &mut w.ui.window_move_armed,
+                &mut w.ui.window_move_travel,
+                dragging,
+                delta,
+                down,
+                fresh,
+            );
         }
     }
     if pane_dragging {
