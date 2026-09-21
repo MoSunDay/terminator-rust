@@ -538,7 +538,6 @@ mod tests {
     fn settings_roundtrip_and_clamp() {
         let mut st = fresh_state();
         st.settings.split_axis = Axis::Horizontal;
-        st.settings.split_ratio = 9.9;
         st.settings.opacity = 0.9;
         st.settings.font_size = 12.0;
         st.settings.transparency = 0.5;
@@ -549,7 +548,6 @@ mod tests {
         });
         let back = from_persisted(&to_persisted(&st));
         assert_eq!(back.settings.split_axis, Axis::Horizontal);
-        assert_eq!(back.settings.split_ratio, layout_tree::MAX_RATIO);
         assert_eq!(back.settings.opacity, 0.9);
         // Global appearance survives save/load with the rest.
         assert_eq!(back.settings.font_size, 12.0);

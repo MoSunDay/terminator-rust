@@ -26,7 +26,6 @@ fn two_pane_state() -> AppState {
 #[test]
 fn right_edge_move_reorders_root_and_focuses_moved_pane() {
     let mut st = two_pane_state();
-    st.settings.split_ratio = 0.3;
     st.windows[0].ui.zoom = true;
     let mut dirty = false;
     do_move_pane(&mut st, 0, 1, 2, DropZone::Right, &mut dirty);
@@ -34,11 +33,11 @@ fn right_edge_move_reorders_root_and_focuses_moved_pane() {
         st.windows[0].tree.tabs[0].root,
         layout_tree::Node::Split {
             axis: Axis::Vertical,
-            ratio: 0.3,
+            ratio: 0.5,
             first: Box::new(layout_tree::Node::Pane { id: 2 }),
             second: Box::new(layout_tree::Node::Pane { id: 1 }),
         },
-        "pane 1 detaches and lands in the right half at the split ratio"
+        "pane 1 detaches and lands in the right half at an equal split"
     );
     assert_eq!(st.windows[0].tree.tabs[0].focused, 1);
     assert!(!st.windows[0].ui.zoom, "a move leaves zoomed mode");

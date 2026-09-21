@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use layout_tree::{new_tree, split_pane_ratio, Axis, LayoutTree, PaneId};
+use layout_tree::{new_tree, split_pane, Axis, LayoutTree, PaneId};
 use remote::{PaneKind, RemoteTarget};
 use theme::Rgb;
 
@@ -36,8 +36,6 @@ pub struct PaneMeta {
 pub struct Settings {
     /// Axis used by the default split action / new split buttons.
     pub split_axis: Axis,
-    /// New pane's share of the split, clamped to 0.05..=0.95.
-    pub split_ratio: f32,
     /// Window opacity (0.5..=1.0): alpha of the chrome/pane base fills;
     /// text and selections stay opaque for readability. 1.0 = opaque.
     pub opacity: f32,
@@ -55,7 +53,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             split_axis: Axis::Vertical,
-            split_ratio: 0.5,
             opacity: 1.0,
             font_size: DEFAULT_FONT_SIZE,
             transparency: 0.0,
@@ -441,13 +438,12 @@ pub fn compute_grid(w: f32, h: f32, cell_w: f32, cell_h: f32) -> (u16, u16) {
 /// Splits in the ACTIVE window's tree; keeps the global pane-id counter in
 /// sync. Returns the new pane id.
 pub fn split_tree_pane(st: &mut AppState, tab: usize, pane: PaneId, axis: Axis) -> Option<PaneId> {
-    let ratio = st.settings.split_ratio;
     let wi = st.active_idx();
     st.seed_alloc(wi);
     let new_id = st
         .windows
         .get_mut(wi)
-        .and_then(|w| split_pane_ratio(&mut w.tree, tab, pane, axis, ratio));
+        .and_then(|w| split_pane(&mut w.tree, tab, pane, axis));
     st.collect_alloc();
     let new_id = new_id?;
     st.panes.insert(new_id, new_pane_meta(PaneKind::Local));

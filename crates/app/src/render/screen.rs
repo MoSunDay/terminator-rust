@@ -369,11 +369,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 .find(|(id, _)| *id == pd.pane)
                 .map(|(_, r)| grid::egui_rect(*r));
             if let Some(full) = full {
-                let preview = grid::egui_rect(layout_tree::zone_rect(
-                    &grid::lt_rect(full),
-                    zone,
-                    st.settings.split_ratio,
-                ));
+                let preview =
+                    grid::egui_rect(layout_tree::zone_rect(&grid::lt_rect(full), zone, 0.5));
                 // src stays None on a cross-tab drag (the pane is not in
                 // this tab's rects): only the target ring + preview paint.
                 dropzone::paint(&painter, &pal, src, full, preview);

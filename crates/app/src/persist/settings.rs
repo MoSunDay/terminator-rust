@@ -2,7 +2,7 @@
 //! save/load conversions. Split from the parent module so the growing
 //! settings surface keeps every file inside the size budget.
 
-use layout_tree::{Axis, MAX_RATIO, MIN_RATIO};
+use layout_tree::Axis;
 use serde::{Deserialize, Serialize};
 
 /// Persisted [`crate::state::Settings`]. Unknown keys in older files are
@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct PSettings {
     /// "v" = left/right split, "h" = top/bottom.
     pub split_axis: String,
-    pub split_ratio: f32,
     /// Window opacity; absent in pre-transparency state.json files.
     #[serde(default = "default_opacity")]
     pub opacity: f32,
@@ -43,7 +42,6 @@ impl Default for PSettings {
     fn default() -> Self {
         Self {
             split_axis: "v".to_string(),
-            split_ratio: 0.5,
             opacity: default_opacity(),
             font_size: default_font_size(),
             transparency: 0.0,
@@ -63,7 +61,6 @@ impl PSettings {
                 Axis::Horizontal => "h".to_string(),
                 Axis::Vertical => "v".to_string(),
             },
-            split_ratio: s.split_ratio,
             opacity: s.opacity,
             font_size: s.font_size,
             transparency: s.transparency,
@@ -76,11 +73,6 @@ impl PSettings {
             Axis::Horizontal
         } else {
             Axis::Vertical
-        };
-        let ratio = if self.split_ratio.is_finite() {
-            self.split_ratio.clamp(MIN_RATIO, MAX_RATIO)
-        } else {
-            0.5
         };
         let opacity = if self.opacity.is_finite() {
             self.opacity.clamp(0.5, 1.0)
@@ -102,7 +94,6 @@ impl PSettings {
         let bg_color = self.bg.as_deref().and_then(|s| theme::parse_hex(s).ok());
         crate::state::Settings {
             split_axis: axis,
-            split_ratio: ratio,
             opacity,
             font_size,
             transparency,
@@ -163,8 +154,12 @@ mod tests {
         // A pre-unification settings block (no font/glass/bg keys) loads
         // with defaults; the old per-pane bg/transparency lived in PMeta,
         // whose unknown keys serde ignores on load (covered in the
-        // parent module's full-document tests).
+        // parent module's full-document tests). The removed
+        // "split_ratio" key (splits are always equal now) is likewise an
+        // unknown field that serde silently ignores in old state.json
+        // files - kept here as a load-compat pin.
         let p: PSettings = serde_json::from_str(r#"{"split_axis":"v","split_ratio":0.5}"#).unwrap();
+        assert_eq!(p.split_axis, "v");
         assert_eq!(p.font_size, crate::state::DEFAULT_FONT_SIZE);
         assert_eq!(p.transparency, 0.0);
         assert_eq!(p.bg, None);
