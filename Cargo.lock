@@ -274,6 +274,7 @@ dependencies = [
  "skrifa",
  "theme",
  "vt-pane",
+ "x11-dl",
 ]
 
 [[package]]

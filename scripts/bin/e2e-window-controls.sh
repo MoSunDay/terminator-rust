@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Headless e2e: window controls under a real EWMH WM (openbox on Xvfb).
-#   R1: pressing the right edge (6px zone) and dragging resizes the
-#       window through the WM (BeginResize -> _NET_WM_MOVERESIZE).
+#   R1: edge drags resize the window APP-DRIVEN: per-frame
+#       ViewportCommands steered by an X-polled pointer (the WM only
+#       applies geometry). R1a: an east drag lands the exact pointer
+#       width. R1b: after release the geometry is FROZEN - pointer
+#       wander must not follow (the original bug). R1c: a west drag
+#       moves the origin, the direction whose per-frame XMoveWindow
+#       used to break the WM pointer grab.
 #   R2: the chrome maximize/restore button toggles ViewportCommand::
 #       Maximized (openbox has no panel -> maximize == 1400x900) and the
 #       second press restores the pre-maximize size.
@@ -214,21 +219,45 @@ kill -0 "$OPENBOX_PID" 2>/dev/null || fail "openbox failed to start"
 step "part 1: window controls on a fresh state"
 launch_app app1.log
 
-step "R1: right-edge drag resizes the window"
+step "R1a: right-edge drag resizes to the exact pointer width"
 geo
-W0=$WIDTH
+W0=$WIDTH; X0=$X
 park $((X+WIDTH-2)) $((Y+HEIGHT/2))     # inside the 6px edge zone
 xdotool mousedown 1
-sleep 0.2     # let the press land on its own frame (drag latching race)
-xdotool mousemove $((X+WIDTH+40))  $((Y+HEIGHT/2)); sleep 0.15
-xdotool mousemove $((X+WIDTH+80))  $((Y+HEIGHT/2)); sleep 0.15
-xdotool mousemove $((X+WIDTH+118)) $((Y+HEIGHT/2)); sleep 0.3
+sleep 0.3     # press and first move must not share a frame (anchor race)
+for i in 1 2 3 4 5 6 7 8; do
+    xdotool mousemove $((X0+W0-2+i*10)) $((Y+HEIGHT/2)); sleep 0.06
+done
 xdotool mouseup 1
-sleep 0.5
+sleep 0.6
 geo
-[ "$WIDTH" -ge $((W0+100)) ] || fail "edge drag did not resize: ${W0} -> ${WIDTH}"
+[ "$WIDTH" -eq $((W0+80)) ] \
+    || fail "edge drag: ${W0} -> ${WIDTH} (want exactly ${W0}+80)"
+echo "R1a: width ${W0} -> ${WIDTH} exactly"
+
+step "R1b: after release the window stops following the pointer"
+for px in $((X0+40)) $((X0+W0-2)) $((X0+W0+40)) $((X0+WIDTH/2)); do
+    xdotool mousemove "$px" $((Y+HEIGHT/2)); sleep 0.3
+done
+geo
+[ "$WIDTH" -eq $((W0+80)) ] && [ "$X" -eq "$X0" ] \
+    || fail "post-release follow: ${X},${Y} ${WIDTH}x${HEIGHT}"
+echo "R1b: frozen at ${X},${Y} ${WIDTH}x${HEIGHT}"
+
+step "R1c: west-edge drag moves the origin, width grows"
+park $X0 $((Y+HEIGHT/2))                # first pixel column = west strip
+xdotool mousedown 1
+sleep 0.3
+for i in 1 2 3 4 5 6; do
+    xdotool mousemove $((X0-i*10)) $((Y+HEIGHT/2)); sleep 0.06
+done
+xdotool mouseup 1
+sleep 0.6
+geo
+[ "$X" -eq $((X0-60)) ] && [ "$WIDTH" -eq $((W0+140)) ] \
+    || fail "west drag: ${X},${WIDTH} (want $((X0-60)),$((W0+140)))"
+echo "R1c: origin ${X0} -> ${X}, width -> ${WIDTH}"
 W_TARGET=$WIDTH
-echo "R1: width ${W0} -> ${WIDTH}"
 
 step "R2: maximize button toggles 1400x900 and restores"
 click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # maximize/restore
