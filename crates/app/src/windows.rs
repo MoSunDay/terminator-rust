@@ -100,6 +100,18 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     if ui.ctx().input(|i| i.viewport().focused == Some(true)) {
         d.st.focus = idx;
     }
+    // A press inside a window the WM hasn't focused (yet) activates it
+    // explicitly: chrome/title-bar clicks can be eaten by WM focus
+    // policy or a pending move-grab, but a programmatic activation
+    // request (winit _NET_ACTIVE_WINDOW) always lands. Any click
+    // anywhere in the window - pane, chips, bare chrome - must bring
+    // it to the foreground.
+    if ui
+        .ctx()
+        .input(|i| i.viewport().focused != Some(true) && i.pointer.any_pressed())
+    {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
     input::keyboard::handle(ui.ctx(), &mut d.st, &mut d.sess, &mut d.ui, &mut d.dirty);
     // Closing this window's last pane removes the window mid-pass: stop
     // instead of rendering the next window's tree into this viewport.

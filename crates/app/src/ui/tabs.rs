@@ -79,8 +79,25 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
         let maximized = ui.input(|i| i.viewport().maximized == Some(true));
         ui.ctx()
             .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-    } else if !chip_reorder && drag.drag_started_by(egui::PointerButton::Primary) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    } else if !chip_reorder {
+        // Window move only after a REAL drag (see ui::arm_window_drag):
+        // micro-drift clicks must stay plain clicks so the WM keeps
+        // activating the window on click.
+        let dragging = drag.dragged_by(egui::PointerButton::Primary);
+        let delta = drag.drag_delta().length();
+        let down = ui.input(|i| i.pointer.any_down());
+        let fresh = ui.input(|i| i.pointer.any_pressed());
+        if let Some(w) = d.st.win_mut() {
+            crate::ui::arm_window_drag(
+                ui.ctx(),
+                &mut w.ui.window_move_armed,
+                &mut w.ui.window_move_travel,
+                dragging,
+                delta,
+                down,
+                fresh,
+            );
+        }
     }
     ui.add_space(4.0);
     // Chip slot centers (center_x, tab index) plus the first chip's top:
