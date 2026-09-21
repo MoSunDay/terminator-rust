@@ -90,6 +90,8 @@ export TERMINATOR_SOCK="$SOCK"
 # No compositor in Xvfb: pin full opacity for deterministic ink checks.
 export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
+# e2e presets rely on session restore; the default launch is a fresh tab
+export TERMINATOR_RESTORE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # Single dracula pane with a stable ctl addressing key.

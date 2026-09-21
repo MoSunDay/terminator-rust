@@ -326,6 +326,17 @@ pub fn fresh_state() -> AppState {
     }
 }
 
+/// Launch default: a FRESH session (one window, one new tab) that keeps
+/// only the saved preferences (theme, settings). The default open is a
+/// new tab+window, not a session restore; TERMINATOR_RESTORE=1 opts into
+/// restoring the saved windows/tabs (see main::launch_state).
+pub fn fresh_keep_prefs(saved: AppState) -> AppState {
+    let mut st = fresh_state();
+    st.theme_name = saved.theme_name;
+    st.settings = saved.settings;
+    st
+}
+
 /// All pane ids across all tabs of all windows, flat and unique.
 pub fn all_pane_ids(st: &AppState) -> Vec<PaneId> {
     let mut out: Vec<PaneId> = Vec::new();

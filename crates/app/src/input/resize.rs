@@ -217,7 +217,7 @@ pub fn strips(ui: &mut Ui, win_id: u64, win: Rect, gesture: &mut Option<Gesture>
         let resp = ui.interact(
             rect,
             Id::new("edge_resize").with(win_id).with(k),
-            Sense::drag(),
+            Sense::DRAG,
         );
         if resp.drag_started_by(egui::PointerButton::Primary) && !maximized {
             let origin = ui.input(|i| {

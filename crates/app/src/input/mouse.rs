@@ -164,7 +164,7 @@ pub fn divider_interaction(ui: &mut Ui, st: &mut AppState, area: Rect, dirty: &m
     let resp = ui.interact(
         hit.strip,
         egui::Id::new("divider").with(hit.pane),
-        Sense::drag(),
+        Sense::DRAG,
     );
     if resp.drag_started_by(egui::PointerButton::Primary) {
         *drag = Some(DragState {
@@ -185,7 +185,7 @@ pub fn pane_interact(
     st: &mut AppState,
     dirty: &mut bool,
 ) -> egui::Response {
-    let resp = ui.interact(rect, egui::Id::new("pane").with(pane), Sense::click());
+    let resp = ui.interact(rect, egui::Id::new("pane").with(pane), Sense::CLICK);
     if resp.clicked() {
         if let Some(w) = st.win_mut() {
             if let Some(t) = w.tree.tabs.get_mut(w.tree.active_tab) {

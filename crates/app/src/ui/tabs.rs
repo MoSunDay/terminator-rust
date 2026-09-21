@@ -16,9 +16,16 @@ const CHIP_MIN_W: f32 = 44.0;
 const CHIP_GAP: f32 = 5.0;
 const CLOSE_W: f32 = 14.0;
 const ACCENT_H: f32 = 2.0; // active-chip underline height
-/// Chrome width reserved right of the chips: 4 edge cells (5 + 4*16 + 3*4)
-/// + gap 8 + trailing button group (3*16 + 2*4) + gap 8.
+/// Chrome width reserved right of the chips: the chip strip's flow/clip
+/// bound = one gap + the trailing group + one gap + 4 edge cells
+/// (5 + 4*16 + 3*4). At overflow the trailing group parks flush against
+/// the edge cells, so the strip bound stays put.
 const CHROME_RESERVE: f32 = 153.0;
+/// Trailing (+/split) group width: 3 icon cells with 4px gutters.
+const GROUP_W: f32 = 3.0 * tabs_widgets::ICON + 2.0 * 4.0;
+/// Distance from the row's right edge to the trailing group's parked
+/// left bound: 4 edge cells (5 + 4*16 + 3*4 = 81) + gap 8 + group.
+const GROUP_PARK: f32 = 5.0 + 4.0 * tabs_widgets::ICON + 3.0 * 4.0 + 8.0 + 8.0 + GROUP_W;
 /// Chip-strip wheel step per wheel line.
 const WHEEL_STEP: f32 = 48.0;
 /// Width the rename TextEdit occupies in the chip flow (desired_width
@@ -64,7 +71,10 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
     let chip_reorder = d.st.win().is_some_and(|w| w.ui.tab_drag.is_some());
     // click_and_drag: double-click-to-maximize needs the click half of
     // the sense; the drag half keeps the window-move gesture.
-    let drag = ui.interact(row, Id::new("chrome_drag"), Sense::click_and_drag());
+    // Sense::CLICK | DRAG (not Sense::click_and_drag): the FOCUSABLE bit
+    // would let a bare Tab hand keyboard focus to the chrome and swallow
+    // all pane keys (egui 0.36 Sense::click* constructors are focusable).
+    let drag = ui.interact(row, Id::new("chrome_drag"), Sense::CLICK | Sense::DRAG);
     if drag.double_clicked() {
         let maximized = ui.input(|i| i.viewport().maximized == Some(true));
         ui.ctx()
@@ -263,7 +273,11 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
             // click_and_drag: egui disambiguates by pointer movement, so
             // click-to-switch / double-click rename / middle-click close
             // all keep working next to the reorder drag.
-            let resp = ui.interact(vrect, Id::new("tab_chip").with(i), Sense::click_and_drag());
+            let resp = ui.interact(
+                vrect,
+                Id::new("tab_chip").with(i),
+                Sense::CLICK | Sense::DRAG,
+            );
             // Chrome behavior: a drag also selects the tab. The latch is
             // keyed by the tab anchor, immune to the index shifts the
             // reorder itself causes.
@@ -330,7 +344,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
                 pos2(vrect.right() - CLOSE_W * 0.5, vrect.center().y),
                 vec2(12.0, 12.0),
             );
-            let close_resp = ui.interact(close_rect, Id::new("tab_close").with(i), Sense::click());
+            let close_resp = ui.interact(close_rect, Id::new("tab_close").with(i), Sense::CLICK);
             if selected || resp.hovered() || close_resp.hovered() {
                 let xcol = if selected {
                     to_c32(pal.foreground)
@@ -366,17 +380,14 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette) {
         // right of the strip and must not be clipped away.
         ui.set_clip_rect(saved_clip);
         ui.add_space(8.0);
-        // Anchor the button group at the chip row's top (first allocated
-        // chip), keeping the pre-scroll vertical alignment.
-        let group_top = chip_top.unwrap_or(strip.top());
-        tabs_widgets::trailing_buttons(
-            ui,
-            pos2(row.right() - CHROME_RESERVE + 8.0, group_top),
-            st,
-            sess,
-            pal,
-            dirty,
-        );
+        // The trailing +/split group FOLLOWS the strip: 8px right of the
+        // last chip (in scrolled coordinates), vertically centered on the
+        // row. When the chips overflow, it parks flush left of the edge
+        // cells so it never leaves the window.
+        let group_left = (row.left() + total_w + 8.0 - scroll)
+            .clamp(row.left(), (row.right() - GROUP_PARK).max(row.left()));
+        let group_top = row.center().y - tabs_widgets::ICON * 0.5;
+        tabs_widgets::trailing_buttons(ui, pos2(group_left, group_top), st, sess, pal, dirty);
         tabs_widgets::edge_cells(ui, row.right(), st);
         // Pane-move cross-tab targeting: dwelling on another tab's chip for
         // a beat switches the active tab mid-drag (browser-style) — the

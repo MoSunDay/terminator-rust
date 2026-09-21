@@ -13,7 +13,7 @@ mod windows;
 use egui::ViewportBuilder;
 use log::warn;
 
-use crate::state::{data, fresh_state, Data};
+use crate::state::{data, fresh_keep_prefs, fresh_state, AppState, Data};
 
 struct Terminator {
     data: Data,
@@ -26,7 +26,7 @@ impl Terminator {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui::fonts::install(&cc.egui_ctx);
         let path = persist::state_path();
-        let mut st = persist::load(&path).unwrap_or_else(fresh_state);
+        let mut st = launch_state(&path);
         // Compositor-less environments (Xvfb e2e, bare WMs) cannot blend a
         // translucent window: TERMINATOR_OPAQUE=1 pins full opacity so
         // pixels stay deterministic. Startup-only; the inspector slider
@@ -99,6 +99,18 @@ impl eframe::App for Terminator {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         egui::Color32::TRANSPARENT.to_normalized_gamma_f32()
     }
+}
+
+/// Startup state: a fresh window with a NEW tab by default (terminals
+/// don't resurrect their last session on open); theme + settings still
+/// carry over from the saved state. TERMINATOR_RESTORE=1 keeps the saved
+/// windows/tabs instead (e2e presets and users who want it).
+fn launch_state(path: &std::path::Path) -> AppState {
+    let saved = persist::load(path).unwrap_or_else(fresh_state);
+    if std::env::var_os("TERMINATOR_RESTORE").as_deref() == Some(std::ffi::OsStr::new("1")) {
+        return saved;
+    }
+    fresh_keep_prefs(saved)
 }
 
 fn main() -> eframe::Result {

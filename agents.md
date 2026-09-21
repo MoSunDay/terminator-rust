@@ -9,7 +9,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - layout-tree: tab/pane tree, splits, focus, `layout_tab` geometry
 - vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`; open_pty = posix_openpt+O_CLOEXEC pair, pre-fork argv/env/PATH tables (child branch is async-signal-safe only)
 - theme: palettes + xterm 256 cube + `blend_background`
-- remote: ssh -tt + zellij bootstrap (exit 42 = no zellij -> degrade)
+- remote: ssh -tt + zellij bootstrap (exit 42 = no zellij -> degrade);
+  conn-drop exits (255/-1 = remote::is_disconnect) auto-REATTACH the same
+  zellij session: app actions/reconnect.rs pump (1/2/4/5s backoff, a 30s
+  healthy run or manual respawn resets; reconnect_n survives terminate so
+  quick fails grow the delay), ssh argv carries ConnectTimeout=10
 - ipc-proto: serde wire types for the UDS control socket (Request/Response)
 - ctl: `terminator-ctl` CLI: list/capture/send + `oc` link/submit/status/
   sessions; /proc discovery of the pane's opencoder process
@@ -20,7 +24,9 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   focus=user window}; state at ~/.config/terminator-rust/state.json
   (PWindow[] + legacy tabs mirror); UDS ipc in src/ipc/;
   actions::close_exited auto-closes EXITED panes 250ms (EXIT_GRACE)
-  after the exit was seen - exit 42 stays for auto_degrade
+  after the exit was seen - exit 42 stays for auto_degrade, remote
+  connection-drop exits stay for reconnect::pump (pane shows a
+  'reconnecting' badge instead of 'exit 255', last frame kept)
 
 ## Build/e2e
 - `cargo build/test --workspace` (PKG_CONFIG_PATH set by .cargo/config.toml)
@@ -313,11 +319,22 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   pixel-asserted by e2e-ui-style.sh check G; the chrome is a SINGLE row -
   the old centered window-title row is deleted (it duplicated the tab name
   a third time under the chip and the pane header); zoom/inspector cells
-  are anchored to the chip row's right edge via ui.interact on fixed rects
-  and check H asserts title-text ABSENCE in the bare chrome zone; rename
+  FOLLOW the chips (tabs.rs GROUP_W/GROUP_PARK: group_left = last chip
+  right + 8, vertically centered, PARKED left of the fixed edge cells on
+  overflow so '+' center stays W-137; CHROME_RESERVE=153 remains the
+  strip bound) and check H asserts title-text ABSENCE in the bare chrome
+  zone; rename
   editors (pane + tab) cancel on outside click via `i.pointer.any_click()
   && interact_pos().is_none_or(...)` so a miss-click cannot strand the
   editor.
+- egui 0.36 FOCUS TRAP: Sense::click()/drag()/click_and_drag() all carry
+  the FOCUSABLE bit - a bare Tab hands keyboard focus to the FIRST
+  focusable widget in the frame (eg builtin Button = the pane-header X),
+  then keyboard.rs's egui_wants_keyboard_input early-return swallows ALL
+  pane keys, and Space FIRES the focused button (probe: Tab then Space
+  closed the last pane and quit the app). App chrome/panes/dividers/edges
+  use the NON-focusable Sense::CLICK / Sense::DRAG / Sense::CLICK|Sense::DRAG
+  instead; only TextEdits (rename editors) stay focusable (IME needs it).
 
 - drag-and-drop (2026-09): tab chips are Sense::click_and_drag() - a
   primary drag latches WindowUi.tab_drag (anchor = tab's lowest pane id,
@@ -457,6 +474,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   modes must not eat the click. persist: per-tab focused containment (the
   global id remap can resolve a stale focused id into ANOTHER tab -> keys
   leak cross-tab) and active_tab forced to 0 on restore.
+- LAUNCH DEFAULT is a FRESH window (one new tab; main.rs launch_state +
+  state.rs fresh_keep_prefs carries only theme_name/settings across) -
+  session restore (PWindow/tabs) is OPT-IN via TERMINATOR_RESTORE=1,
+  which every e2e that presets state.json exports; without it a preset
+  session is ignored. Closing everything persists `tabs:[]` as before.
 - state.json carries `settings {split_axis:"v"|"h", split_ratio 0.05..0.95}`
   (serde default: old files load unchanged). Ctrl+Shift+D splits along
   settings.split_axis; layout-tree split_pane_ratio clamps non-finite ->
