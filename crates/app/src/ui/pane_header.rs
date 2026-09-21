@@ -66,7 +66,7 @@ pub fn show(
     // Registered first so the title/buttons on top keep their clicks
     // (egui hit-test prefers the topmost widget; drags fall through to
     // this background).
-    let drag = ui.interact(rect, Id::new("pane_header_drag").with(pane), Sense::drag());
+    let drag = ui.interact(rect, Id::new("pane_header_drag").with(pane), Sense::DRAG);
     // A primary press on the header becomes a pane MOVE (drop target
     // tracked per frame in screen(); dropping on a sibling edge flips
     // the split axis) whenever the tab has another pane to rearrange
@@ -242,7 +242,7 @@ pub fn show(
         let hit = ui.interact(
             title_rect,
             Id::new("pane_title").with(pane),
-            egui::Sense::click(),
+            egui::Sense::CLICK,
         );
         if hit.double_clicked() {
             if let Some(w) = st.win_mut() {
@@ -253,10 +253,13 @@ pub fn show(
     }
 
     // X close button (appearance lives in the global Settings panel).
+    // Sense::CLICK (not the default focusable click): a focusable button
+    // would take keyboard focus on a bare Tab and then fire on the next
+    // Space, closing the pane out from under the typist.
     let r = rect.right_top() + Vec2::new(-BTN - 4.0, (rect.height() - BTN) / 2.0);
     let close = ui.put(
         Rect::from_min_size(r, Vec2::splat(BTN)),
-        Button::new("X").small(),
+        Button::new("X").small().sense(Sense::CLICK),
     );
 
     if close.clicked() {

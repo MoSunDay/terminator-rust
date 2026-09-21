@@ -20,17 +20,25 @@
 #       holds an EARLY tab, not the last one.
 #   S2: wheel notches (48px each) scroll the chip row to its end so the
 #       LAST tab lands in that slot; no tab is lost on the way.
-#   S3: with the chip row overflowing, the trailing '+' button stays at
-#       its FIXED right-edge slot and still spawns + activates tab 13.
-#   S4: Ctrl+Shift+Q quits the app cleanly.
+#   S3: with the chip row overflowing, the trailing '+' button PARKS
+#       flush left of the pinned edge cells and still spawns +
+#       activates tab 13.
+#   S4: with only TWO chips (no overflow) the trailing +/split group
+#       FOLLOWS the chips: '+' at chips-right + 8px spawns + activates
+#       tab 3, while the old fixed slot at W-137 is bare chrome (a
+#       click there must not add a tab).
+#   S5: Ctrl+Shift+Q quits the app cleanly.
 #
-# Chrome geometry contract under test (single ~36px row): fixed
-# right-hand buttons, 16px wide / 4px apart / rightmost 5px from the
-# edge - maximize center at W-13, minimize W-33, inspector W-53, zoom
-# W-73; the trailing group ('+', split-v, split-h) starts 8px further
-# left, first '+' center at W-137; the chip area ends at W-153. The
-# chip-row center y sits at Y+18. Vertical wheel = horizontal chip
-# scroll, one notch = 48px.
+# Chrome geometry contract under test (single ~36px row): the EDGE
+# CELLS (zoom/inspector/min/max) stay PINNED at the far right - 16px
+# wide / 4px apart / rightmost 5px from the edge, maximize center at
+# W-13, minimize W-33, inspector W-53, zoom W-73. The trailing group
+# ('+', split-v, split-h) no longer pins: it FOLLOWS the chips (8px
+# right of the last chip) and only PARKS flush left of the edge cells
+# when the chips overflow the strip (GROUP_PARK: parked '+' center at
+# W-137, chip strip bound at W-153) - S1/S2/S3 coordinates are
+# unchanged. The chip-row center y sits at Y+18. Vertical wheel =
+# horizontal chip scroll, one notch = 48px.
 #
 # Usage: scripts/bin/e2e-window-controls.sh  (repo root; needs Xvfb +
 #        xdotool + openbox).  E2E_KEEP=1 keeps the scratch dir.
@@ -188,6 +196,8 @@ export TERMINATOR_SOCK="$SOCK"
 STATE="$XDG_CONFIG_HOME/terminator-rust/state.json"
 export TERMINATOR_OPAQUE=1     # no compositor on Xvfb
 export TERMINATOR_NO_MOTION=1  # pin hover fades / cursor blink
+# e2e presets rely on session restore; the default launch is a fresh tab
+export TERMINATOR_RESTORE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # --- Xvfb + openbox -------------------------------------------------------
@@ -366,8 +376,8 @@ done
 [ "$(tab_count)" -eq 12 ] || fail "scrolling lost tabs: count=$(tab_count)"
 echo "S2: last tab now under the slot; 12 tabs intact"
 
-step "S3: overflow does not push the trailing '+' off its fixed slot"
-click_at $((X+WIDTH-137)) $((Y+CHROME_Y))   # '+' (new tab)
+step "S3: overflow parks the trailing '+' left of the edge cells"
+click_at $((X+WIDTH-137)) $((Y+CHROME_Y))   # parked '+' (new tab)
 ok=""
 for _ in $(seq 1 20); do
     if [ "$(tab_count)" -eq 13 ] && [ "$(active_tab)" -eq 12 ]; then ok=1; break; fi
@@ -377,7 +387,58 @@ done
     || fail "'+' did not add+activate tab 13 (tabs=$(tab_count) active=$(active_tab))"
 echo "S3: 13 tabs, active_tab=12"
 
-step "S4: Ctrl+Shift+Q quits the app"
+step "S4: the trailing group FOLLOWS the chips when they fit"
+activate
+xdotool key --clearmodifiers ctrl+shift+q
+wait_pid_gone "$APP_PID" 40 || fail "app survived Ctrl+Shift+Q (part 2)"
+APP_PID=""
+WID=""
+sleep 0.5
+
+# Two short chips fit easily, so the group rides 8px right of chip 2:
+# 106 + 5 + 106 = 217px of chips, + 8px gap, + 8px half-icon puts the
+# '+' center at X+233. The OLD fixed slot (W-137) is bare chrome now -
+# a click there must be a no-op.
+python3 - "$STATE" <<'PY'
+import json, sys
+# 2 single-pane tabs "tabname-01"/"tabname-02": same PTab shape as the
+# 12-tab preset above (ids are remapped in preorder on load anyway).
+meta = {"kind": "Local", "manual_title": None, "bg": None,
+        "transparency": 0.0, "degraded": False}
+tabs = []
+for i in range(1, 3):
+    pid = 10 + i
+    tabs.append({"title": "tabname-%02d" % i, "focused": pid,
+                 "root": {"Pane": {"id": pid, "meta": meta}}})
+state = {"theme": "dracula",
+         "settings": {"split_axis": "v", "split_ratio": 0.5},
+         "windows": [{"id": 1, "active_tab": 0, "tabs": tabs}]}
+with open(sys.argv[1], "w") as f:
+    json.dump(state, f, indent=2)
+PY
+
+launch_app app3.log
+sleep 1   # let the two preset shells settle
+geo
+[ "$(tab_count)" -eq 2 ] \
+    || fail "S4 preset did not restore 2 tabs (tabs=$(tab_count))"
+
+click_at $((X+233)) $((Y+CHROME_Y))    # '+' following the second chip
+ok=""
+for _ in $(seq 1 20); do
+    if [ "$(tab_count)" -eq 3 ] && [ "$(active_tab)" -eq 2 ]; then ok=1; break; fi
+    sleep 0.25
+done
+[ -n "$ok" ] \
+    || fail "trailing group did not follow the chips: '+' at X+233 did not add+activate tab 3 (tabs=$(tab_count) active=$(active_tab))"
+
+click_at $((X+WIDTH-137)) $((Y+CHROME_Y))   # OLD fixed '+' slot = bare chrome
+sleep 1
+[ "$(tab_count)" -eq 3 ] \
+    || fail "old fixed slot still hosts the + button (tabs=$(tab_count))"
+echo "S4: group follows the chips ('+' at X+233 works, W-137 slot inert)"
+
+step "S5: Ctrl+Shift+Q quits the app"
 activate
 xdotool key --clearmodifiers ctrl+shift+q
 wait_pid_gone "$APP_PID" 40 || fail "app survived Ctrl+Shift+Q (part 2)"

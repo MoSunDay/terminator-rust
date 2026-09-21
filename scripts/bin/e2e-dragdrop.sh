@@ -74,6 +74,8 @@ STATE="$XDG_CONFIG_HOME/$STATE_REL"
 # pin hover fades / cursor blink to their end states.
 export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1
+# e2e presets rely on session restore; the default launch is a fresh tab
+export TERMINATOR_RESTORE=1
 mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # Preset: dracula, one window; tab "alpha" = vertical 50/50 split (panes

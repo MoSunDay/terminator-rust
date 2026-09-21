@@ -114,7 +114,7 @@ pub fn trailing_buttons(
     };
 
     let rect = cell(0);
-    let resp = ui.interact(rect, Id::new("chrome_newtab"), Sense::click());
+    let resp = ui.interact(rect, Id::new("chrome_newtab"), Sense::CLICK);
     hover_fill(
         ui,
         rect,
@@ -133,7 +133,7 @@ pub fn trailing_buttons(
     resp.on_hover_text("New tab (Ctrl+Shift+T)");
 
     let rect = cell(1);
-    let resp = ui.interact(rect, Id::new("chrome_splitv"), Sense::click());
+    let resp = ui.interact(rect, Id::new("chrome_splitv"), Sense::CLICK);
     hover_fill(
         ui,
         rect,
@@ -161,7 +161,7 @@ pub fn trailing_buttons(
     resp.on_hover_text("Split left / right (Ctrl+Shift+E)");
 
     let rect = cell(2);
-    let resp = ui.interact(rect, Id::new("chrome_splith"), Sense::click());
+    let resp = ui.interact(rect, Id::new("chrome_splith"), Sense::CLICK);
     hover_fill(
         ui,
         rect,
@@ -212,7 +212,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
     );
     let painter = ui.painter().clone();
 
-    let zoom = ui.interact(zoom_rect, Id::new("chrome_zoom"), Sense::click());
+    let zoom = ui.interact(zoom_rect, Id::new("chrome_zoom"), Sense::CLICK);
     hover_fill(
         ui,
         zoom_rect,
@@ -235,7 +235,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
     }
     zoom.on_hover_text("Zoom focused pane (Ctrl+Shift+F)");
 
-    let insp = ui.interact(insp_rect, Id::new("chrome_inspector"), Sense::click());
+    let insp = ui.interact(insp_rect, Id::new("chrome_inspector"), Sense::CLICK);
     hover_fill(
         ui,
         insp_rect,
@@ -273,7 +273,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
             colors::title_text(&pal)
         })
     };
-    let min = ui.interact(min_rect, Id::new("chrome_min"), Sense::click());
+    let min = ui.interact(min_rect, Id::new("chrome_min"), Sense::CLICK);
     hover_fill(
         ui,
         min_rect,
@@ -297,7 +297,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
     // Maximize / restore: single square when normal, two offset squares
     // when maximized.
     let maximized = ui.input(|i| i.viewport().maximized == Some(true));
-    let max = ui.interact(max_rect, Id::new("chrome_max"), Sense::click());
+    let max = ui.interact(max_rect, Id::new("chrome_max"), Sense::CLICK);
     hover_fill(
         ui,
         max_rect,
