@@ -160,16 +160,10 @@ fn splits_section(ui: &mut egui::Ui, d: &mut Data) {
         ui.label("Window opacity:");
         ui.add(egui::Slider::new(&mut s.opacity, 0.5..=1.0));
     });
-    let changed = ui
-        .add(
-            egui::Slider::new(
-                &mut s.split_ratio,
-                layout_tree::MIN_RATIO..=layout_tree::MAX_RATIO,
-            )
-            .text("new pane share"),
-        )
-        .changed()
-        || s != d.st.settings;
+    // Splits always divide the space equally (ratio 0.5); a per-split
+    // tweak stays possible via the divider drag, so there is no global
+    // "new pane share" knob anymore.
+    let changed = s != d.st.settings;
     d.st.settings = s;
     if changed {
         d.dirty = true;

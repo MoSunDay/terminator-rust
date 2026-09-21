@@ -218,7 +218,9 @@ pub fn do_move_pane(
     dirty: &mut bool,
 ) {
     let wi = st.active_idx();
-    let ratio = st.settings.split_ratio;
+    // Splits always divide the space equally; per-split tuning stays
+    // possible via the divider drag (no global share knob anymore).
+    let ratio = 0.5;
     // The drag may have switched the active tab mid-flight (chip dwell):
     // locate the pane's home tab; `tab` is where it should land.
     let src = st.windows.get(wi).and_then(|w| {
