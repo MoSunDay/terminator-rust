@@ -219,6 +219,8 @@ pub struct WindowUi {
     pub pointer_buttons: u8,
     /// Bit index of the most recent press still held (motion reports it).
     pub pointer_last: Option<u8>,
+    /// In-flight app-driven edge resize (transient, never persisted).
+    pub edge: Option<crate::input::resize::Gesture>,
     /// Modifier state as of the END of the previous frame's input handling;
     /// seed for reconstructing per-event mods (egui 0.36 aggregates
     /// ModifiersChanged into a post-batch `i.modifiers`, which is wrong
@@ -270,6 +272,7 @@ pub fn window_ui() -> WindowUi {
         pointer_pane: None,
         pointer_buttons: 0,
         pointer_last: None,
+        edge: None,
         mods_frame_end: egui::Modifiers::NONE,
         inspector: false,
         ime: None,

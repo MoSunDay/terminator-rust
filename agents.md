@@ -260,11 +260,33 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   chrome toggles maximize (chrome_drag is Sense::click_and_drag - egui
   click/double_click flags REQUIRE senses_click, pure-drag never fires
   them; a double-click's first press may StartDrag - harmless). Window
-  edge resize: input/resize.rs strips (EDGE 6px, CORNER 14) are registered
-  as the LAST widgets of each window pass -> topmost, they steal edge
-  presses from chrome/panes for free (hit-test picks latest widget in a
-  layer); screen.rs still manually suppresses raw pointer::handle /
-  divider / pane_interact when dir_at(area, pos) is Some.
+  edge resize is APP-DRIVEN (2026-09-20 rewrite): input/resize.rs strips
+  (EDGE 6px, CORNER 14) are registered as the LAST widgets of each
+  window pass -> topmost, they steal edge presses from chrome/panes for
+  free (hit-test picks latest widget in a layer); screen.rs still
+  manually suppresses raw pointer::handle / divider / pane_interact
+  when dir_at(area, pos) is Some. ViewportCommand::BeginResize is GONE:
+  it hands the gesture to the WM (_NET_WM_MOVERESIZE), whose pointer
+  grab eats the ButtonRelease - egui keeps any_down/potential_drag
+  wedged (next gesture dead) and some WMs keep following the mouse
+  after release (the reported bug). Instead a live Gesture{dir,pointer,
+  rect} (WindowUi.edge) re-derives the rect every frame: anchor =
+  screen(press_origin) - press_origin NOT latest_pos, the press frame
+  can coalesce with the first motion and bias the anchor - resized_rect
+  pins the opposite side, clamps MIN_SIZE (400,300) on the GRABBED
+  side, W/N edges also send OuterPosition. Live gestures are driven by
+  input/pointer_poll.rs: XQueryPointer per frame gives the global
+  pointer + BUTTON MASK (release truth needs no event); px / pixels_
+  per_point -> points. EVENTS ALONE CANNOT DRIVE W/N DRAGS: openbox
+  reconfigures on our per-frame XMoveWindow and BREAKS the core
+  pointer grab - motion+release reroute to root, egui latest_pos
+  freezes at the press (measured). request_repaint while live (reactive
+  mode would otherwise starve the poll); poll None (Wayland/tests)
+  falls back to the event path with an escape guard (win.expand(96):
+  a flick that outran the window ends the gesture instead of snapping
+  on re-entry). chrome StartDrag (window MOVE, tabs.rs) still hands the
+  WM a grab - same wedge disease, self-heals after one dead gesture,
+  out of scope.
 - tab overflow scroll: chips keep the UNSCROLLED horizontal flow for cursor
   advance, but interact/paint at vrect = rect.translate(-tab_scroll); clip
   the horizontal Ui to the strip (egui hit-test uses rect INTERSECT clip,
