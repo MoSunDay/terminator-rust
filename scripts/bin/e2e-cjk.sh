@@ -78,6 +78,10 @@ check("assets/fonts/MapleMonoNF-CN-subset.ttf",
 check("assets/fonts/NotoSansSC-Regular-subset.otf",
       "汉字测试简繁體かなカナ・。「」【】《》～！？（）"
       "Ａｚ０９Ⅰ①㈱ㄅㄆㅏㅣ纮㙟한글")
+# symbols last resort: supplemental arrows/symbols neither Maple, Noto
+# nor egui defaults carry (opencoder subagent marker is U+2937)
+check("assets/fonts/TerminalSymbols-subset.ttf",
+      "⤷⤴⇲≡✂⭐⬅⬆⬇⌁⌚")
 PY
 
 # --- 2. live boot ----------------------------------------------------------

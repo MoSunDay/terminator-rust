@@ -443,7 +443,18 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   fullwidth latin, ①㈱ etc -> they fall through to the LAST-chain
   assets/fonts/NotoSansSC-Regular-subset.otf (9.8MB, 40330 glyphs, recipe
   NEEDS --no-layout-closure; its Hangul advances 1.0em and paints slightly
-  inside the 2-cell pair). ghostty advances NF PUA icons TWO cells (EAW
+  inside the 2-cell pair). THIRD font (2026-09-22): assets/fonts/
+  TerminalSymbols-subset.ttf (450KB, 3084 glyphs) appended LAST in both
+  chains - a JuliaMono subset (OFL, from the vendored ghostty font res)
+  of every symbol-range codepoint (U+2000-2BFF + math alpha) JuliaMono
+  has that Maple+NOTO subsets lack: opencoder's subagent marker
+  U+2937 ⤷ (chat_flatten.rs, app_loop.rs) is in NEITHER upstream font
+  (full Maple Mono NF CN and NotoSansSC both lack it) nor egui defaults,
+  and epaint renders any char no face supports as a literal '?' -
+  that was the 乱码. Subset recipe: pyftsubset --no-layout-closure
+  --no-hinting + DELETE the SVG/COLR/CPAL tables first (JuliaMono ships
+  color glyphs; fontTools needs lxml to subset SVG). ghostty advances
+  NF PUA icons TWO cells (EAW
   ambiguous) so icon ink ~14-16px fills the double span. TERMINATOR_FONT and
   TERMINATOR_CJK_FONT=path[:ttc_index] swap each embedded font (last ':' +
   u32-suffix = face index); env fonts are parse-validated at startup (skrifa
