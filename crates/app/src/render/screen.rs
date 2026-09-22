@@ -77,6 +77,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // Lifecycle bookkeeping.
     session_map::pump_all(&mut d.sess);
     actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
+    // Remote panes whose connection dropped are kept and reattached
+    // (before ensure_sessions, so a fired retry respawns this frame).
+    actions::reconnect::pump(&d.st, &mut d.sess);
     if d.st.win().is_some_and(|w| w.tree.tabs.is_empty()) && !d.ui.quitting {
         actions::do_new_tab(&mut d.st, &mut d.sess, PaneKind::Local, &mut d.dirty);
     }

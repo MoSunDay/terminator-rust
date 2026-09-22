@@ -15,6 +15,8 @@ use crate::state::{
     self, new_pane_meta, Action, AppState, PaneAction, UiState, WindowState, WindowUi,
 };
 
+pub(crate) mod reconnect;
+
 /// Spawn sessions for every pane that lacks one; drop orphaned sessions.
 pub fn ensure_sessions(st: &AppState, sess: &mut SessionMap) {
     let ids = state::all_pane_ids(st);
@@ -47,11 +49,7 @@ pub(crate) fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
             session_map::START_COLS,
             session_map::START_ROWS,
         ) {
-            Ok(s) => {
-                sess.map.insert(id, s);
-                sess.retry_at.remove(&id);
-                sess.exited_seen.remove(&id);
-            }
+            Ok(s) => session_map::note_spawned(sess, id, s),
             Err(e) => {
                 warn!("spawn pane {id}: {e}");
                 sess.retry_at
@@ -253,6 +251,8 @@ pub fn do_respawn(st: &mut AppState, sess: &mut SessionMap, pane: PaneId, dirty:
     };
     meta.degraded = false;
     session_map::terminate(sess, pane);
+    // Manual respawn starts the reconnect ladder fresh.
+    sess.reconnect_n.remove(&pane);
     if let Some(meta) = st.panes.get(&pane) {
         match session_map::spawn_meta(
             meta,
@@ -260,11 +260,7 @@ pub fn do_respawn(st: &mut AppState, sess: &mut SessionMap, pane: PaneId, dirty:
             session_map::START_COLS,
             session_map::START_ROWS,
         ) {
-            Ok(s) => {
-                sess.map.insert(pane, s);
-                sess.retry_at.remove(&pane);
-                sess.exited_seen.remove(&pane);
-            }
+            Ok(s) => session_map::note_spawned(sess, pane, s),
             Err(e) => {
                 warn!("respawn pane {pane}: {e}");
                 sess.retry_at
@@ -313,10 +309,15 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
 
 /// A pane whose session finished and whose exit has been visible for at
 /// least [`session_map::EXIT_GRACE`]. Pure predicate for [`close_exited`].
-fn exit_ripe(sess: &SessionMap, id: &PaneId, now: Instant) -> bool {
+/// Remote connection drops are exempt: [`reconnect`] keeps those panes
+/// and reattaches them instead.
+fn exit_ripe(st: &AppState, sess: &SessionMap, id: &PaneId, now: Instant) -> bool {
     let exited = match sess.map.get(id) {
-        // alive, or auto_degrade owns the exit-42 marker
-        Some(s) => s.exit.is_some_and(|e| e != EXIT_NO_ZELLIJ),
+        // alive, auto_degrade owns the exit-42 marker, reconnect::pump
+        // owns remote connection-drop exits
+        Some(s) => s
+            .exit
+            .is_some_and(|e| e != EXIT_NO_ZELLIJ && !pane_disconnected(st, id, e)),
         // spawn-backoff candidate, not a corpse
         None => false,
     };
@@ -327,11 +328,19 @@ fn exit_ripe(sess: &SessionMap, id: &PaneId, now: Instant) -> bool {
             .is_some_and(|seen| now.duration_since(*seen) >= session_map::EXIT_GRACE)
 }
 
+/// True when the pane is remote and its exit code means the connection
+/// dropped (network failure): such panes are kept for reattachment.
+fn pane_disconnected(st: &AppState, id: &PaneId, code: i32) -> bool {
+    matches!(st.panes.get(id).map(|m| &m.kind), Some(PaneKind::Remote(_)))
+        && remote::is_disconnect(code)
+}
+
 /// Close panes whose session has exited: the shell is gone, so its pane
 /// goes too instead of lingering as a corpse the user must click away.
 /// Closing the last pane keeps the existing semantics - the only window
 /// quits the app, a secondary removes its OS window, the root with living
 /// siblings respawns a fresh tab next frame. `st.active` is restored.
+/// Remote connection drops are exempt (kept for [`reconnect`]).
 pub fn close_exited(st: &mut AppState, sess: &mut SessionMap, ui: &mut UiState, dirty: &mut bool) {
     let now = Instant::now();
     for (id, s) in sess.map.iter() {
@@ -345,7 +354,7 @@ pub fn close_exited(st: &mut AppState, sess: &mut SessionMap, ui: &mut UiState, 
             w.tree.tabs.iter().enumerate().find_map(|(ti, t)| {
                 sorted_pane_ids(&t.root)
                     .into_iter()
-                    .find(|id| exit_ripe(sess, id, now))
+                    .find(|id| exit_ripe(st, sess, id, now))
                     .map(|id| (wi, ti, id))
             })
         });
@@ -563,6 +572,8 @@ mod close_tab_tests {
 
 #[cfg(test)]
 mod move_pane_tests;
+#[cfg(test)]
+mod reconnect_net_tests;
 #[cfg(test)]
 mod close_exited_tests {
     use super::*;

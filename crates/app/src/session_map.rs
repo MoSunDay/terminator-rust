@@ -28,6 +28,14 @@ pub struct SessionMap {
     /// [`EXIT_GRACE`] so a shell that dies instantly cannot fork-loop the
     /// empty-tree respawn (and its last output stays briefly readable).
     pub exited_seen: HashMap<PaneId, Instant>,
+    /// Earliest allowed reconnect attempt per remote pane whose ssh died
+    /// with a connection-failure exit.
+    pub reconnect_at: HashMap<PaneId, Instant>,
+    /// Consecutive failed reconnect attempts (backoff step).
+    pub reconnect_n: HashMap<PaneId, u32>,
+    /// When the pane's current session was spawned (a healthy run resets
+    /// the backoff ladder).
+    pub spawned_at: HashMap<PaneId, Instant>,
 }
 
 /// Wait after a failed spawn before retrying (stops per-frame fork storms).
@@ -42,6 +50,9 @@ pub fn session_map() -> SessionMap {
         map: HashMap::new(),
         retry_at: HashMap::new(),
         exited_seen: HashMap::new(),
+        reconnect_at: HashMap::new(),
+        reconnect_n: HashMap::new(),
+        spawned_at: HashMap::new(),
     }
 }
 
@@ -52,12 +63,29 @@ pub fn spawn_blocked(sess: &SessionMap, id: PaneId, now: Instant) -> bool {
 
 /// Terminate a pane's child process group, stop its reader thread and
 /// drop the session. The single removal path for live sessions.
+/// `reconnect_n` deliberately survives: it counts consecutive failed
+/// attempts across respawns and is reset only by a stable run or a
+/// manual respawn (pane ids are never reused, so stale entries are inert).
 pub fn terminate(sess: &mut SessionMap, id: PaneId) {
     if let Some(mut s) = sess.map.remove(&id) {
         vtask::terminate(&mut s);
     }
     sess.retry_at.remove(&id);
     sess.exited_seen.remove(&id);
+    sess.reconnect_at.remove(&id);
+}
+
+/// Insert a freshly spawned session and clear the respawn bookkeeping
+/// markers that must not outlive a spawn (backoff, exit timestamp,
+/// pending reconnect plan), stamping the spawn time for the reconnect
+/// backoff reset. `reconnect_n` survives so quick consecutive failures
+/// keep growing the retry delay.
+pub fn note_spawned(sess: &mut SessionMap, id: PaneId, s: Session) {
+    sess.map.insert(id, s);
+    sess.retry_at.remove(&id);
+    sess.exited_seen.remove(&id);
+    sess.reconnect_at.remove(&id);
+    sess.spawned_at.insert(id, Instant::now());
 }
 
 fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool) -> SessionOpts {
