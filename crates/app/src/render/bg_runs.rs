@@ -24,12 +24,13 @@ pub(crate) struct BgRun {
     pub color: Color32,
 }
 
-/// A cell's OPAQUE effective background: inverse video swaps in the fg,
-/// an explicit bg wins, else None (the pane default shows). Mirrors the
-/// bg half of `colors::cell_colors`; selection is folded in by
-/// [`bg_runs`].
-fn cell_bg(cd: &CellData, default_fg: Color32) -> Option<Color32> {
-    if cd.inverse {
+/// A cell's OPAQUE effective background incl. selection precedence:
+/// selected > inverse video (fg as bg) > explicit bg; None = the pane
+/// default shows (mirrors the bg half of `colors::cell_colors`).
+fn cell_color(cd: &CellData, default_fg: Color32, sel: Color32) -> Option<Color32> {
+    if cd.selected {
+        Some(sel)
+    } else if cd.inverse {
         Some(cd.fg.map(vt_rgb).map_or(default_fg, to_c32))
     } else {
         cd.bg.map(vt_rgb).map(to_c32)
@@ -39,13 +40,19 @@ fn cell_bg(cd: &CellData, default_fg: Color32) -> Option<Color32> {
 /// Per-column OPAQUE backgrounds of one grid row (len == cols). A wide
 /// cell's color fills both of its columns (clamped to `cols`); the tail
 /// cell of a wide pair keeps its own explicit override for its column
-/// only (the wide half must not swallow a colored tail).
-fn row_colors(row: &[CellData], cols: u16, default_fg: Color32) -> Vec<Option<Color32>> {
+/// only (the wide half must not swallow a colored tail). `sel` is the
+/// OPAQUE selection color; selection is folded in via [`cell_color`].
+fn row_colors(
+    row: &[CellData],
+    cols: u16,
+    default_fg: Color32,
+    sel: Color32,
+) -> Vec<Option<Color32>> {
     let mut out = vec![None; cols as usize];
     let mut x = 0usize;
     while x < out.len() && x < row.len() {
         let cd = &row[x];
-        let c = cell_bg(cd, default_fg);
+        let c = cell_color(cd, default_fg, sel);
         out[x] = c;
         if cd.wide {
             if x + 1 < out.len() {
@@ -58,31 +65,12 @@ fn row_colors(row: &[CellData], cols: u16, default_fg: Color32) -> Vec<Option<Co
     }
     for x in 0..row.len().saturating_sub(1) {
         if row[x].wide && x + 1 < out.len() {
-            if let Some(c) = cell_bg(&row[x + 1], default_fg) {
+            if let Some(c) = cell_color(&row[x + 1], default_fg, sel) {
                 out[x + 1] = Some(c);
             }
         }
     }
     out
-}
-
-/// Fold selection into an explicit bg so [`row_colors`] sees one uniform
-/// color source: a selected cell paints the selection color regardless
-/// of inverse video or its own colors (same precedence as the old
-/// per-cell path).
-fn fold_selection(row: &[CellData], sel: vt_pane::term::Color) -> Vec<CellData> {
-    row.iter()
-        .map(|cd| {
-            let mut c = cd.clone();
-            if c.selected {
-                c.bg = Some(sel);
-                c.fg = None;
-                c.inverse = false;
-                c.selected = false;
-            }
-            c
-        })
-        .collect()
 }
 
 /// Merge one row's column colors into `out`: maximal horizontal runs of
@@ -128,9 +116,10 @@ fn merge_row(
 }
 
 /// All background runs of a frame merged into maximal rectangles.
-/// `sel_bg` is the OPAQUE selection color; every emitted fill is run
-/// through `with_opacity(fill_alpha)` (uniform glass: cell bgs share the
-/// pane fill alpha, ink stays opaque). Rows past `cells.len()` are
+/// `sel_bg` is the OPAQUE selection color, folded in per cell via
+/// [`cell_color`] (no row cloning); every emitted fill is run through
+/// `with_opacity(fill_alpha)` (uniform glass: cell bgs share the pane
+/// fill alpha, ink stays opaque). Rows past `cells.len()` are
 /// all-default.
 pub(crate) fn bg_runs(
     fr: &VtFrame,
@@ -138,16 +127,11 @@ pub(crate) fn bg_runs(
     sel_bg: Color32,
     fill_alpha: f32,
 ) -> Vec<BgRun> {
-    let sel = vt_pane::term::Color {
-        r: sel_bg.r(),
-        g: sel_bg.g(),
-        b: sel_bg.b(),
-    };
     let mut out: Vec<BgRun> = Vec::new();
     let mut prev: Vec<usize> = Vec::new();
     for y in 0..fr.rows {
         let colors = match fr.cells.get(y as usize) {
-            Some(row) => row_colors(&fold_selection(row, sel), fr.cols, default_fg)
+            Some(row) => row_colors(row, fr.cols, default_fg, sel_bg)
                 .into_iter()
                 .map(|c| c.map(|c| with_opacity(c, fill_alpha)))
                 .collect::<Vec<_>>(),
@@ -168,11 +152,7 @@ pub(crate) fn cursor_ink(
     sel_bg: Color32,
     bg_ink: Color32,
 ) -> Color32 {
-    let c = if cd.selected {
-        Some(sel_bg)
-    } else {
-        cell_bg(cd, default_fg)
-    };
+    let c = cell_color(cd, default_fg, sel_bg);
     c.map_or(bg_ink, |c| Color32::from_rgb(c.r(), c.g(), c.b()))
 }
 
