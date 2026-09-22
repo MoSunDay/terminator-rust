@@ -4,6 +4,7 @@ use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use theme::Palette;
 use vt_pane::Frame as VtFrame;
 
+use crate::render::bg_runs;
 use crate::render::colors::{cell_colors, to_c32, vt_rgb, with_opacity};
 use crate::state::CellSize;
 
@@ -106,8 +107,10 @@ pub struct DrawArgs<'a> {
 
 /// Draw one terminal snapshot into `rect`.
 ///
-/// Background first (pane effective bg), then per-cell bg overrides, the
-/// cursor block, text, and underlines. Wide cells span two columns and the
+/// Background first (pane effective bg), then the cell backgrounds as
+/// MERGED same-color runs (see [`crate::render::bg_runs`]: one feathered
+/// edge per region instead of a per-cell seam lattice), the cursor
+/// block, text, and underlines. Wide cells span two columns and the
 /// trailing empty cell after them is skipped (per row: a row-final wide
 /// cell must not eat the next row's first cell).
 pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
@@ -142,26 +145,25 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     };
     // Glass is uniform: the selection and explicit ANSI cell backgrounds
     // keep their color but share the pane fill alpha, so the whole pane
-    // area sees through equally (ink stays opaque).
-    let sel_bg = with_opacity(to_c32(pal.selection_background), fill_alpha);
+    // area sees through equally (ink stays opaque). bg_runs applies the
+    // alpha itself; pass the OPAQUE selection color.
+    let sel_opaque = to_c32(pal.selection_background);
     let font = FontId::monospace(font_size);
     let wide_font = FontId::monospace(cell.wide_size);
+    // Cell backgrounds as MERGED maximal rectangles: epaint feathers
+    // every rect edge, so one rect per cell leaves a lattice of faint
+    // seams in same-color regions; full-width runs also bleed into the
+    // pane's right remainder (grid is floor(w/cell) columns wide).
+    for run in bg_runs::bg_runs(fr, default_fg, sel_opaque, fill_alpha) {
+        painter.rect_filled(bg_runs::run_rect(rect, &run, cell, fr.cols), 0.0, run.color);
+    }
     for (y, row) in fr.cells.iter().enumerate() {
         let mut skip_tail = false;
         for (x, cd) in row.iter().enumerate() {
             if skip_tail {
+                // The tail of a wide pair: no glyph of its own (its
+                // background, if any, is covered by the merged runs).
                 skip_tail = false;
-                // Still paint the tail cell's explicit background.
-                let (_, cbg) = cell_colors(cd, default_fg, bg);
-                let cbg = if cd.selected {
-                    Some(sel_bg)
-                } else {
-                    cbg.map(|c| with_opacity(c, fill_alpha))
-                };
-                if let Some(cbg) = cbg {
-                    let r = cell_rect(rect, x as u16, y as u16, cell, 1);
-                    painter.rect_filled(r, 0.0, cbg);
-                }
                 continue;
             }
             let (ux, uy) = (x as u16, y as u16);
@@ -170,21 +172,21 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
             }
             let span: u16 = if cd.wide { 2 } else { 1 };
             let r = cell_rect(rect, ux, uy, cell, span);
-            let (fg, cbg) = cell_colors(cd, default_fg, bg);
-            let cbg = if cd.selected {
-                Some(sel_bg)
-            } else {
-                cbg.map(|c| with_opacity(c, fill_alpha))
-            };
-            if let Some(cbg) = cbg {
-                painter.rect_filled(r, 0.0, cbg);
-            }
+            let fg = cell_colors(cd, default_fg, bg).0;
             let is_cursor = cursor_at == Some((ux, uy));
             if is_cursor {
                 painter.rect_filled(r, 2.0, cursor_col);
             }
             if !cd.text.is_empty() {
-                let glyph = if is_cursor { bg_ink } else { fg };
+                // Cursor-block glyph ink: the cell's own effective bg at
+                // full alpha (contrast on colored cells), else the pane
+                // bg color - a semi-transparent fill would hide it on
+                // glass.
+                let glyph = if is_cursor {
+                    bg_runs::cursor_ink(cd, default_fg, sel_opaque, bg_ink)
+                } else {
+                    fg
+                };
                 // Wide cells paint at the scaled size so the glyph fills
                 // exactly the two-cell span; narrow cells are unchanged.
                 let cell_font = if cd.wide { &wide_font } else { &font };
@@ -233,6 +235,93 @@ mod tests {
         assert_eq!(lt_rect(egui_rect(lt)), lt);
         let e = Rect::from_min_size(Pos2::new(5.0, 6.0), Vec2::new(7.0, 8.0));
         assert_eq!(egui_rect(lt_rect(e)), e);
+    }
+
+    #[test]
+    fn merged_bg_paints_one_full_width_rect() {
+        // Headless paint (same pattern as the preedit tests): a 5x3
+        // frame of uniform red-bg cells must produce EXACTLY ONE red
+        // rect shape - not 15 - and its right side must bleed to the
+        // pane edge (the grid covers only 5*9=45pt of the 49pt pane).
+        let ctx = egui::Context::default();
+        crate::ui::fonts::install(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        let ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("grid-bg-test"),
+            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(640.0, 480.0),
+            )),
+        );
+        let row = || {
+            (0..5)
+                .map(|_| vt_pane::CellData {
+                    text: " ".into(),
+                    bg: Some(vt_pane::term::Color {
+                        r: 200,
+                        g: 20,
+                        b: 20,
+                    }),
+                    ..vt_pane::CellData::default()
+                })
+                .collect::<Vec<_>>()
+        };
+        let fr = VtFrame {
+            cols: 5,
+            rows: 3,
+            cells: vec![row(), row(), row()],
+            ..Default::default()
+        };
+        let pane = Rect::from_min_size(Pos2::new(3.0, 5.0), Vec2::new(49.0, 60.0));
+        draw_frame(
+            ui.painter(),
+            pane,
+            &DrawArgs {
+                fr: &fr,
+                pal: &theme::builtin::dracula(),
+                cell: CellSize {
+                    w: 9.0,
+                    h: 18.0,
+                    wide_size: 15.0,
+                    w_px: 9,
+                    h_px: 18,
+                },
+                font_size: 15.0,
+                cursor_alpha: 0.0,
+                bg: Color32::from_rgb(40, 42, 54),
+                fill_alpha: 0.5,
+            },
+        );
+        let mut out = ctx.end_pass();
+        let red = with_opacity(Color32::from_rgb(200, 20, 20), 0.5);
+        let reds: Vec<&egui::Shape> = out
+            .shapes
+            .iter()
+            .filter(|cs| matches!(&cs.shape, egui::Shape::Rect(r) if r.fill == red))
+            .map(|cs| &cs.shape)
+            .collect();
+        assert_eq!(reds.len(), 1, "one merged run, not one rect per cell");
+        let egui::Shape::Rect(r) = reds[0] else {
+            unreachable!("filtered to rects above");
+        };
+        assert_eq!(r.rect.left(), pane.left());
+        assert_eq!(
+            r.rect.right(),
+            pane.right(),
+            "full-width runs bleed into the pane remainder"
+        );
+        assert_ne!(r.rect.width(), 5.0 * 9.0, "must not stop at the grid edge");
+        assert_eq!(r.rect.height(), 3.0 * 18.0);
+        // Only the pane bg fill remains as the other solid rect.
+        let pane_bg = with_opacity(Color32::from_rgb(40, 42, 54), 0.5);
+        let bg_rects = out
+            .shapes
+            .iter()
+            .filter(|cs| matches!(&cs.shape, egui::Shape::Rect(r) if r.fill == pane_bg))
+            .count();
+        assert_eq!(bg_rects, 1);
+        out.textures_delta.clear();
     }
 
     #[test]
