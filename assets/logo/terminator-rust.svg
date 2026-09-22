@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#343746"/>
+      <stop offset="1" stop-color="#21222c"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect width="1024" height="1024" rx="230" ry="230"/>
+    </clipPath>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="102.4"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <ellipse cx="512" cy="475" rx="332" ry="325" fill="#bd93f9"
+             opacity="0.173" filter="url(#glow)"/>
+    <rect x="4" y="4" width="1016" height="1016" rx="226"
+          fill="none" stroke="#6272a4" stroke-opacity="0.275"
+          stroke-width="2"/>
+  </g>
+  <g fill="none" stroke-width="96" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M272 262 L752 262" stroke="#bd93f9"/>
+    <path d="M512 262 L512 512" stroke="#bd93f9"/>
+    <path d="M332 512 L692 512" stroke="#bd93f9"/>
+    <path d="M332 512 L332 762" stroke="#ff79c6"/>
+    <path d="M692 512 L692 762" stroke="#8be9fd"/>
+  </g>
+</svg>

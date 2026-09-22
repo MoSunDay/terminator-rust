@@ -23,17 +23,11 @@ pub struct RemoteTarget {
     pub session_name: String,
 }
 
-/// `$XDG_CONFIG_HOME/terminator-rust/sessions.json`, falling back to
-/// `$HOME/.config/...`, then to a relative `.config/...` path.
+/// `~/.terminator-rust/sessions.json`. A legacy
+/// `$XDG_CONFIG_HOME|$HOME/.config`/terminator-rust/sessions.json is
+/// migrated forward (best-effort) on first use.
 pub fn default_registry_path() -> PathBuf {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => match std::env::var_os("HOME") {
-            Some(h) if !h.is_empty() => PathBuf::from(h).join(".config"),
-            _ => PathBuf::from(".config"),
-        },
-    };
-    base.join("terminator-rust").join("sessions.json")
+    paths::migrate_legacy("sessions.json")
 }
 
 /// Read the registry. A missing file yields an empty list; so does
@@ -170,7 +164,7 @@ mod tests {
     #[test]
     fn default_registry_path_shape() {
         let path = default_registry_path();
-        assert!(path.ends_with("terminator-rust/sessions.json"), "{path:?}");
+        assert!(path.ends_with(".terminator-rust/sessions.json"), "{path:?}");
     }
 
     #[test]

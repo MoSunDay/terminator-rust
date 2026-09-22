@@ -21,17 +21,12 @@ pub struct Links {
     pub links: BTreeMap<String, Link>,
 }
 
-/// Sidecar path: `$XDG_CONFIG_HOME|$HOME/.config`/terminator-rust/oc-links.json
-/// (same base the app uses for state.json).
+/// Sidecar path: `~/.terminator-rust/oc-links.json` (same base the app
+/// uses for state.json). A legacy
+/// `$XDG_CONFIG_HOME|$HOME/.config`/terminator-rust/oc-links.json is
+/// migrated forward (best-effort) on first use.
 pub fn sidecar_path() -> PathBuf {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => match std::env::var_os("HOME") {
-            Some(h) if !h.is_empty() => PathBuf::from(h).join(".config"),
-            _ => PathBuf::from(".config"),
-        },
-    };
-    base.join("terminator-rust").join("oc-links.json")
+    paths::migrate_legacy("oc-links.json")
 }
 
 /// Load the sidecar; a missing file is an empty map, a corrupt one is an

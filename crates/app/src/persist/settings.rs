@@ -30,7 +30,7 @@ pub(crate) struct PSettings {
 fn default_opacity() -> f32 {
     // Fully opaque by default: without a compositor (bare X sessions)
     // transparent pixels render BLACK; transparency is opt-in via the
-    // settings slider (clamped 0.5..=1.0).
+    // settings slider (clamped 0.1..=1.0).
     1.0
 }
 
@@ -75,7 +75,7 @@ impl PSettings {
             Axis::Vertical
         };
         let opacity = if self.opacity.is_finite() {
-            self.opacity.clamp(0.5, 1.0)
+            self.opacity.clamp(0.1, 1.0)
         } else {
             default_opacity()
         };

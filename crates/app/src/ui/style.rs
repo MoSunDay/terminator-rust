@@ -1,18 +1,24 @@
-//! Theme-derived egui style, applied once per theme change.
+//! Theme-derived egui style, applied once per theme change or font-size
+//! change.
 
-use egui::{vec2, Context, CornerRadius, Stroke, Style, Visuals};
+use egui::{vec2, Context, CornerRadius, Stroke, Style, TextStyle, Visuals};
 
 use crate::render::colors::{self, palette_of};
 use crate::render::tokens;
 use crate::state::UiState;
 
-/// Install a dark egui style derived from the active theme. Idempotent per
-/// theme name: `UiState.styled_theme` tracks the last applied one.
-pub fn sync(ctx: &Context, theme_name: &str, uist: &mut UiState) {
-    if uist.styled_theme.as_deref() == Some(theme_name) {
+/// Install a dark egui style derived from the active theme, with the
+/// default text styles scaled by the chrome scale (tooltips, context
+/// menus, the Settings panel and TextEdits all grow with the terminal
+/// font). Idempotent per theme name AND font size: `UiState.styled_theme`
+/// + `UiState.styled_font` track the last applied pair.
+pub fn sync(ctx: &Context, theme_name: &str, font_size: f32, uist: &mut UiState) {
+    if uist.styled_theme.as_deref() == Some(theme_name) && uist.styled_font == font_size {
         return;
     }
     uist.styled_theme = Some(theme_name.to_string());
+    uist.styled_font = font_size;
+    let s = crate::ui::chrome::scale(font_size);
     let pal = palette_of(theme_name);
     let chrome = colors::to_c32(colors::chrome_bg(&pal));
     let hover = colors::to_c32(colors::chrome_hover(&pal));
@@ -24,8 +30,23 @@ pub fn sync(ctx: &Context, theme_name: &str, uist: &mut UiState) {
         visuals: Visuals::dark(),
         ..Default::default()
     };
-    style.spacing.item_spacing = vec2(7.0, 5.0);
-    style.spacing.button_padding = vec2(8.0, 4.0);
+    // egui text styles (tooltips, context menus, the Settings panel,
+    // TextEdits, buttons) ride on chrome-sized bases - one notch below
+    // egui's defaults (Body/Button/Mono 13 -> 11.5) so floating chrome
+    // stays subordinate to the terminal grid - still scaled by the
+    // chrome scale.
+    let mut text_styles = Style::default().text_styles;
+    for (ts, font) in text_styles.iter_mut() {
+        let base = match ts {
+            TextStyle::Small => 8.5,
+            TextStyle::Heading => 15.0,
+            _ => 11.5,
+        };
+        font.size = base * s;
+    }
+    style.text_styles = text_styles;
+    style.spacing.item_spacing = vec2(7.0 * s, 5.0 * s);
+    style.spacing.button_padding = vec2(8.0 * s, 4.0 * s);
     // Slim scrollbars (fields verified present in egui 0.36 ScrollStyle).
     style.spacing.scroll.bar_width = 8.0;
     style.spacing.scroll.bar_outer_margin = 2.0;

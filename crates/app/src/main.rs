@@ -1,6 +1,7 @@
 //! terminator-rust: a terminator-style terminal multiplexer front-end.
 
 mod actions;
+mod app_icon;
 mod input;
 mod ipc;
 mod persist;
@@ -57,12 +58,16 @@ impl Terminator {
 impl eframe::App for Terminator {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Keep the WM max-size constraint glued to the real GPU limit
+        // (root viewport; secondaries guard inside their own pass).
+        render::surface_guard::apply(&ctx);
         if ctx.input(|i| i.viewport().close_requested()) {
             self.save_if_dirty();
         }
 
         let theme = self.data.st.theme_name.clone();
-        ui::style::sync(&ctx, &theme, &mut self.data.ui);
+        let font_size = self.data.st.settings.font_size;
+        ui::style::sync(&ctx, &theme, font_size, &mut self.data.ui);
 
         // The control socket and per-window passes all act on the window
         // the user is focused on (set inside windows::render).
@@ -115,17 +120,37 @@ fn launch_state(path: &std::path::Path) -> AppState {
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Decode the embedded logo up front (one shared raster for every
+    // viewport); a decode failure only costs the custom icon, never the
+    // app - app_icon warns and the builders fall back to the default.
+    if let Some(icon) = app_icon::icon() {
+        log::debug!("window icon: {}x{} rgba", icon.width, icon.height);
+    }
     let options = eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
-            .with_title("terminator-rust")
-            .with_inner_size([1200.0, 800.0])
-            // Borderless by design (Chrome-style): the tab strip IS the
-            // title bar - dragging the bare chrome moves the window via
-            // ViewportCommand::StartDrag (winit's cross-platform
-            // drag_window); closing via Ctrl+Shift+Q or the last pane.
-            // `with_transparent` stays for window opacity + pane glass.
-            .with_decorations(false)
-            .with_transparent(true),
+        // The embedded logo (assets/logo, gen-logo.py) becomes the window
+        // icon: eframe publishes it as X11 _NET_WM_ICON / the macOS dock
+        // icon (see app_icon - secondaries need their own copy).
+        viewport: app_icon::with_icon(
+            ViewportBuilder::default()
+                .with_title("terminator-rust")
+                .with_inner_size([1200.0, 800.0])
+                // WM-level cap: a window whose PHYSICAL size exceeds the
+                // GPU max texture extent aborts the process inside wgpu
+                // surface configure (8192 on software adapters; 5K at 2x
+                // scale already crosses it). surface_guard::apply
+                // refines this to the real adapter limit each frame.
+                .with_max_inner_size(render::surface_guard::safe_cap_points(
+                    render::surface_guard::FALLBACK_MAX_TEXTURE_SIDE,
+                    1.0,
+                ))
+                // Borderless by design (Chrome-style): the tab strip IS the
+                // title bar - dragging the bare chrome moves the window via
+                // ViewportCommand::StartDrag (winit's cross-platform
+                // drag_window); closing via Ctrl+Shift+Q or the last pane.
+                // `with_transparent` stays for window opacity + pane glass.
+                .with_decorations(false)
+                .with_transparent(true),
+        ),
         ..Default::default()
     };
     eframe::run_native(

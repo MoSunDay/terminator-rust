@@ -207,13 +207,13 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
 }
 
 /// Dimmed placeholder for panes without a live session.
-pub fn draw_dead(painter: &Painter, rect: Rect, bg: Color32, fg: Color32, msg: &str) {
+pub fn draw_dead(painter: &Painter, rect: Rect, bg: Color32, fg: Color32, msg: &str, font: f32) {
     painter.rect_filled(rect, 0.0, bg);
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,
         msg,
-        FontId::monospace(13.0),
+        FontId::monospace(font),
         fg,
     );
 }

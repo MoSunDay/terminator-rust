@@ -82,10 +82,14 @@ check("assets/fonts/NotoSansSC-Regular-subset.otf",
 # nor egui defaults carry (opencoder subagent marker is U+2937)
 check("assets/fonts/TerminalSymbols-subset.ttf",
       "⤷⤴⇲≡✂⭐⬅⬆⬇⌁⌚")
+# emoji last resort: exactly the complement of egui's built-in emoji
+# face (its NotoEmoji-Regular.ttf lacks U+1F916 🤖 and U+FE0F, so the
+# opencoder avatar fell through the chain to `?` + a double-cell hole)
+check("assets/fonts/NotoEmoji-subset.ttf",
+      "\U0001F916\U0001F914\U0001F9E0\U0001FAE1\uFE0F")
 PY
 
 # --- 2. live boot ----------------------------------------------------------
-export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 export SHELL=/bin/bash
@@ -96,10 +100,10 @@ export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 # e2e presets rely on session restore; the default launch is a fresh tab
 export TERMINATOR_RESTORE=1
-mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # Single dracula pane with a stable ctl addressing key.
-cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
+cat > "$HOME/.terminator-rust/state.json" <<'JSON'
 {
   "theme": "dracula",
   "settings": { "split_axis": "v", "split_ratio": 0.5 },
@@ -153,14 +157,15 @@ step "send CJK line, capture round-trips"
 # and merge into one band).
 "$CTL" send cjk --text "clear"$'\n' >/dev/null
 sleep 0.6
-"$CTL" send cjk --text "汉字测试" >/dev/null
+"$CTL" send cjk --text "汉字测试🤖" >/dev/null
 CAP=""
 for _ in $(seq 1 20); do
     CAP=$("$CTL" capture cjk 2>/dev/null || true)
-    echo "$CAP" | grep -q "汉字测试" && break
+    echo "$CAP" | grep -q "汉字测试🤖" && break
     sleep 0.25
 done
 echo "$CAP" | grep -q "汉字测试" || { echo "$CAP"; fail "capture lacks 汉字测试"; }
+echo "$CAP" | grep -q "🤖" || { echo "$CAP"; fail "capture lacks emoji 🤖"; }
 echo "capture round-trip OK"
 
 # --- 4. pixel assertions ----------------------------------------------------

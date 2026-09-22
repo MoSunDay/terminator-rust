@@ -138,8 +138,10 @@ pub fn wheel_delta(lines: f32) -> Option<isize> {
 /// Clamp surface-space pointer pixels into the terminal grid.
 fn viewport_point(sess: &Session, x: f32, y: f32) -> Point {
     let (cw, ch) = vtask::cell_px(sess);
-    let cols = f32::from(sess.term.cols().unwrap_or(80));
-    let rows = f32::from(sess.term.rows().unwrap_or(24));
+    // .max(1): a 0-sized grid would make clamp's min > max and panic;
+    // guard here so the invariant does not depend on distant resizers.
+    let cols = f32::from(sess.term.cols().unwrap_or(80)).max(1.0);
+    let rows = f32::from(sess.term.rows().unwrap_or(24)).max(1.0);
     Point::Viewport(PointCoordinate {
         x: (x / cw.max(1) as f32).clamp(0.0, cols) as u16,
         y: (y / ch.max(1) as f32).clamp(0.0, rows) as u32,

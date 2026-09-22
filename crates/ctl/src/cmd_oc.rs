@@ -311,7 +311,7 @@ fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        let cut: String = s.chars().take(max - 1).collect();
+        let cut: String = s.chars().take(max.saturating_sub(1)).collect();
         format!("{cut}...")
     }
 }

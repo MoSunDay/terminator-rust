@@ -10,7 +10,8 @@ use crate::actions;
 use crate::input::{mouse, pointer, resize};
 use crate::render::{colors, dropzone, grid, preedit, tokens};
 use crate::session_map;
-use crate::state::{AppState, Data, DIVIDER_W, PANE_HEADER_H};
+use crate::state::{AppState, Data, DIVIDER_W};
+use crate::ui::chrome;
 
 /// Pane card silhouette: rounded where the header meets the chrome, square
 /// at the window bottom.
@@ -22,8 +23,10 @@ const CARD_RADIUS: CornerRadius = CornerRadius {
 };
 use crate::ui::pane_header;
 
-/// Pane rects (screen-space layout_tree rects) for the active tab.
-fn pane_rects(st: &AppState, area: Rect) -> Vec<(PaneId, layout_tree::Rect)> {
+/// Pane rects (screen-space layout_tree rects) for the active tab. The
+/// header height comes from the chrome metrics (it scales with the
+/// terminal font size).
+fn pane_rects(st: &AppState, area: Rect, header_h: f32) -> Vec<(PaneId, layout_tree::Rect)> {
     let Some(w) = st.win() else {
         return Vec::new();
     };
@@ -34,7 +37,7 @@ fn pane_rects(st: &AppState, area: Rect) -> Vec<(PaneId, layout_tree::Rect)> {
     if w.ui.zoom {
         return vec![(tab.focused, lt_area)];
     }
-    layout_tab(tab, lt_area, PANE_HEADER_H, DIVIDER_W)
+    layout_tab(tab, lt_area, header_h, DIVIDER_W)
 }
 
 /// Slim scrollbar on the right edge of a pane's content, shown only while
@@ -72,6 +75,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let ctx = ui.ctx().clone();
     let pal = colors::palette_of(&d.st.theme_name);
     let font_size = d.st.settings.font_size;
+    let m = chrome::metrics(font_size);
     let cell = grid::measure_cells(&ctx, font_size);
 
     // Lifecycle bookkeeping.
@@ -131,7 +135,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     }
     let cursor_a = tokens::cursor_alpha(ctx.input(|i| i.time) as f32);
     let painter = ui.painter().clone();
-    let rects = pane_rects(st, area);
+    let rects = pane_rects(st, area, m.header_h);
     // Uniform pane appearance: one opaque bg + one fill alpha for every
     // pane (theme or global override, times the glass/opacity ladders).
     let pane_bg = colors::effective_bg(&pal, st.settings.bg_color);
@@ -143,7 +147,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     if !dragging && pane_drag.is_none() && edge.is_none() {
         let content_rects: Vec<(PaneId, Rect)> = rects
             .iter()
-            .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, PANE_HEADER_H))))
+            .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, m.header_h))))
             .collect();
         pointer::handle(&ctx, &content_rects, st, sess, cell.h, dirty);
     }
@@ -153,8 +157,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         if full.width() < 4.0 || full.height() < 4.0 {
             continue;
         }
-        let header = Rect::from_min_size(full.min, egui::vec2(full.width(), PANE_HEADER_H));
-        let content = grid::egui_rect(content_rect(lt, PANE_HEADER_H));
+        let header = Rect::from_min_size(full.min, egui::vec2(full.width(), m.header_h));
+        let content = grid::egui_rect(content_rect(lt, m.header_h));
 
         pane_header::show(ui, header, pane, tab, st, sess, uist, &pal, dirty);
 
@@ -198,7 +202,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 }
                 // IME anchor + composition overlay for the focused pane:
                 // the popup anchors at the live cursor cell and any
-                // in-flight preedit paints right above it.
+                // in-flight preedit paints with grid conventions (same
+                // fonts/alignment as committed text, the shared egui
+                // composition underline), clipped to the pane.
                 if Some(pane) == focused {
                     if let Some(anchor) = grid::cursor_rect(content, &fr, cell) {
                         let preedit = st.win().and_then(|w| w.ui.ime.clone());
@@ -208,12 +214,13 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         }
                         if let Some(text) = preedit.filter(|t| !t.is_empty()) {
                             preedit::paint(
-                                &painter,
+                                &painter.with_clip_rect(content),
                                 anchor,
                                 &text,
+                                cell,
                                 font_size,
                                 colors::to_c32(pal.foreground),
-                                colors::to_c32(pal.block_highlight),
+                                ui.visuals().ime_composition.active_underline_stroke,
                             );
                         }
                     }
@@ -232,6 +239,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                     colors::with_opacity(pane_bg, fill_alpha),
                     colors::to_c32(colors::title_text(&pal)),
                     &msg,
+                    m.dead_font,
                 );
             }
         }
@@ -270,7 +278,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 StrokeKind::Inside,
             );
             painter.rect_filled(
-                Rect::from_min_size(full.min, egui::vec2(2.0, PANE_HEADER_H)),
+                Rect::from_min_size(full.min, egui::vec2(2.0 * m.s, m.header_h)),
                 1.0,
                 colors::to_c32(pal.block_highlight),
             );

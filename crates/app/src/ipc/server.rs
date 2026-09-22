@@ -41,15 +41,13 @@ pub struct Ipc {
 }
 
 /// Socket path: `$XDG_RUNTIME_DIR/terminator-rust/ipc.sock`, falling back
-/// to `~/.config/terminator-rust/ipc.sock`. The directory is created
-/// best-effort (ignored on failure).
+/// to `~/.terminator-rust/ipc.sock` (a relative `.terminator-rust` when
+/// HOME is unset). The directory is created best-effort (ignored on
+/// failure). No legacy migration: the socket is per-instance state.
 pub fn socket_path() -> PathBuf {
     let dir = match std::env::var_os("XDG_RUNTIME_DIR") {
         Some(v) if !v.is_empty() => PathBuf::from(v).join("terminator-rust"),
-        _ => match std::env::var_os("HOME") {
-            Some(h) if !h.is_empty() => PathBuf::from(h).join(".config").join("terminator-rust"),
-            _ => PathBuf::from(".config").join("terminator-rust"),
-        },
+        _ => paths::config_dir(),
     };
     let _ = std::fs::create_dir_all(&dir);
     dir.join("ipc.sock")

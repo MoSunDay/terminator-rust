@@ -122,7 +122,9 @@ fn theme_section(ui: &mut egui::Ui, d: &mut Data) {
     {
         d.st.settings.font_size = size;
         d.dirty = true;
-        // Font metrics are re-measured every frame; nothing else to do.
+        // Chrome metrics re-derive from the font size every frame; the
+        // egui text styles (tooltips, menus, the Settings panel) rescale
+        // via the style::sync memo once the size changed.
     }
 }
 
@@ -158,7 +160,7 @@ fn splits_section(ui: &mut egui::Ui, d: &mut Data) {
     });
     ui.horizontal(|ui| {
         ui.label("Window opacity:");
-        ui.add(egui::Slider::new(&mut s.opacity, 0.5..=1.0));
+        ui.add(egui::Slider::new(&mut s.opacity, 0.1..=1.0));
     });
     // Splits always divide the space equally (ratio 0.5); a per-split
     // tweak stays possible via the divider drag, so there is no global
@@ -325,9 +327,13 @@ fn registry_section(ui: &mut egui::Ui, d: &mut Data, reg_path: &Path) {
         actions::do_new_tab(st, sess, PaneKind::Remote(t), dirty);
     }
     if let Some(i) = forget {
-        registry.remove(i);
-        if let Err(e) = save_registry(reg_path, registry) {
-            warn!("save registry: {e}");
+        // Index was captured this frame; re-check so any future mutation
+        // path added in between can never panic on a stale index.
+        if i < registry.len() {
+            registry.remove(i);
+            if let Err(e) = save_registry(reg_path, registry) {
+                warn!("save registry: {e}");
+            }
         }
     }
 }

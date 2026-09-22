@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use egui::{Button, Id, Key, Rect, Sense, TextEdit, Ui, Vec2};
+use egui::{Button, FontId, Id, Key, Rect, Sense, TextEdit, Ui, Vec2};
 use layout_tree::PaneId;
 use theme::Palette;
 
@@ -13,8 +13,7 @@ use crate::session_map::SessionMap;
 use crate::state::{
     effective_title, AppState, PaneAction, PaneDrag, PaneMeta, UiState, WindowState,
 };
-
-const BTN: f32 = 16.0;
+use crate::ui::chrome;
 
 /// None when the candidate manual title is acceptable: names must be
 /// unique (control-socket addressing) and not digits-only (reserved for
@@ -36,7 +35,8 @@ fn reject_reason(
     None
 }
 
-/// Draw the header for `pane` in `rect` (full width, PANE_HEADER_H tall).
+/// Draw the header for `pane` in `rect` (full width, header_h tall - the
+/// chrome metrics scale that height with the terminal font size).
 #[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
@@ -49,6 +49,7 @@ pub fn show(
     pal: &Palette,
     dirty: &mut bool,
 ) {
+    let m = chrome::metrics(st.settings.font_size);
     let focused = st
         .win()
         .and_then(|w| w.tree.tabs.get(tab))
@@ -160,14 +161,14 @@ pub fn show(
         badges.push(format!("exit {code}"));
     }
 
-    let btn_w = BTN + 8.0;
+    let btn_w = m.header_btn + 8.0 * m.s;
     let badge_w = badges
         .iter()
-        .map(|b| 26.0 + b.len() as f32 * 6.5)
+        .map(|b| (26.0 + b.len() as f32 * 6.5) * m.s)
         .sum::<f32>();
     let title_rect = Rect::from_min_max(
-        rect.min + Vec2::new(8.0, 2.0),
-        rect.right_top() + Vec2::new(-(btn_w + badge_w + 8.0), rect.height() - 2.0),
+        rect.min + Vec2::new(8.0 * m.s, 2.0 * m.s),
+        rect.right_top() + Vec2::new(-(btn_w + badge_w + 8.0 * m.s), rect.height() - 2.0),
     );
 
     let editing = st
@@ -228,7 +229,7 @@ pub fn show(
                 rect.left_bottom() + Vec2::new(8.0, 2.0),
                 egui::Align2::LEFT_TOP,
                 note,
-                egui::FontId::proportional(11.0),
+                egui::FontId::proportional(m.note_font),
                 to_c32(pal.bright[1]),
             );
         }
@@ -244,7 +245,7 @@ pub fn show(
             title_rect.center(),
             egui::Align2::CENTER_CENTER,
             title.as_str(),
-            egui::FontId::monospace(12.0),
+            egui::FontId::monospace(m.title_font),
             fg,
         );
         let mut x = title_rect.right() + 6.0;
@@ -253,10 +254,10 @@ pub fn show(
                 egui::pos2(x, title_rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 b.as_str(),
-                egui::FontId::monospace(11.0),
+                egui::FontId::monospace(m.badge_font),
                 to_c32(pal.bright[3]),
             );
-            x += 26.0 + b.len() as f32 * 6.5;
+            x += (26.0 + b.len() as f32 * 6.5) * m.s;
         }
         let hit = ui.interact(
             title_rect,
@@ -275,10 +276,12 @@ pub fn show(
     // Sense::CLICK (not the default focusable click): a focusable button
     // would take keyboard focus on a bare Tab and then fire on the next
     // Space, closing the pane out from under the typist.
-    let r = rect.right_top() + Vec2::new(-BTN - 4.0, (rect.height() - BTN) / 2.0);
+    let r = rect.right_top() + Vec2::new(-m.header_btn - 4.0, (rect.height() - m.header_btn) / 2.0);
     let close = ui.put(
-        Rect::from_min_size(r, Vec2::splat(BTN)),
-        Button::new("X").small().sense(Sense::CLICK),
+        Rect::from_min_size(r, Vec2::splat(m.header_btn)),
+        // egui's Small text style is 10.0pt; keep that size at scale 1.
+        Button::new(egui::RichText::new("X").font(FontId::proportional(10.0 * m.s)))
+            .sense(Sense::CLICK),
     );
 
     if close.clicked() {

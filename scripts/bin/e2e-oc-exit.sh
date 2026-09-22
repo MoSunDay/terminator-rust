@@ -95,7 +95,6 @@ oc_pid() {
 cargo build -p app -p ctl --bins >/dev/null
 [ -x "$OC_BIN" ] || fail "opencoder binary missing at $OC_BIN (build it first)"
 
-export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
@@ -105,11 +104,11 @@ export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 # e2e presets rely on session restore; the default launch is a fresh tab
 export TERMINATOR_RESTORE=1
-mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # --- world: three local panes, each running the real opencoder ----------
-mkdir -p "$ROOT/config/terminator-rust" "$ROOT/bin"
-cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
+mkdir -p "$HOME/.terminator-rust" "$ROOT/bin"
+cat > "$HOME/.terminator-rust/state.json" <<'JSON'
 {
   "theme": "catppuccin-mocha",
   "tabs": [

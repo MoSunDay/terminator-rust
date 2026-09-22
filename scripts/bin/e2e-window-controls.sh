@@ -187,18 +187,17 @@ launch_app() {
 # --- build + sandbox ------------------------------------------------------
 cargo build -p app -p ctl --bins >/dev/null
 
-export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 export SHELL=/bin/sh      # no OSC title churn; window names stay stable
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
-STATE="$XDG_CONFIG_HOME/terminator-rust/state.json"
+STATE="$HOME/.terminator-rust/state.json"
 export TERMINATOR_OPAQUE=1     # no compositor on Xvfb
 export TERMINATOR_NO_MOTION=1  # pin hover fades / cursor blink
 # e2e presets rely on session restore; the default launch is a fresh tab
 export TERMINATOR_RESTORE=1
-mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # --- Xvfb + openbox -------------------------------------------------------
 step "launch Xvfb + openbox"

@@ -1,7 +1,7 @@
 //! UDS client half of the control protocol: resolve the socket, write one
 //! newline-terminated JSON request, read exactly one line back.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -43,7 +43,10 @@ pub fn request(req: &Request, timeout: Duration) -> Result<Response> {
     line.push('\n');
     stream.write_all(line.as_bytes()).context("write request")?;
     let mut buf = String::new();
+    // Bound the read itself: a hostile/buggy server must not be able to
+    // buffer unbounded bytes into memory before the cap is checked.
     let n = BufReader::new(stream)
+        .take(MAX_LINE.saturating_add(1) as u64)
         .read_line(&mut buf)
         .context("read response")?;
     if n == 0 {
@@ -75,14 +78,8 @@ fn default_paths() -> Vec<PathBuf> {
     if let Some(dir) = env_nonempty("XDG_RUNTIME_DIR") {
         v.push(PathBuf::from(dir).join("terminator-rust").join("ipc.sock"));
     }
-    if let Some(home) = env_nonempty("HOME") {
-        v.push(
-            PathBuf::from(home)
-                .join(".config")
-                .join("terminator-rust")
-                .join("ipc.sock"),
-        );
-    }
+    // Keep in sync with the server's fallback (app/src/ipc/server.rs).
+    v.push(paths::config_dir().join("ipc.sock"));
     v
 }
 
