@@ -1,5 +1,6 @@
 //! Drawing helpers: theme color resolution and grid painting.
 
+pub mod bg_runs;
 pub mod colors;
 pub mod dropzone;
 pub mod grid;
