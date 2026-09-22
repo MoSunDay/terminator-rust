@@ -30,11 +30,46 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 
 ## Build/e2e
 - `cargo build/test --workspace` (PKG_CONFIG_PATH set by .cargo/config.toml)
+- macOS (aarch64-apple-darwin) is a first-class target: CI job
+  build-test-macos (fmt/clippy/test on macos-15) runs the same gates;
+  e2e scripts stay Linux-only (Xvfb/xdotool). Cross-check from Linux:
+  `PKG_CONFIG_ALLOW_CROSS=1 CC_aarch64_apple_darwin="python3.10 -m
+  ziglang cc -target aarch64-macos" AR_aarch64_apple_darwin="python3.10
+  -m ziglang ar" cargo check --workspace --all-targets --target
+  aarch64-apple-darwin` (rust std target installed; PKG_CONFIG_ALLOW_CROSS
+  or libghostty-vt-sys's build.rs falls back to a zig build and dies).
+  third_party/ vendored ghostty artifacts are PER-OS: re-run
+  scripts/fetch-vendor.sh on each platform, never copy between them.
+- platform notes: ptsname_r is glibc-only -> pty.rs pty_slave_name uses
+  TIOCPTYGNAME (0x80807463, custom const; libc crate does not export it)
+  on macOS; __errno_location is glibc-only -> task.rs reads
+  io::Error::last_os_error() instead; child locale defaults en_US.UTF-8
+  on macOS (no C.UTF-8 there); x11-dl is linux-gated in app/Cargo.toml
+  (pointer_poll falls back to event-driven edge resize on macOS);
+  ctl/src/procfs_{linux,macos}.rs split the /proc discovery - macOS uses
+  libproc (proc_listallpids + proc_pidinfo SHORTBSDINFO/VNODEPATHINFO +
+  proc_pidfdinfo PROC_PIDFDVNODEPATHINFO=2, custom const; the rest libc
+  exports), ctl only pulls libc on macOS; scripts/bin/zig falls back
+  dist-packages -> PATH zig -> python3 -m ziglang; fetch-vendor.sh sed
+  is BSD-safe (tmp+mv)
 - headless UI smoke: Xvfb :NN + xdotool (type into window works; needs
   `xdotool windowfocus` - no WM focus otherwise)
 - remote e2e: `cargo test -p remote --test zellij_e2e -- --ignored`
   (needs local sshd key auth + zellij; cleanup uses delete-all-sessions
   --force)
+- net-drop e2e (REAL network interruption + session recovery):
+  `cargo test -p remote --test net_drop_e2e -- --ignored` +
+  `cargo test -p app reconnect_net -- --ignored` (the latter drives the
+  full frame loop pump_all/close_exited/reconnect::pump/ensure_sessions
+  against a live attach: close_exited spares the pane, pending badge
+  shows, backoff(1)=1s respawn, marker survives). HARD RULE: the test
+  process itself runs INSIDE an sshd session - NEVER stop/restart sshd
+  or kill the listener; interrupt via kill -9 of the per-connection
+  sshd child (pair ports with `ss -tnp`) or an iptables REJECT window on
+  `-i lo --dport 22` tagged with a comment (idempotent delete; NEVER
+  assert while the rule is inserted - a panic strands it). REJECT
+  tcp-reset fails ssh in ~0.1s (ConnectTimeout never hangs); server RST
+  yields a natural exit 255 both shapes reattach with state intact.
 - control-channel e2e: `scripts/bin/e2e-ipc-oc.sh` (Xvfb + fake opencoder
   holding a fixture store open in a named pane; covers list/capture/send,
   oc link/submit/status/--wait, stale-socket reclaim after SIGTERM)
@@ -290,9 +325,27 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   mode would otherwise starve the poll); poll None (Wayland/tests)
   falls back to the event path with an escape guard (win.expand(96):
   a flick that outran the window ends the gesture instead of snapping
-  on re-entry). chrome StartDrag (window MOVE, tabs.rs) still hands the
-  WM a grab - same wedge disease, self-heals after one dead gesture,
-  out of scope.
+  on re-entry). chrome StartDrag (window MOVE, tabs.rs + lone-pane pane_header)
+  is GATED since 2026-09-21: ui::arm_window_drag fires it only after
+  WINDOW_DRAG_MIN_PX=8 of RESPONSE-LOCAL accumulated drag_delta
+  travel, latched per button-down (any_down), reset on release OR
+  fresh press (any_pressed - a release swallowed by the WM grab must
+  not suppress the next gesture). NEVER gate on global
+  press_origin/latest_pos: during a WM move-grab the pointer state
+  FLAPS across viewport passes (dragging alternates true/false per
+  frame, press_origin reads cross-viewport contaminated - bogus
+  288px travel measured), and a naive gate re-arms and SPAMS
+  StartDrag every other frame, thrashing the WM gesture so the next
+  chip click is eaten. With the response-local gate: exactly one
+  StartDrag per gesture, consecutive drags x3 all move, chip/pane
+  clicks after drags activate.
+- ANY-CLICK WINDOW ACTIVATION (2026-09-21, windows.rs render): a
+  viewport pass with focused != Some(true) + pointer.any_pressed()
+  sends ViewportCommand::Focus (winit _NET_ACTIVE_WINDOW) - pane,
+  chip and bare-chrome clicks ALL explicitly activate the window even
+  when WM focus policy or a pending move-grab would eat the click
+  (deploy-target xfwm4: chip/chrome presses on an unfocused secondary
+  did not activate before this).
 - tab overflow scroll: chips keep the UNSCROLLED horizontal flow for cursor
   advance, but interact/paint at vrect = rect.translate(-tab_scroll); clip
   the horizontal Ui to the strip (egui hit-test uses rect INTERSECT clip,
@@ -350,7 +403,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   interaction + raw pointer routing while latched, drop target = topmost
   pane whose FULL rect (header included) contains the pointer, zone via
   layout_tree::zone_for (center 50% square = Center/id-swap, else nearest
-  edge = actions::do_move_pane detach+re-split at settings.split_ratio);
+  edge = actions::do_move_pane detach+re-split, always 0.5);
   overlay = render/dropzone.rs SOLID mix-ladder colors (no alpha) painted
   after dividers. CROSS-TAB migration (2026-09-20): dwelling on another
   tab's chip mid-pane_drag (DWELL_SECS 0.4, PaneDrag.dwell +
@@ -479,10 +532,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   session restore (PWindow/tabs) is OPT-IN via TERMINATOR_RESTORE=1,
   which every e2e that presets state.json exports; without it a preset
   session is ignored. Closing everything persists `tabs:[]` as before.
-- state.json carries `settings {split_axis:"v"|"h", split_ratio 0.05..0.95}`
-  (serde default: old files load unchanged). Ctrl+Shift+D splits along
-  settings.split_axis; layout-tree split_pane_ratio clamps non-finite ->
-  0.5 -> 0.05..0.95.
+- SPLITS ARE ALWAYS 50/50 (2026-09-21): the global persistent
+  `settings.split_ratio` knob ("new pane share" slider) is DELETED - a
+  dragged slider silently made every future split unequal (target had
+  0.46 persisted and users read it as a bug). Every split path
+  (Ctrl+Shift+E/O, chrome split buttons, drag-drop re-split, cross-tab
+  migration) pins 0.5; per-split tuning is the divider drag. state.json
+  keeps `settings {split_axis:"v"|"h"}`; stale split_ratio keys in old
+  files are ignored (serde, no deny_unknown_fields) and dropped on the
+  next save. layout-tree split_pane_ratio (MIN/MAX clamp) stays for
+  divider-drag persistence.
 - app chrome colors derive from the palette in render/colors.rs (mix():
   chrome_bg 4.5% bg->fg, hover 10%, hairline 9%, divider 13%, tab_active
   bg->highlight 18%, title_text fg->bg 42%). ui/style.rs sync() installs a
