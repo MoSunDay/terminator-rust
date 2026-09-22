@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +32,17 @@ pub fn sidecar_path() -> PathBuf {
 /// Load the sidecar; a missing file is an empty map, a corrupt one is an
 /// error (names are addressing keys -- silently wiping them is worse).
 pub fn load(path: &std::path::Path) -> Result<Links> {
+    // Size guard: the sidecar is a handful of names, so anything over
+    // 1 MiB is a stray file (or device), not links worth parsing.
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() > 1024 * 1024 {
+            return Err(anyhow!(
+                "{} is {} bytes (limit 1 MiB)",
+                path.display(),
+                meta.len()
+            ));
+        }
+    }
     match std::fs::read_to_string(path) {
         Ok(text) => {
             serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))
@@ -61,10 +72,21 @@ fn save(path: &std::path::Path, links: &Links) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("mkdir {}", dir.display()))?;
     }
-    let tmp = path.with_extension("json.tmp");
+    // Unique tmp suffix: the pid separates concurrent `oc link` PROCESSES,
+    // the in-process counter separates writers within one process -- a
+    // shared tmp path interleaves writes into a torn json, and every later
+    // oc command then errors until the file is deleted by hand.
+    let tmp = path.with_extension(format!("json.{}.tmp", tmp_suffix()));
     let text = serde_json::to_string_pretty(links).context("serialize links")?;
     std::fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("install {}", path.display()))
+}
+
+/// pid + per-call counter: unique across processes and threads alike.
+fn tmp_suffix() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}.{seq}", std::process::id())
 }
 
 #[cfg(test)]
@@ -114,6 +136,45 @@ mod tests {
         let p = tmp("corrupt");
         std::fs::write(&p, "{not json").unwrap();
         assert!(load(&p).is_err());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn oversized_file_is_rejected() {
+        let p = tmp("oversize");
+        std::fs::write(&p, "x".repeat(1024 * 1024 + 1)).unwrap();
+        assert!(load(&p).is_err());
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn concurrent_writes_never_leave_a_torn_file() {
+        // Per-pid tmp names: two writers race read-modify-write (last
+        // rename wins) but the installed file is always a whole json doc.
+        let p = tmp("concurrent");
+        let handles: Vec<_> = (0..2)
+            .map(|t| {
+                let path = p.clone();
+                std::thread::spawn(move || {
+                    for i in 0..50 {
+                        set(
+                            &path,
+                            &format!("p{t}-{i}"),
+                            Link {
+                                db: "/x/opencoder.db".into(),
+                                session: None,
+                            },
+                        )
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let all = load(&p).unwrap(); // parse succeeds = never torn
+        assert!(!all.links.is_empty());
         let _ = std::fs::remove_file(&p);
     }
 }

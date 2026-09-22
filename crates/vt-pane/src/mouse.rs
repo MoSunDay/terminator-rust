@@ -153,9 +153,19 @@ fn viewport_point(sess: &Session, x: f32, y: f32) -> Point {
 fn clamp_grid_px(sess: &Session, x: f32, y: f32) -> (f32, f32) {
     let (cw, ch) = vtask::cell_px(sess);
     let (cw, ch) = (cw.max(1) as f32, ch.max(1) as f32);
-    let cols = f32::from(sess.term.cols().unwrap_or(80));
-    let rows = f32::from(sess.term.rows().unwrap_or(24));
+    // .max(1.0) mirrors `viewport_point`: a 0-sized grid would make
+    // clamp's min > max and panic; guard here so the invariant does not
+    // depend on distant resizers.
+    let cols = f32::from(sess.term.cols().unwrap_or(80)).max(1.0);
+    let rows = f32::from(sess.term.rows().unwrap_or(24)).max(1.0);
     (x.clamp(0.0, cols * cw - 1.0), y.clamp(0.0, rows * ch - 1.0))
+}
+
+/// Non-finite pointer positions must never reach ghostty across the FFI
+/// (a Zig safe build traps on NaN float->int conversion in
+/// set_position/encoders); treat them as a no-op at every public entry.
+fn pos_finite(x: f32, y: f32) -> bool {
+    x.is_finite() && y.is_finite()
 }
 
 fn encoder_size(sess: &Session) -> EncoderSize {
@@ -185,6 +195,9 @@ pub fn encode_mouse(
     y: f32,
     any_button: bool,
 ) -> Result<Vec<u8>> {
+    if !pos_finite(x, y) {
+        return Ok(Vec::new());
+    }
     let size = encoder_size(sess);
     let key = (
         size.screen_width,
@@ -306,6 +319,9 @@ pub fn follow_output(sess: &mut Session) {
 
 /// Press: starts/restarts a selection gesture (multi-click aware).
 pub fn select_press(sess: &mut Session, x: f32, y: f32) -> Result<()> {
+    if !pos_finite(x, y) {
+        return Ok(());
+    }
     let (x, y) = clamp_grid_px(sess, x, y);
     let grid_ref = sess.term.grid_ref(viewport_point(sess, x, y))?;
     let (cw, _) = vtask::cell_px(sess);
@@ -322,6 +338,9 @@ pub fn select_press(sess: &mut Session, x: f32, y: f32) -> Result<()> {
 
 /// Drag: extends the active selection (rectangle for Ctrl+Alt drags).
 pub fn select_drag(sess: &mut Session, x: f32, y: f32, rectangle: bool) -> Result<()> {
+    if !pos_finite(x, y) {
+        return Ok(());
+    }
     let (x, y) = clamp_grid_px(sess, x, y);
     let grid_ref = sess.term.grid_ref(viewport_point(sess, x, y))?;
     let geometry = {
@@ -345,6 +364,9 @@ pub fn select_drag(sess: &mut Session, x: f32, y: f32, rectangle: bool) -> Resul
 
 /// Release: finishes the gesture; keeps the final selection installed.
 pub fn select_release(sess: &mut Session, x: f32, y: f32) -> Result<()> {
+    if !pos_finite(x, y) {
+        return Ok(());
+    }
     let (x, y) = clamp_grid_px(sess, x, y);
     let grid_ref = sess.term.grid_ref(viewport_point(sess, x, y)).ok();
     sess.pointer

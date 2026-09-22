@@ -300,7 +300,7 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
                 session_map::START_COLS,
                 session_map::START_ROWS,
             ) {
-                sess.map.insert(id, s);
+                session_map::note_spawned(sess, id, s);
             }
         }
         *dirty = true;
@@ -310,14 +310,16 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
 /// A pane whose session finished and whose exit has been visible for at
 /// least [`session_map::EXIT_GRACE`]. Pure predicate for [`close_exited`].
 /// Remote connection drops are exempt: [`reconnect`] keeps those panes
-/// and reattaches them instead.
+/// and reattaches them instead. Exit 42 is exempt only while
+/// [`auto_degrade`] still owns it (remote, not yet degraded); a local or
+/// already-degraded shell exiting 42 is just a dead shell.
 fn exit_ripe(st: &AppState, sess: &SessionMap, id: &PaneId, now: Instant) -> bool {
     let exited = match sess.map.get(id) {
-        // alive, auto_degrade owns the exit-42 marker, reconnect::pump
-        // owns remote connection-drop exits
-        Some(s) => s
-            .exit
-            .is_some_and(|e| e != EXIT_NO_ZELLIJ && !pane_disconnected(st, id, e)),
+        // alive, auto_degrade owns the exit-42 marker of a non-degraded
+        // remote pane, reconnect::pump owns remote connection-drop exits
+        Some(s) => s.exit.is_some_and(|e| {
+            (e != EXIT_NO_ZELLIJ || !pane_degradable(st, id)) && !pane_disconnected(st, id, e)
+        }),
         // spawn-backoff candidate, not a corpse
         None => false,
     };
@@ -326,6 +328,14 @@ fn exit_ripe(st: &AppState, sess: &SessionMap, id: &PaneId, now: Instant) -> boo
             .exited_seen
             .get(id)
             .is_some_and(|seen| now.duration_since(*seen) >= session_map::EXIT_GRACE)
+}
+
+/// True when the pane is remote and not yet degraded: `auto_degrade`
+/// owns its exit-42 marker, so the pane must not auto-close.
+fn pane_degradable(st: &AppState, id: &PaneId) -> bool {
+    st.panes
+        .get(id)
+        .is_some_and(|m| matches!(m.kind, PaneKind::Remote(_)) && !m.degraded)
 }
 
 /// True when the pane is remote and its exit code means the connection
@@ -663,14 +673,58 @@ mod close_exited_tests {
         assert!(ui.quitting, "only window + last pane => quit");
     }
 
+    /// A non-degraded remote pane kind (the only one auto_degrade owns).
+    fn remote_kind() -> PaneKind {
+        PaneKind::Remote(remote::RemoteTarget {
+            label: "lab".to_string(),
+            host: "localhost".to_string(),
+            user: None,
+            port: None,
+            session_name: "e2e".to_string(),
+        })
+    }
+
     #[test]
     fn exit42_marker_is_left_for_auto_degrade() {
         let (mut st, mut sess, mut ui) = split_state();
         let mut dirty = false;
+        if let Some(m) = st.panes.get_mut(&1) {
+            m.kind = remote_kind();
+        }
         ripen(&mut sess, 1, EXIT_NO_ZELLIJ);
         close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
         assert!(st.panes.contains_key(&1), "degrade path owns exit 42");
         assert!(sess.map.contains_key(&1));
+    }
+
+    /// Exit 42 from anything auto_degrade can NOT act on (local shell,
+    /// already-degraded remote) is just a dead shell: auto-close it.
+    #[test]
+    fn local_exit42_closes_like_any_dead_shell() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        ripen(&mut sess, 1, EXIT_NO_ZELLIJ);
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert!(
+            !st.panes.contains_key(&1),
+            "local exit 42 is no degrade marker"
+        );
+        assert!(!sess.map.contains_key(&1));
+        assert!(st.panes.contains_key(&2), "sibling untouched");
+    }
+
+    #[test]
+    fn degraded_remote_exit42_closes() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        if let Some(m) = st.panes.get_mut(&1) {
+            m.kind = remote_kind();
+            m.degraded = true;
+        }
+        ripen(&mut sess, 1, EXIT_NO_ZELLIJ);
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert!(!st.panes.contains_key(&1), "already degraded, no hand-off");
+        assert!(!sess.map.contains_key(&1));
     }
 
     #[test]

@@ -22,7 +22,13 @@ use ipc_proto::{Request, Response, DEFAULT_TIMEOUT_SECS};
 use crate::args::Cli;
 
 fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // args_os + lossy: non-UTF-8 argv (e.g. a latin-1 filename from shell
+    // completion) must not panic; the lossy name just fails the pane
+    // lookup with the normal not-found error.
+    let argv: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
     let cli = match args::parse(&argv) {
         Ok(cli) => cli,
         Err(e) => {
