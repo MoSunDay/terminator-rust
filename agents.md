@@ -227,6 +227,18 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   pre-motion frame). All Xvfb e2e scripts export TERMINATOR_NO_MOTION=1
   (hover fades + cursor sine blink pinned to end states; see
   render/tokens.rs - radius/shadow/motion token layer, pure functions).
+- cell backgrounds paint as MERGED runs (render/bg_runs.rs, 2026-09-22):
+  one rect_filled PER CELL feathered a seam lattice (1/255/column at the
+  cell pitch, vertical AND row boundaries) across every ANSI-bg region,
+  and the sub-cell remainder right of the last grid column showed the
+  pane bg instead of the row color. bg_runs folds equal colors into
+  maximal rectangles (selected > inverse > explicit > default; wide
+  cells cover both columns) and run_rect bleeds last-column runs to the
+  pane edge. Cursor-block glyph ink = the cursor CELL's own bg at full
+  alpha (bg_runs::cursor_ink), not the pane bg. PIXEL-GATE GOTCHA: the
+  NVIDIA/Vulkan present path dithers exactly-1-off columns at
+  screen-fixed positions on ANY fill (single rects too; GL clean) - seam
+  gates must count only >=2-off deviations or they flake.
 - Xvfb smoke ops: launch with `setsid nohup ... </dev/null &` to survive
   across tool calls; NEVER `pkill -f` a pattern that occurs in your own
   command line (self-kill, tool exit -1) - kill by PID instead.
