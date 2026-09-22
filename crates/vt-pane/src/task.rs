@@ -213,13 +213,13 @@ fn reader_loop(
             }
             continue;
         }
-        if n == 0 || unsafe { *libc::__errno_location() } == libc::EIO {
+        if n == 0 || io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::EIO {
             // EOF or EIO: child side closed.
             let status = pty::pty_wait(pid, false).ok().flatten().unwrap_or(0);
             let _ = tx.send(PtyEvent::Exit(status));
             break;
         }
-        if unsafe { *libc::__errno_location() } == libc::EINTR {
+        if io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::EINTR {
             continue;
         }
         let status = pty::pty_wait(pid, false).ok().flatten().unwrap_or(-1);

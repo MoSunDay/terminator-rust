@@ -7,6 +7,10 @@ mod args;
 mod cmd_oc;
 mod format;
 mod procfs;
+#[cfg(target_os = "linux")]
+mod procfs_linux;
+#[cfg(target_os = "macos")]
+mod procfs_macos;
 mod sidecar;
 mod uds;
 

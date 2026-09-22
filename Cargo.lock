@@ -805,6 +805,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ipc-proto",
+ "libc",
  "oc-store",
  "serde",
  "serde_json",

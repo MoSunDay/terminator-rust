@@ -43,6 +43,36 @@ jobs:
       - name: Unit + integration tests
         run: cargo test --workspace
 
+  build-test-macos:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: "macos: Install pkg-config"
+        run: brew install pkg-config
+
+      - name: "macos: Install zig 0.16.0 (ghostty vendor build)"
+        run: pip3 install ziglang==0.16.0
+
+      - name: "macos: Vendor the ghostty VT engine"
+        run: ./scripts/fetch-vendor.sh
+
+      - name: "macos: Format"
+        run: cargo fmt --all -- --check
+
+      - name: "macos: Clippy"
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: "macos: Unit + integration tests"
+        run: cargo test --workspace
+
   e2e-windows:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

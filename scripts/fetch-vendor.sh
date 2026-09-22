@@ -48,8 +48,9 @@ rm -rf "$OUT/lib" "$OUT/include" "$OUT/share"
 cp -r "$INSTALL/lib" "$INSTALL/include" "$INSTALL/share" "$OUT/"
 
 # Rewrite pkg-config prefixes to the harvested location.
+# (`sed -i` without a backup suffix is GNU-only; BSD sed needs one.)
 for pc in "$OUT"/share/pkgconfig/*.pc; do
-  sed -i "s|^prefix=.*|prefix=$OUT|" "$pc"
+  sed -e "s|^prefix=.*|prefix=$OUT|" "$pc" > "$pc.tmp" && mv "$pc.tmp" "$pc"
 done
 
 echo "harvested to $OUT:"
