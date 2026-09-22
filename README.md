@@ -86,8 +86,21 @@ blur, Windows support.
 
 ## macOS notes
 
-The codebase is POSIX (openpty/fork/exec); macOS ships all of it. To build
-there, re-vendor the ghostty static lib for `aarch64-apple-darwin`
-(`scripts/fetch-vendor.sh` with a native zig) or point `PKG_CONFIG_PATH`
-at a homebrew ghostty. No code changes expected; `libc` handles the
-platform calls. Not yet CI-verified.
+Supported natively (aarch64-apple-darwin); CI runs fmt/clippy/tests on
+macos-15 (`build-test-macos` job). Platform specifics:
+
+- PTY: `posix_openpt`/`fork`/`execve` everywhere; the slave name comes
+  from `ptsname_r` on Linux and `TIOCPTYGNAME` on macOS, and child
+  locales default to `en_US.UTF-8` (macOS has no `C.UTF-8`).
+- Build: `brew install pkg-config`, `pip3 install ziglang==0.16.0`, then
+  `scripts/fetch-vendor.sh` (the `scripts/bin/zig` wrapper falls back to
+  `python3 -m ziglang`). Vendored ghostty artifacts are per-OS: re-run
+  fetch-vendor on the Mac, never copy `third_party/` from Linux.
+- `ctl oc` process discovery uses libproc (`proc_pidinfo`/`proc_pidfdinfo`)
+  instead of `/proc`; same semantics, incl. the multi-store refusal.
+- Fonts, cell metrics (device-pixel snapping, wide-cell = 2x narrow),
+  theme, IPC socket, state.json paths and the egui UI are identical on
+  both platforms by construction.
+- X11-only bits are cfg-gated: pointer polling (XQueryPointer) falls
+  back to event-driven edge resize; e2e scripts (Xvfb/xdotool) stay
+  Linux-only.

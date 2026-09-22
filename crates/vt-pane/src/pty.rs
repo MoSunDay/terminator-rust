@@ -6,6 +6,12 @@ use std::os::fd::RawFd;
 
 use anyhow::{bail, Context, Result};
 
+/// macOS has no C.UTF-8 locale; en_US.UTF-8 ships with every install.
+#[cfg(target_os = "macos")]
+const LOCALE: &str = "en_US.UTF-8";
+#[cfg(not(target_os = "macos"))]
+const LOCALE: &str = "C.UTF-8";
+
 /// A live pseudo-terminal attached to a child process.
 #[derive(Debug, Clone, Copy)]
 pub struct PtyHandle {
@@ -45,8 +51,8 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
     let mut env: Vec<CString> = vec![
         CString::new("TERM=xterm-256color")?,
         CString::new("TERM_PROGRAM=terminator-rust")?,
-        CString::new("LANG=C.UTF-8")?,
-        CString::new("LC_ALL=C.UTF-8")?,
+        CString::new(format!("LANG={LOCALE}"))?,
+        CString::new(format!("LC_ALL={LOCALE}"))?,
     ];
     for kv in extra_env {
         if kv.contains('=') {
@@ -103,7 +109,7 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
             // Child: new session, slave becomes ctty + stdio, then exec.
             unsafe {
                 libc::setsid();
-                libc::ioctl(slave, libc::TIOCSCTTY, 0);
+                libc::ioctl(slave, TIOCSCTTY_IOCTL, 0);
                 libc::dup2(slave, 0);
                 libc::dup2(slave, 1);
                 libc::dup2(slave, 2);
@@ -199,7 +205,46 @@ pub fn pty_wait(pid: i32, non_blocking: bool) -> Result<Option<i32>> {
     }
 }
 
-/// Find `prog` on the PATH encoded in `env` (`KEY=VALUE` CStrings).
+/// Resolve the slave device path of a pty master fd.
+///
+/// glibc exposes the thread-safe `ptsname_r`; Apple platforms instead use
+/// the `TIOCPTYGNAME` ioctl, which the libc crate does not export.
+// _IOW('t', 99, 128): Apple's official thread-safe ptsname equivalent.
+#[cfg(target_os = "macos")]
+const TIOCPTYGNAME: libc::c_ulong = 0x80807463;
+
+/// Darwin's libc exposes TIOCSCTTY as `c_uint` while `ioctl` takes
+/// `c_ulong`; normalize per platform so call sites stay uniform.
+#[cfg(target_os = "macos")]
+const TIOCSCTTY_IOCTL: libc::c_ulong = libc::TIOCSCTTY as libc::c_ulong;
+#[cfg(not(target_os = "macos"))]
+const TIOCSCTTY_IOCTL: libc::c_ulong = libc::TIOCSCTTY;
+
+fn pty_slave_name(master: RawFd) -> io::Result<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut buf = [0u8; 128];
+        // SAFETY: plain ioctl writing into a valid buffer.
+        if unsafe { libc::ioctl(master, TIOCPTYGNAME, buf.as_mut_ptr(), buf.len()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+        String::from_utf8(buf[..end].to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "pty slave name not UTF-8"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut name = [0 as libc::c_char; 64];
+        // SAFETY: plain C call with a valid pointer/len.
+        if unsafe { libc::ptsname_r(master, name.as_mut_ptr(), name.len()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let end = name.iter().position(|c| *c == 0).unwrap_or(name.len());
+        String::from_utf8(name[..end].iter().map(|c| *c as u8).collect())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "pty slave name not UTF-8"))
+    }
+}
+
 /// Allocate a pty pair with O_CLOEXEC on both ends.
 fn open_pty_pair(winsize: &libc::winsize) -> Result<(RawFd, RawFd)> {
     // SAFETY: plain C pty calls, all before fork.
@@ -218,12 +263,19 @@ fn open_pty_pair(winsize: &libc::winsize) -> Result<(RawFd, RawFd)> {
         if libc::unlockpt(master) != 0 {
             return Err(fail(master)).context("unlockpt");
         }
-        let mut name = [0 as libc::c_char; 64];
-        if libc::ptsname_r(master, name.as_mut_ptr(), name.len()) != 0 {
-            return Err(fail(master)).context("ptsname_r");
-        }
+        let slave_name = match pty_slave_name(master) {
+            Ok(n) => n,
+            Err(e) => {
+                libc::close(master);
+                return Err(e).context("pty_slave_name");
+            }
+        };
+        let slave_path = match CString::new(slave_name) {
+            Ok(p) => p,
+            Err(_) => return Err(fail(master)).context("pty slave path contains NUL"),
+        };
         let slave = libc::open(
-            name.as_ptr(),
+            slave_path.as_ptr(),
             libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
         );
         if slave < 0 {
