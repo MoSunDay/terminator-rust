@@ -5,6 +5,12 @@
 //! nor egui's built-in faces carry the supplemental arrows and symbols TUIs
 //! emit (opencoder's subagent marker `⤷` U+2937, `≡`, `⤴`, `⭐` …), and
 //! epaint renders every char no face supports as a literal `?`.
+//! A Noto Emoji outline subset (OFL, `assets/fonts/NotoEmoji-OFL.txt`)
+//! rides last: egui's built-in NotoEmoji face carries the common emoji
+//! but lacks `🤖` U+1F916 (opencoder's assistant avatar) and `U+FE0F`,
+//! so those used to fall through the whole chain and render as `?`
+//! inside a double-wide cell (a visible hole). The subset holds exactly
+//! the complement of egui's emoji cmap, in the same Noto outline style.
 //!
 //! Ships a Maple Mono Normal NF CN subset (OFL, see
 //! `assets/fonts/MapleMono-OFL.txt`) registered as the FIRST entry of
@@ -29,6 +35,9 @@ pub const CJK_FONT_NAME: &str = "terminator-cjk";
 /// Registered name of the symbols last-resort font.
 pub const SYM_FONT_NAME: &str = "terminator-symbols";
 
+/// Registered name of the emoji last-resort font.
+pub const EMOJI_FONT_NAME: &str = "terminator-emoji";
+
 /// Embedded Maple Mono Normal NF CN subset (OFL).
 const MONO_FONT_BYTES: &[u8] = include_bytes!("../../../../assets/fonts/MapleMonoNF-CN-subset.ttf");
 
@@ -39,6 +48,10 @@ const CJK_FONT_BYTES: &[u8] =
 /// Embedded Julia Mono symbols subset (OFL) - arrows/math/misc symbols the
 /// rest of the chain lacks.
 const SYM_FONT_BYTES: &[u8] = include_bytes!("../../../../assets/fonts/TerminalSymbols-subset.ttf");
+
+/// Embedded Noto Emoji subset (OFL) - the emoji complement of egui's
+/// built-in faces (🤖, U+FE0F, ...).
+const EMOJI_FONT_BYTES: &[u8] = include_bytes!("../../../../assets/fonts/NotoEmoji-subset.ttf");
 
 /// Parse a `path[:face_index]` font spec into (path, TTC face index).
 ///
@@ -103,8 +116,8 @@ fn env_font_data(var: &str) -> Option<FontData> {
     })
 }
 
-/// Prepend the primary mono font to and append the CJK fallback + symbols
-/// fonts to both family fallback chains. Idempotent: a second call must
+/// Prepend the primary mono font to and append the CJK fallback +
+/// symbols/emoji fonts to both family fallback chains. Idempotent: a second call must
 /// not duplicate any entry.
 fn push_families(defs: &mut FontDefinitions) {
     for family in [FontFamily::Monospace, FontFamily::Proportional] {
@@ -117,6 +130,9 @@ fn push_families(defs: &mut FontDefinitions) {
         }
         if !list.iter().any(|name| name == SYM_FONT_NAME) {
             list.push(SYM_FONT_NAME.to_string());
+        }
+        if !list.iter().any(|name| name == EMOJI_FONT_NAME) {
+            list.push(EMOJI_FONT_NAME.to_string());
         }
     }
 }
@@ -132,13 +148,18 @@ pub fn install(ctx: &egui::Context) -> bool {
     let cjk = env_font_data("TERMINATOR_CJK_FONT")
         .unwrap_or_else(|| FontData::from_static(CJK_FONT_BYTES));
     let sym = FontData::from_static(SYM_FONT_BYTES);
+    let emoji = FontData::from_static(EMOJI_FONT_BYTES);
     defs.font_data
         .insert(MONO_FONT_NAME.to_string(), mono.into());
     defs.font_data.insert(CJK_FONT_NAME.to_string(), cjk.into());
     defs.font_data.insert(SYM_FONT_NAME.to_string(), sym.into());
+    defs.font_data
+        .insert(EMOJI_FONT_NAME.to_string(), emoji.into());
     push_families(&mut defs);
     ctx.set_fonts(defs);
-    log::info!("terminal fonts installed: {MONO_FONT_NAME} + {CJK_FONT_NAME} + {SYM_FONT_NAME}");
+    log::info!(
+        "terminal fonts installed: {MONO_FONT_NAME} + {CJK_FONT_NAME} + {SYM_FONT_NAME} + {EMOJI_FONT_NAME}"
+    );
     true
 }
 
@@ -174,6 +195,7 @@ mod tests {
         assert_eq!(parse_ok(CJK_FONT_BYTES, 0), Ok(()));
         assert_eq!(parse_ok(MONO_FONT_BYTES, 0), Ok(()));
         assert_eq!(parse_ok(SYM_FONT_BYTES, 0), Ok(()));
+        assert_eq!(parse_ok(EMOJI_FONT_BYTES, 0), Ok(()));
     }
 
     #[test]
@@ -206,12 +228,18 @@ mod tests {
         for family in [FontFamily::Monospace, FontFamily::Proportional] {
             let list = &defs.families[&family];
             assert_eq!(list.first().map(String::as_str), Some(MONO_FONT_NAME));
-            assert_eq!(list.last().map(String::as_str), Some(SYM_FONT_NAME));
+            assert_eq!(list.last().map(String::as_str), Some(EMOJI_FONT_NAME));
             assert!(list.contains(&CJK_FONT_NAME.to_string()));
+            assert!(list.contains(&SYM_FONT_NAME.to_string()));
         }
         push_families(&mut defs);
         let mono = &defs.families[&FontFamily::Monospace];
-        for name in [MONO_FONT_NAME, CJK_FONT_NAME, SYM_FONT_NAME] {
+        for name in [
+            MONO_FONT_NAME,
+            CJK_FONT_NAME,
+            SYM_FONT_NAME,
+            EMOJI_FONT_NAME,
+        ] {
             let hits = mono.iter().filter(|n| n.as_str() == name).count();
             assert_eq!(hits, 1, "second push must not duplicate {name}: {mono:?}");
         }

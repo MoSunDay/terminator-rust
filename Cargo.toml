@@ -9,6 +9,7 @@ members = [
     "crates/ipc-proto",
     "crates/ctl",
     "crates/oc-store",
+    "crates/paths",
 ]
 
 [workspace.package]
@@ -38,6 +39,7 @@ layout-tree = { path = "crates/layout-tree", version = "0.1.0" }
 vt-pane = { path = "crates/vt-pane", version = "0.1.0" }
 theme = { path = "crates/theme", version = "0.1.0" }
 remote = { path = "crates/remote", version = "0.1.0" }
+paths = { path = "crates/paths", version = "0.1.0" }
 
 [profile.release]
 lto = "thin"

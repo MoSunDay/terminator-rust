@@ -29,6 +29,12 @@
 #      chip row stays (active-chip underline + fill still painted) and
 #      the pane content is pushed below it (single-tab windows render
 #      the same ~42px chrome as multi-tab ones).
+#   J: the chrome SCALES with settings.font_size (ui::chrome::metrics):
+#      relaunching the same preset at font_size 20 (scale 4/3 vs the
+#      default 15) moves the chrome hairline from ~Y+41 down into
+#      Y+50..Y+64, grows the focused pane header tint band to >= 28
+#      rows (vs ~21 at 24px header_h) and paints chip label ink with a
+#      >= 8px vertical run - same colors, bigger geometry.
 # TERMINATOR_OPAQUE=1 pins window opacity 1.0: with no compositor in Xvfb
 # the translucent fills would blend over garbage; pinned opaque the pixel
 # expectations are byte-identical to the pre-transparency values.
@@ -68,7 +74,6 @@ step() { echo "== $*"; }
 # Build first: the sandboxed HOME below would hide rustup/toolchains.
 cargo build -p app -p ctl --bins >/dev/null
 
-export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 export SHELL=/bin/bash
@@ -79,7 +84,7 @@ export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 # e2e presets rely on session restore; the default launch is a fresh tab
 export TERMINATOR_RESTORE=1
-mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # Preset: dracula theme, a vertical 50/50 Split PLUS a second single-pane
 # tab, with the global terminal background set to #ff0000 at 50% glass -
@@ -89,7 +94,7 @@ mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 # old files still load). Check I closes "extra" to verify the bar STAYS
 # at one tab. Pane ids are re-allocated on load; manual_title "red" is
 # the stable ctl addressing key.
-cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
+cat > "$HOME/.terminator-rust/state.json" <<'JSON'
 {
   "theme": "dracula",
   "settings": { "split_axis": "v", "split_ratio": 0.5, "bg": "#ff0000", "transparency": 0.5 },
@@ -353,5 +358,153 @@ print(f"I header-below-bar: {header_low} focused-header-tint px at x=X+50 in "
 sys.exit(rc)
 PY
 step "single-tab chrome assertions passed"
+
+# --- J: the chrome scales with the font size -------------------------------
+# Settings.font_size feeds ui::chrome::metrics: every chrome constant is
+# multiplied by scale(font_size) (identity at 15). Quit, re-preset the
+# SAME session with font_size 20 (scale 4/3) and re-measure the same
+# probes: the geometry must grow while the colors stay identical.
+step "J: quit, preset font_size 20, relaunch"
+xdotool windowfocus "$WID"
+xdotool key --clearmodifiers ctrl+shift+q
+GONE=""
+for _ in $(seq 1 40); do
+    if ! kill -0 "$APP_PID" 2>/dev/null \
+        && [ -z "$(xdotool search --onlyvisible --name terminator-rust 2>/dev/null)" ]; then
+        GONE=1; break
+    fi
+    sleep 0.25
+done
+[ -n "$GONE" ] || { tail "$ROOT/app.log"; fail "app survived Ctrl+Shift+Q"; }
+APP_PID=""   # cleanup must not kill a dead pid
+
+# Same preset as the first launch + font_size 20 in settings.
+cat > "$HOME/.terminator-rust/state.json" <<'JSON'
+{
+  "theme": "dracula",
+  "settings": { "split_axis": "v", "split_ratio": 0.5, "bg": "#ff0000", "transparency": 0.5, "font_size": 20 },
+  "tabs": [
+    { "title": "style", "focused": 1,
+      "root": { "Split": { "axis": "v", "ratio": 0.5,
+        "first":  { "Pane": { "id": 1, "meta": { "kind": "Local", "manual_title": "red",  "bg": null, "transparency": 0.0, "degraded": false } } },
+        "second": { "Pane": { "id": 2, "meta": { "kind": "Local", "manual_title": null,   "bg": null,       "transparency": 0.0, "degraded": false } } } } } },
+      { "title": "extra", "focused": 3,
+        "root": { "Pane": { "id": 3, "meta": { "kind": "Local", "manual_title": null, "bg": null, "transparency": 0.0, "degraded": false } } } }
+  ]
+}
+JSON
+
+# The dead app's socket file may outlive it (drop order); rm it so the
+# wait below proves the RELAUNCH recreated it (perms re-checked).
+rm -f "$SOCK"
+env DISPLAY="$DISPLAY_N" RUST_LOG=info setsid "$APP" >"$ROOT/app2.log" 2>&1 & APP_PID=$!
+for _ in $(seq 1 40); do [ -S "$SOCK" ] && break; sleep 0.25; done
+[ -S "$SOCK" ] || { tail "$ROOT/app2.log"; fail "ipc socket never appeared (relaunch)"; }
+[ "$(stat -c %a "$SOCK")" = "600" ] || fail "socket perms $(stat -c %a "$SOCK") != 600 (relaunch)"
+sleep 2
+WID=""
+for _ in $(seq 1 20); do
+    WID=$(xdotool search --name terminator-rust 2>/dev/null | head -1 || true)
+    [ -n "$WID" ] && break
+    sleep 0.25
+done
+[ -n "$WID" ] || { tail "$ROOT/app2.log"; fail "app window not found (relaunch)"; }
+xdotool windowfocus "$WID"
+eval "$(xdotool getwindowgeometry --shell "$WID")"
+export X Y WIDTH HEIGHT
+echo "window $WID at ${X},${Y} ${WIDTH}x${HEIGHT} (font_size 20)"
+"$CTL" list --json | grep -q '"name": "red"' \
+    || { "$CTL" list --json; fail "preset not restored on relaunch"; }
+
+# Park the pointer on bare chrome (Xvfb parks it at screen center = the
+# split gutter) and capture.
+xdotool mousemove $((X + WIDTH * 30 / 100)) $((Y + 6))
+sleep 0.5
+scrot -o "$ROOT/scr3.png"
+export SCR3="$ROOT/scr3.png"
+python3 - <<'PY'
+import os, sys
+from PIL import Image
+
+FG = (248, 248, 242)
+BG = (40, 42, 54)
+ACCENT = (189, 147, 249)
+
+def mix(a, b, t):
+    return tuple(int(round(a[i] + t * (b[i] - a[i]))) for i in range(3))
+
+img = Image.open(os.environ["SCR3"]).convert("RGB")
+X, Y, W, H = (int(os.environ[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
+TOL = 3
+rc = 0
+
+def close(got, exp):
+    return all(abs(g - e) <= TOL for g, e in zip(got, exp))
+
+# J1: the chrome bar bottom hairline mix(bg, fg, 0.09) moved DOWN with
+#     the font: scale 4/3 pushes the default ~Y+41 hairline into
+#     Y+50..Y+64. x=30% is bare chrome (same probe as D).
+hairline = mix(BG, FG, 0.09)
+xj = int(X + W * 0.30)
+y_hit = None
+for yy in range(Y + 30, Y + 90):
+    if close(img.getpixel((xj, yy)), hairline):
+        y_hit = yy
+        break
+ok = y_hit is not None and Y + 50 <= y_hit <= Y + 64
+if not ok:
+    rc = 1
+print(f"J1 hairline-scaled: first hairline at y={y_hit} want {Y + 50}..{Y + 64} "
+      f"[{'OK' if ok else 'FAIL'}]")
+
+# J2: the focused pane header tint mix(bg, accent, 0.10) band is TALLER:
+#     header_h 24 * 4/3 = 32 vs the ~21 observed rows at the default
+#     size -> longest contiguous run must reach 28 rows.
+exp_header = mix(BG, ACCENT, 0.10)
+runs = []
+run = 0
+for yy in range(Y + 40, Y + 110):
+    if close(img.getpixel((X + 50, yy)), exp_header):
+        run += 1
+    else:
+        if run:
+            runs.append(run)
+        run = 0
+if run:
+    runs.append(run)
+best = max(runs) if runs else 0
+ok = best >= 28
+if not ok:
+    rc = 1
+print(f"J2 header-scaled: longest focused-header run {best} rows (>=28) "
+      f"[{'OK' if ok else 'FAIL'}]")
+
+# J3: chip label ink at chip_font 13 * 4/3 = 17.3pt: FG/title_text pixels
+#     inside the chip band with a >= 8px vertical run (glyphs grow with
+#     the metrics; the accent underline is excluded by the color filter).
+title_text = mix(FG, BG, 0.38)
+ink_cols = 0
+max_run = 0
+for xx in range(X + 10, X + 220):
+    run = best_col = 0
+    for yy in range(Y + 4, Y + 48):
+        px = img.getpixel((xx, yy))
+        if close(px, FG) or close(px, title_text):
+            run += 1
+            best_col = max(best_col, run)
+        else:
+            run = 0
+    if best_col > 0:
+        ink_cols += 1
+    max_run = max(max_run, best_col)
+ok = ink_cols >= 1 and max_run >= 8
+if not ok:
+    rc = 1
+print(f"J3 chip-ink-scaled: {ink_cols} ink columns, tallest run {max_run}px (>=8) "
+      f"[{'OK' if ok else 'FAIL'}]")
+
+sys.exit(rc)
+PY
+step "font-scale assertions passed"
 
 echo "e2e-ui-style: ALL GREEN"

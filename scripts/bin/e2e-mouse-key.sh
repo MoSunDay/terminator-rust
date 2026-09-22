@@ -71,7 +71,6 @@ kid_of() { ps -o pid= --ppid "$1" 2>/dev/null | tr -d ' ' || true; }
 # Build first: the sandboxed HOME below would hide rustup/toolchains.
 cargo build -p app -p ctl --bins >/dev/null
 
-export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 export SHELL=/bin/bash   # pane children must be interactive bash (^C echo, printf \e)
@@ -82,9 +81,9 @@ export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1   # pin fades/cursor blink to end states
 # e2e presets rely on session restore; the default launch is a fresh tab
 export TERMINATOR_RESTORE=1
-mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
-cat > "$XDG_CONFIG_HOME/terminator-rust/state.json" <<'JSON'
+cat > "$HOME/.terminator-rust/state.json" <<'JSON'
 {
   "theme": "catppuccin-mocha",
   "tabs": [

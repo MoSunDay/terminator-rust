@@ -1,4 +1,4 @@
-//! Persistence of `AppState` to `~/.config/terminator-rust/state.json`.
+//! Persistence of `AppState` to `~/.terminator-rust/state.json`.
 //!
 //! The JSON model mirrors the pane tree (without pane ids, which are
 //! re-allocated on load and remapped) plus per-pane metadata and the theme.
@@ -374,17 +374,11 @@ fn first_leaf(tree: &LayoutTree, tab: usize) -> Option<PaneId> {
 // Disk I/O
 // ---------------------------------------------------------------------------
 
-/// `$XDG_CONFIG_HOME/terminator-rust/state.json`, falling back to
-/// `$HOME/.config/...`, then to a relative `.config/...` path.
+/// `~/.terminator-rust/state.json` (via the shared `paths` crate, which
+/// migrates a legacy `$XDG_CONFIG_HOME`/`~/.config` file forward on first
+/// use). No XDG base-dir indirection anymore.
 pub fn state_path() -> PathBuf {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => match std::env::var_os("HOME") {
-            Some(h) if !h.is_empty() => PathBuf::from(h).join(".config"),
-            _ => PathBuf::from(".config"),
-        },
-    };
-    base.join("terminator-rust").join("state.json")
+    paths::migrate_legacy("state.json")
 }
 
 /// Atomically write `st` to `path` (tmp file + rename). Never panics.
@@ -555,12 +549,12 @@ mod tests {
         assert_eq!(back.settings.bg_color, st.settings.bg_color);
         // Out-of-range values clamp into their sliders' bounds.
         let mut p = to_persisted(&st);
-        p.settings.opacity = 0.1;
+        p.settings.opacity = 0.0;
         p.settings.font_size = 99.0;
         p.settings.transparency = 7.0;
         p.settings.bg = Some("nope".to_string());
         let clamped = from_persisted(&p).settings;
-        assert_eq!(clamped.opacity, 0.5);
+        assert_eq!(clamped.opacity, 0.1);
         assert_eq!(clamped.font_size, 24.0);
         assert_eq!(clamped.transparency, 1.0);
         assert_eq!(clamped.bg_color, None, "unparseable bg -> theme bg");

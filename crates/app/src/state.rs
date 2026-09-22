@@ -10,8 +10,6 @@ use layout_tree::{new_tree, split_pane, Axis, LayoutTree, PaneId};
 use remote::{PaneKind, RemoteTarget};
 use theme::Rgb;
 
-/// Pane header strip height in points.
-pub const PANE_HEADER_H: f32 = 24.0;
 /// Divider thickness (layout_tree default).
 pub const DIVIDER_W: f32 = layout_tree::DEFAULT_DIVIDER_W;
 
@@ -36,7 +34,7 @@ pub struct PaneMeta {
 pub struct Settings {
     /// Axis used by the default split action / new split buttons.
     pub split_axis: Axis,
-    /// Window opacity (0.5..=1.0): alpha of the chrome/pane base fills;
+    /// Window opacity (0.1..=1.0): alpha of the chrome/pane base fills;
     /// text and selections stay opaque for readability. 1.0 = opaque.
     pub opacity: f32,
     /// Terminal font size in points, uniform for every window.
@@ -258,6 +256,9 @@ pub struct UiState {
     pub form: RemoteForm,
     /// Last theme name the egui style was derived from (style::sync memo).
     pub styled_theme: Option<String>,
+    /// Last font size the egui style was scaled by (style::sync memo);
+    /// never persisted.
+    pub styled_font: f32,
     /// The last pane/tab was closed: the app is shutting down. Guards the
     /// empty-tabs auto-respawn until the ViewportCommand::Close lands.
     pub quitting: bool,
@@ -293,6 +294,7 @@ pub fn ui_state() -> UiState {
     UiState {
         form: RemoteForm::default(),
         styled_theme: None,
+        styled_font: 0.0,
         quitting: false,
     }
 }

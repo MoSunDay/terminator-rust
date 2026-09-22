@@ -40,7 +40,7 @@ cd "$(dirname "$0")/../.."
 ROOT=$(mktemp -d /tmp/term-e2e-dd-XXXXXX)
 APP=target/debug/terminator-rust
 CTL=target/debug/terminator-ctl
-STATE_REL="terminator-rust/state.json"
+STATE_REL=".terminator-rust/state.json"
 DISPLAY_N=""                  # probed below (stale sockets break ":$$")
 XVFB_PID=""
 APP_PID=""
@@ -63,20 +63,19 @@ step() { echo "== $*"; }
 # Build first: the sandboxed HOME below would hide rustup/toolchains.
 cargo build -p app -p ctl --bins >/dev/null
 
-export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
 export SHELL=/bin/bash
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
-STATE="$XDG_CONFIG_HOME/$STATE_REL"
+STATE="$HOME/$STATE_REL"
 # No compositor in Xvfb: pin full opacity for deterministic pixels, and
 # pin hover fades / cursor blink to their end states.
 export TERMINATOR_OPAQUE=1
 export TERMINATOR_NO_MOTION=1
 # e2e presets rely on session restore; the default launch is a fresh tab
 export TERMINATOR_RESTORE=1
-mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 
 # Preset: dracula, one window; tab "alpha" = vertical 50/50 split (panes
 # remapped to 1,2 in preorder on load), tab "beta" = single pane (3).

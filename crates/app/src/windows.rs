@@ -6,6 +6,7 @@
 
 use egui::{ViewportBuilder, ViewportId};
 
+use crate::app_icon;
 use crate::input;
 use crate::render;
 use crate::session_map::SessionMap;
@@ -18,15 +19,25 @@ use remote::PaneKind;
 /// both windows stay visible even without a window manager. The shell's OSC
 /// title sequence re-titles it as soon as its pane emits one.
 pub fn builder_for(w: &WindowState) -> ViewportBuilder {
-    ViewportBuilder::default()
-        .with_title(format!("terminator-rust #{}", w.id))
-        .with_inner_size([900.0, 600.0])
-        .with_position([(60 + w.id * 40) as f32, (40 + w.id * 30) as f32])
-        // Match the root shell: borderless + transparent surface (the
-        // tab strip is the drag surface; the pane/chrome fills still
-        // apply `settings.opacity`).
-        .with_decorations(false)
-        .with_transparent(true)
+    // Icon is per-viewport: winit/eframe do NOT inherit the root window's
+    // icon to immediate (secondary) viewports, so attach it here too.
+    app_icon::with_icon(
+        ViewportBuilder::default()
+            .with_title(format!("terminator-rust #{}", w.id))
+            .with_inner_size([900.0, 600.0])
+            // Same GPU-surface-size cap as the root window (see
+            // render::surface_guard): oversized windows abort in wgpu.
+            .with_max_inner_size(render::surface_guard::safe_cap_points(
+                render::surface_guard::FALLBACK_MAX_TEXTURE_SIDE,
+                1.0,
+            ))
+            .with_position([(60 + w.id * 40) as f32, (40 + w.id * 30) as f32])
+            // Match the root shell: borderless + transparent surface (the
+            // tab strip is the drag surface; the pane/chrome fills still
+            // apply `settings.opacity`).
+            .with_decorations(false)
+            .with_transparent(true),
+    )
 }
 
 /// Ctrl+Shift+N: append a new OS window with one fresh shell tab. Pane ids
@@ -168,6 +179,7 @@ pub fn render_secondaries(ctx: &egui::Context, d: &mut Data) {
         let builder = builder_for(&d.st.windows[i]);
         let mut wm_close = false;
         ctx.show_viewport_immediate(ViewportId(egui::Id::new(id)), builder, |ui, _class| {
+            render::surface_guard::apply(ui.ctx());
             if ui.ctx().input(|inp| inp.viewport().close_requested()) {
                 wm_close = true;
             }

@@ -5,9 +5,9 @@
 #   M1: composing swallows keys - 'hanzi' typed with NO commit key never
 #       reaches the pane (XFilterEvent consumed it).
 #   M2: preedit ink - while still composing, the app-painted preedit
-#       underline (dracula block_highlight = 189,147,249, blended by the
-#       2px rounded pill antialiasing) shows up as a purple-hued pixel
-#       run vs a pre-composition baseline screenshot. 0 -> WARN + SKIP
+#       underline (egui's composition stroke rgb(192,222,255), blended by
+#       antialiasing) shows up as a blue-hued pixel run vs a
+#       pre-composition baseline screenshot. 0 -> WARN + SKIP
 #       (PreeditNothing negotiation), >0 -> assert >= 4.
 #   M3: space commits the libpinyin default candidate (汉字) and the raw
 #       UTF-8 lands in the pty; then Shift toggles libpinyin to EN mode
@@ -63,10 +63,9 @@ ime_diag() {
 
 cargo build -p app -p ctl --bins >/dev/null
 
-export XDG_CONFIG_HOME="$ROOT/config"
 export XDG_RUNTIME_DIR="$ROOT/runtime"
 export HOME="$ROOT/home"
-mkdir -p "$XDG_CONFIG_HOME/terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
 export SHELL=/bin/bash
 SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
 export TERMINATOR_SOCK="$SOCK"
@@ -80,7 +79,7 @@ export LANG=zh_CN.UTF-8
 # winit turns "@im=NAME" into the XIM_SERVERS atom "@server=NAME" match.
 export XMODIFIERS="@im=ibus"
 
-echo '{"theme":"dracula"}' >"$XDG_CONFIG_HOME/terminator-rust/state.json"
+echo '{"theme":"dracula"}' >"$HOME/.terminator-rust/state.json"
 
 # --- Xvfb (random probe: stale sockets make fixed numbers refuse) --------
 for _ in $(seq 1 12); do
@@ -193,12 +192,13 @@ step "S1: shell liveness via ctl (IME owns xdotool-typed keys)"
 wait_capture READY_IME || { cap | tail -5; fail "shell not live (READY_IME never echoed)"; }
 echo "shell live, READY_IME echoed"
 
-# Purple-ink counter: the 2px rounded preedit underline is antialiased
-# against the pane bg, so no pixel is the raw accent - but the accent's
-# hue signature (blue and red both above green; dracula purple has
-# b-g=102, r-g=42) survives any blend level, while fg/bg/text
-# antialiasing stays neutral (b-g ~= 0). Inset 12px skips the window
-# border and the focused-card accent stroke.
+# Blue-ink counter: the 2px preedit underline (egui's IME composition
+# stroke rgb(192,222,255)) is antialiased against the pane bg (kanagawa
+# bg 31,31,40), so no pixel is the raw stroke - but the stroke's hue
+# signature survives any blend >= ~0.4 coverage: b-g >= 18 (bg itself is
+# only 9), r-g <= 5 (fg/text AA stays ~0, the violet focus ring has
+# r-g=22), b >= 110 (bg-excluded). The cursor block (oldWhite 200,192,147)
+# is red-leaning (b-g<0), so blink phase cannot fake the signal.
 cat >"$ROOT/accent_count.py" <<'PY'
 import os, sys
 from PIL import Image
@@ -209,7 +209,7 @@ n = 0
 for y in range(Y + 12, Y + H - 12):
     for x in range(X + 12, X + W - 12):
         r, g, b = px[x, y]
-        if b - g >= 25 and r - g >= 5:
+        if b - g >= 18 and r - g <= 5 and b >= 110:
             n += 1
 print(n)
 PY
@@ -227,18 +227,18 @@ fi
 echo "M1 ok: composition swallowed the keystrokes"
 
 # --- M2: preedit underline ink -------------------------------------------
-step "M2: preedit ink (accent underline) vs baseline"
+step "M2: preedit ink (composition underline) vs baseline"
 scrot -o "$ROOT/compose.png"
 BASE_N=$(python3 "$ROOT/accent_count.py" "$ROOT/base.png")
 COMP_N=$(python3 "$ROOT/accent_count.py" "$ROOT/compose.png")
 DIFF=$((COMP_N - BASE_N))
-echo "accent-hue px: baseline $BASE_N, composing $COMP_N (diff $DIFF)"
+echo "composition-hue px: baseline $BASE_N, composing $COMP_N (diff $DIFF)"
 if [ "$DIFF" -eq 0 ]; then
     echo "WARN: M2 SKIP - no app-painted preedit ink (XIM negotiated PreeditNothing; the server draws its own)"
 elif [ "$DIFF" -lt 4 ]; then
     fail "M2: preedit ink delta $DIFF is neither 0 (skippable) nor >= 4"
 else
-    echo "M2 ok: preedit underline painted ($DIFF purple px over baseline)"
+    echo "M2 ok: preedit underline painted ($DIFF blue px over baseline)"
 fi
 
 # --- M3: commit round-trip ------------------------------------------------
@@ -274,7 +274,7 @@ done
 kill -0 "$APP_PID" 2>/dev/null && { "$CTL" list || true; \
     fail "M4: app still alive 10s after Ctrl+Shift+Q"; }
 APP_PID=""
-[ -s "$XDG_CONFIG_HOME/terminator-rust/state.json" ] || fail "M4: state.json missing/empty after quit"
+[ -s "$HOME/.terminator-rust/state.json" ] || fail "M4: state.json missing/empty after quit"
 echo "app quit on Ctrl+Shift+Q, state persisted"
 
 echo "e2e-ime: ALL GREEN (M1-M4)"

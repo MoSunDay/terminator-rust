@@ -34,6 +34,11 @@ jobs:
           chmod +x scripts/bin/zig
           scripts/fetch-vendor.sh
 
+      - name: Logo assets up to date
+        run: |
+          pip install pillow
+          python3 scripts/bin/gen-logo.py --check
+
       - name: Format
         run: cargo fmt --all -- --check
 

@@ -15,9 +15,7 @@ use crate::render::colors::{self, to_c32};
 use crate::render::tokens;
 use crate::session_map::SessionMap;
 use crate::state::AppState;
-
-/// Icon button cell (points).
-pub const ICON: f32 = 16.0;
+use crate::ui::chrome::Metrics;
 
 /// Chrome text color helper (dimmed).
 pub fn dim_text(pal: &Palette) -> Color32 {
@@ -41,22 +39,25 @@ pub fn hover_fill(ui: &Ui, rect: Rect, id: Id, hovered: bool, pal: &Palette, rou
 }
 
 /// Tab-chip close affordance: circular hover plate under the X glyph.
+/// The arms/stroke scale off the plate rect so the X grows with the
+/// chrome scale (a 12px rect is the historical 1:1 size).
 pub fn close_glyph(p: &Painter, rect: Rect, hovered: bool, pal: &Palette, col: Color32) {
     if hovered {
         p.rect_filled(rect, 6.0, to_c32(colors::chrome_hover(pal)));
     }
-    let xstroke = Stroke::new(1.2, col);
+    let k = rect.width() / 12.0;
+    let xstroke = Stroke::new(1.2 * k, col);
     let c = rect.center();
-    let a = 3.5;
+    let a = 3.5 * k;
     p.line_segment([pos2(c.x - a, c.y - a), pos2(c.x + a, c.y + a)], xstroke);
     p.line_segment([pos2(c.x - a, c.y + a), pos2(c.x + a, c.y - a)], xstroke);
 }
 
 /// Corner brackets marking the zoomed (single-pane) view.
-pub fn corner_brackets(p: &Painter, c: Pos2, color: Color32) {
-    let s = 4.5; // half cell
-    let l = 3.0; // arm length
-    let st = Stroke::new(1.5, color);
+pub fn corner_brackets(p: &Painter, c: Pos2, color: Color32, s: f32) {
+    let s = 4.5 * s; // half cell
+    let l = 3.0 * s; // arm length
+    let st = Stroke::new(1.5 * s, color);
     let corner = |px: f32, py: f32, dx: f32, dy: f32| {
         p.line_segment([pos2(px, py + dy * l), pos2(px, py)], st);
         p.line_segment([pos2(px, py), pos2(px + dx * l, py)], st);
@@ -68,18 +69,30 @@ pub fn corner_brackets(p: &Painter, c: Pos2, color: Color32) {
 }
 
 /// Two small outlined panes along the split axis.
-fn split_icon(p: &Painter, c: Pos2, axis: Axis, color: Color32) {
-    let stroke = Stroke::new(1.4, color);
+fn split_icon(p: &Painter, c: Pos2, axis: Axis, color: Color32, s: f32) {
+    let stroke = Stroke::new(1.4 * s, color);
     let (first, second) = match axis {
         // Vertical divider: children side by side (6x9 each, 2 gap).
         Axis::Vertical => (
-            Rect::from_min_max(pos2(c.x - 7.0, c.y - 4.5), pos2(c.x - 1.0, c.y + 4.5)),
-            Rect::from_min_max(pos2(c.x + 1.0, c.y - 4.5), pos2(c.x + 7.0, c.y + 4.5)),
+            Rect::from_min_max(
+                pos2(c.x - 7.0 * s, c.y - 4.5 * s),
+                pos2(c.x - 1.0 * s, c.y + 4.5 * s),
+            ),
+            Rect::from_min_max(
+                pos2(c.x + 1.0 * s, c.y - 4.5 * s),
+                pos2(c.x + 7.0 * s, c.y + 4.5 * s),
+            ),
         ),
         // Horizontal divider: children stacked (9x6 each).
         Axis::Horizontal => (
-            Rect::from_min_max(pos2(c.x - 4.5, c.y - 7.0), pos2(c.x + 4.5, c.y - 1.0)),
-            Rect::from_min_max(pos2(c.x - 4.5, c.y + 1.0), pos2(c.x + 4.5, c.y + 7.0)),
+            Rect::from_min_max(
+                pos2(c.x - 4.5 * s, c.y - 7.0 * s),
+                pos2(c.x + 4.5 * s, c.y - 1.0 * s),
+            ),
+            Rect::from_min_max(
+                pos2(c.x - 4.5 * s, c.y + 1.0 * s),
+                pos2(c.x + 4.5 * s, c.y + 7.0 * s),
+            ),
         ),
     };
     p.rect_stroke(first, 2.0, stroke, StrokeKind::Middle);
@@ -96,6 +109,7 @@ pub fn trailing_buttons(
     sess: &mut SessionMap,
     pal: &Palette,
     dirty: &mut bool,
+    m: &Metrics,
 ) {
     let painter = ui.painter().clone();
     let icon_col = |hovered: bool| {
@@ -105,11 +119,11 @@ pub fn trailing_buttons(
             colors::title_text(pal)
         })
     };
-    // Three ICON cells with a 4px gutter, anchored at `left`.
+    // Three icon cells with a gutter, anchored at `left`.
     let cell = |i: i32| {
         Rect::from_min_size(
-            pos2(left.x + i as f32 * (ICON + 4.0), left.y),
-            vec2(ICON, ICON),
+            pos2(left.x + i as f32 * (m.icon + m.icon_gap), left.y),
+            vec2(m.icon, m.icon),
         )
     };
 
@@ -124,9 +138,15 @@ pub fn trailing_buttons(
         tokens::R_SM,
     );
     let c = rect.center();
-    let st_line = Stroke::new(1.5, icon_col(resp.hovered()));
-    painter.line_segment([pos2(c.x - 4.0, c.y), pos2(c.x + 4.0, c.y)], st_line);
-    painter.line_segment([pos2(c.x, c.y - 4.0), pos2(c.x, c.y + 4.0)], st_line);
+    let st_line = Stroke::new(1.5 * m.s, icon_col(resp.hovered()));
+    painter.line_segment(
+        [pos2(c.x - 4.0 * m.s, c.y), pos2(c.x + 4.0 * m.s, c.y)],
+        st_line,
+    );
+    painter.line_segment(
+        [pos2(c.x, c.y - 4.0 * m.s), pos2(c.x, c.y + 4.0 * m.s)],
+        st_line,
+    );
     if resp.clicked() {
         actions::do_new_tab(st, sess, PaneKind::Local, dirty);
     }
@@ -147,6 +167,7 @@ pub fn trailing_buttons(
         rect.center(),
         Axis::Vertical,
         icon_col(resp.hovered()),
+        m.s,
     );
     if resp.clicked() {
         actions::do_split(
@@ -175,6 +196,7 @@ pub fn trailing_buttons(
         rect.center(),
         Axis::Horizontal,
         icon_col(resp.hovered()),
+        m.s,
     );
     if resp.clicked() {
         actions::do_split(
@@ -193,22 +215,25 @@ pub fn trailing_buttons(
 /// (maximize/restore, minimize) outermost, then the inspector and zoom
 /// cells at the old title-row place. `interact()` on fixed rects: the
 /// layout cursor is untouched.
-pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
+pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     let pal = colors::palette_of(&st.theme_name);
     let band = ui.min_rect();
-    let iy = (band.top() + band.bottom()) / 2.0 - ICON / 2.0;
-    let max_rect = Rect::from_min_size(pos2(row_right - 5.0 - ICON, iy), vec2(ICON, ICON));
+    let iy = (band.top() + band.bottom()) / 2.0 - m.icon / 2.0;
+    let max_rect = Rect::from_min_size(
+        pos2(row_right - 5.0 * m.s - m.icon, iy),
+        vec2(m.icon, m.icon),
+    );
     let min_rect = Rect::from_min_size(
-        pos2(max_rect.left() - 4.0 - ICON, max_rect.top()),
-        vec2(ICON, ICON),
+        pos2(max_rect.left() - m.icon_gap - m.icon, max_rect.top()),
+        vec2(m.icon, m.icon),
     );
     let insp_rect = Rect::from_min_size(
-        pos2(min_rect.left() - 4.0 - ICON, min_rect.top()),
-        vec2(ICON, ICON),
+        pos2(min_rect.left() - m.icon_gap - m.icon, min_rect.top()),
+        vec2(m.icon, m.icon),
     );
     let zoom_rect = Rect::from_min_size(
-        pos2(insp_rect.left() - 4.0 - ICON, insp_rect.top()),
-        vec2(ICON, ICON),
+        pos2(insp_rect.left() - m.icon_gap - m.icon, insp_rect.top()),
+        vec2(m.icon, m.icon),
     );
     let painter = ui.painter().clone();
 
@@ -227,7 +252,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
     } else {
         to_c32(pal.block_highlight).gamma_multiply(0.7)
     };
-    corner_brackets(&painter, zoom_rect.center(), zoom_col);
+    corner_brackets(&painter, zoom_rect.center(), zoom_col, m.s);
     if zoom.clicked() {
         if let Some(w) = st.win_mut() {
             w.ui.zoom = !w.ui.zoom;
@@ -254,7 +279,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
         insp_rect.center(),
         Align2::CENTER_CENTER,
         "i",
-        FontId::proportional(12.5),
+        FontId::proportional(12.5 * m.s),
         insp_col,
     );
     if insp.clicked() {
@@ -283,9 +308,12 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
         tokens::R_MD,
     );
     let c = min_rect.center();
-    let line = Stroke::new(1.5, min_col(min.hovered()));
+    let line = Stroke::new(1.5 * m.s, min_col(min.hovered()));
     painter.line_segment(
-        [pos2(c.x - 4.5, c.y + 4.0), pos2(c.x + 4.5, c.y + 4.0)],
+        [
+            pos2(c.x - 4.5 * m.s, c.y + 4.0 * m.s),
+            pos2(c.x + 4.5 * m.s, c.y + 4.0 * m.s),
+        ],
         line,
     );
     if min.clicked() {
@@ -306,16 +334,22 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState) {
         &pal,
         tokens::R_MD,
     );
-    let stroke = Stroke::new(1.4, min_col(max.hovered()));
+    let stroke = Stroke::new(1.4 * m.s, min_col(max.hovered()));
     let c = max_rect.center();
     if maximized {
         // Restore: back pane offset up-right, front pane down-left.
-        let back = Rect::from_center_size(pos2(c.x + 3.0, c.y - 3.0), vec2(7.0, 7.0));
-        let front = Rect::from_center_size(pos2(c.x - 2.0, c.y + 2.0), vec2(9.0, 9.0));
+        let back = Rect::from_center_size(
+            pos2(c.x + 3.0 * m.s, c.y - 3.0 * m.s),
+            vec2(7.0 * m.s, 7.0 * m.s),
+        );
+        let front = Rect::from_center_size(
+            pos2(c.x - 2.0 * m.s, c.y + 2.0 * m.s),
+            vec2(9.0 * m.s, 9.0 * m.s),
+        );
         painter.rect_stroke(back, 2.0, stroke, StrokeKind::Middle);
         painter.rect_stroke(front, 2.0, stroke, StrokeKind::Middle);
     } else {
-        let r = Rect::from_center_size(c, vec2(9.0, 9.0));
+        let r = Rect::from_center_size(c, vec2(9.0 * m.s, 9.0 * m.s));
         painter.rect_stroke(r, 2.0, stroke, StrokeKind::Middle);
     }
     if max.clicked() {

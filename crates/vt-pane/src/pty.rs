@@ -159,7 +159,13 @@ pub fn pty_write(fd: RawFd, mut data: &[u8]) -> Result<()> {
             }
             return Err(err).context("pty write");
         }
-        data = &data[n as usize..];
+        let n = n as usize;
+        if n == 0 {
+            // POSIX never returns 0 for a nonzero blocking write; do not
+            // spin forever if some exotic fd disagrees.
+            anyhow::bail!("pty write returned 0");
+        }
+        data = &data[n..];
     }
     Ok(())
 }
