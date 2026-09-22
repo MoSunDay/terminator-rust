@@ -137,7 +137,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   touch only colors.rs/tokens.rs, geometry changes touch the script;
   presets a dracula Split state.json (pane bg/transparency now live in
   settings); checks I1/I2 assert the chip row STAYS with a single tab:
-  chip fill at (X+50,Y+15), underline band Y+30..Y+31, pane header tint
+  chip fill at (X+50,Y+7 - PROBE ABOVE THE INK: the 15pt "style [2]"
+  label ends ~X+89 and the close X starts ~X+96, the label/close gap is
+  too tight to sample; the old X+50,Y+15 only passed by landing on the
+  label's space char), underline band Y+30..Y+31, pane header tint
   pushed down to Y+44..Y+64, content from ~Y+66)
 - deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
   repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
@@ -333,11 +336,14 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   (chip sizes/fonts, CHROME_RESERVE, pane-header height/fonts, icon
   cells, badge widths) derive per frame from Settings.font_size via
   app/src/ui/chrome.rs (pure metrics(font_size) -> Metrics; scale =
-  font/15, every value = base*scale, so at the default 15 they are
-  NUMERICALLY IDENTICAL to the old constants - e2e pixel gates rely on
-  it). style::sync also rescales egui text_styles/item_spacing/
-  button_padding (memo keyed on theme AND font size, UiState.styled_font)
-  so menus/tooltips/Settings panel/rename TextEdits grow too; wheel_px
+  font/15, every value = base*scale EXCEPT chip_font which EQUALS
+  font_size (tab titles render at the terminal font, 2026-09-22; at the
+  default 15 the rest are NUMERICALLY IDENTICAL to the old constants -
+  e2e pixel gates rely on it). style::sync sets egui Body/Button/Mono/
+  Heading text_styles to font_size EXACTLY (menus/tooltips/Settings
+  panel/rename TextEdits match the terminal; only Small stays 8.5/15*
+  font) and rescales item_spacing/button_padding (memo keyed on theme
+  AND font size, UiState.styled_font); wheel_px
   takes the scaled step. e2e-ui-style phase J (font_size 20 preset,
   relaunch) asserts hairline ~Y+55, header run >=28, chip ink >=8px.
 PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore

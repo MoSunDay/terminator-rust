@@ -241,9 +241,12 @@ if not ok:
     rc = 1
 print(f"E chip-underline: {hits} px ~= {ACCENT} in scan band [{'OK' if ok else 'FAIL'}]")
 
-# F: active-chip fill = mix(bg, accent, 0.18), sampled inside the chip
-#    (spans roughly x X..X+75, y Y+4..Y+32) off the label and close glyphs.
-check("F chip-fill", X + 45, Y + 11, mix(BG, ACCENT, 0.18))
+# F: active-chip fill = mix(bg, accent, 0.18), sampled inside the chip.
+#    The chip label renders at the TERMINAL font (15pt): "style [2]" ink
+#    spans X+10..X+89 and the close X glyph ~X+96..X+108, so the label/
+#    close gap is too tight to probe - sample ABOVE the ink instead
+#    (chip pill Y+4..Y+32, glyph tops start ~Y+10; Y+7 is pure fill).
+check("F chip-fill", X + 50, Y + 7, mix(BG, ACCENT, 0.18))
 
 # G: pane header title centered. The focused "red" pane's title draws in
 #    FG over the focused-header tint in the header strip right below the
@@ -273,10 +276,11 @@ if not ok:
     rc = 1
 
 # H: no window-title row anymore. Scan the bare chrome zone right of the
-#    trailing buttons (their glyphs span ~X+190..X+240) and left of the
-#    zoom/inspector cells (start ~X+W-57), at the chip-row mid line:
-#    expect ZERO title-colored pixels there.
-hits = [x for x in range(X + 260, X + W - 60)
+#    trailing buttons (15pt labels: chips end ~X+190, their group spans
+#    ~X+198..X+254) and left of the zoom/inspector cells (start
+#    ~X+W-57), at the chip-row mid line: expect ZERO title-colored
+#    pixels there.
+hits = [x for x in range(X + 270, X + W - 60)
         if close(img.getpixel((x, Y + 18)), title_text)]
 ok = len(hits) == 0
 print(f"H no-topbar-title: {len(hits)} title-text px in chrome scan [{'OK' if ok else 'FAIL'}]")
@@ -342,11 +346,11 @@ print(f"I bar-stays: accent {accent_px} px, chip-fill {fill_px} px in band "
 #     focused-header tint; the tint itself only appears lower down
 #     (observed Y+44..Y+64; pane content starts ~Y+66).
 exp_header = mix(BG, ACCENT, 0.10)
-got = img.getpixel((X + 50, Y + 15))
+got = img.getpixel((X + 50, Y + 7))
 ok = close(got, chip_fill)
 if not ok:
     rc = 1
-print(f"I content-pushed-down: (X+50,Y+15) got {got} want chip-fill {chip_fill} "
+print(f"I content-pushed-down: (X+50,Y+7) got {got} want chip-fill {chip_fill} "
       f"[{'OK' if ok else 'FAIL'}]")
 header_low = sum(1 for yy in range(Y + 42, Y + 71)
                  if close(img.getpixel((X + 50, yy)), exp_header))
@@ -479,7 +483,8 @@ if not ok:
 print(f"J2 header-scaled: longest focused-header run {best} rows (>=28) "
       f"[{'OK' if ok else 'FAIL'}]")
 
-# J3: chip label ink at chip_font 13 * 4/3 = 17.3pt: FG/title_text pixels
+# J3: chip label ink at chip_font = the terminal font (20pt here):
+#     FG/title_text pixels
 #     inside the chip band with a >= 8px vertical run (glyphs grow with
 #     the metrics; the accent underline is excluded by the color filter).
 title_text = mix(FG, BG, 0.38)
