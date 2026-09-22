@@ -2,10 +2,11 @@
 //!
 //! epaint feathers every `rect_filled` edge, so painting one rect per
 //! cell leaves a lattice of faint seams between same-colored neighbors
-//! (measured 1/255 off per channel at the cell pitch) plus a
-//! wrong-colored sub-cell strip where the grid ends short of the pane
-//! edge. Pure functions here fold a frame's cell backgrounds into
-//! maximal same-color rectangles; `grid::draw_frame` paints those.
+//! (measured 1/255 off per channel at the cell pitch) plus
+//! wrong-colored sub-cell strips where the grid ends short of the pane
+//! edges (right and bottom). Pure functions here fold a frame's cell
+//! backgrounds into maximal same-color rectangles; `grid::draw_frame`
+//! paints those.
 
 use egui::{Color32, Pos2, Rect, Vec2};
 use vt_pane::{CellData, Frame as VtFrame};
@@ -15,7 +16,7 @@ use crate::state::CellSize;
 
 /// One merged background rectangle: grid origin, size in cells, and the
 /// (already opacity-adjusted) fill. Data-only.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct BgRun {
     pub x: u16,
     pub y: u16,
@@ -74,15 +75,34 @@ fn row_colors(
 }
 
 /// Merge one row's column colors into `out`: maximal horizontal runs of
-/// an equal color, vertically extended when the previous row ended an
-/// identical run. Returns the indices of this row's runs (empty when the
-/// row has none, which also breaks any vertical merge across gaps).
+/// an equal color, vertically extended over their OVERLAP with same-
+/// color runs of the previous row. Interval absorption, not exact
+/// `(x, cols)` matching: run boundaries drift between adjacent rows
+/// (partial-row selections, a band interrupted mid-row by a foreign
+/// cell) and the exact-match rule left a feathered seam along every
+/// misaligned row boundary. A prev run sticking out past the current
+/// run is split into dead side pieces plus one live overlap piece that
+/// spans the row boundary in a single rect; a current run spanning
+/// several prev runs fills the uncovered gaps with fresh runs (their
+/// top edge borders a different color above, which feathers like any
+/// color boundary). Returns the indices of this row's runs (empty when
+/// the row has none, which also breaks any vertical merge across
+/// gaps).
 fn merge_row(
     out: &mut Vec<BgRun>,
     prev: &[usize],
     y: u16,
     colors: &[Option<Color32>],
 ) -> Vec<usize> {
+    // Snapshot the prev intervals BEFORE any split mutates `out`: a
+    // later current run overlapping the SAME prev run must see its
+    // original span. Only runs directly above (`y0 + rows == y`) absorb.
+    let src: Vec<(u16, u16, usize)> = prev
+        .iter()
+        .map(|&i| (out[i].x, out[i].cols, out[i].y + out[i].rows, i))
+        .filter(|&(_, _, end, _)| end == y)
+        .map(|(x, cols, _, i)| (x, cols, i))
+        .collect();
     let mut cur: Vec<usize> = Vec::new();
     let mut x = 0usize;
     while x < colors.len() {
@@ -94,25 +114,94 @@ fn merge_row(
         while x < colors.len() && colors[x] == Some(c) {
             x += 1;
         }
-        let cols = (x - start) as u16;
-        if let Some(&i) = prev.iter().find(|&&i| {
-            let r = &out[i];
-            r.x == start as u16 && r.cols == cols && r.color == c && r.y + r.rows == y
-        }) {
-            out[i].rows += 1;
-            cur.push(i);
-        } else {
+        let (s, e) = (start as u16, x as u16);
+        let mut pos = s;
+        for &(p0, pcols, pi) in src.iter() {
+            let p1 = p0 + pcols;
+            let (o0, o1) = (p0.max(pos), e.min(p1));
+            if o0 >= o1 || out[pi].color != c {
+                continue;
+            }
+            if p0 > pos {
+                // columns above belong to another color or default
+                cur.push(out.len());
+                out.push(BgRun {
+                    x: pos,
+                    y,
+                    cols: p0 - pos,
+                    rows: 1,
+                    color: c,
+                });
+            }
+            split_extend(out, &mut cur, pi, o0, o1, y, c);
+            pos = o1;
+        }
+        if pos < e {
             cur.push(out.len());
             out.push(BgRun {
-                x: start as u16,
+                x: pos,
                 y,
-                cols,
+                cols: e - pos,
                 rows: 1,
                 color: c,
             });
         }
     }
     cur
+}
+
+/// Extend prev run `pi` downward over `[o0, o1)` - its overlap with the
+/// current row's run - so the piece spans the row boundary in ONE rect
+/// (no feathered seam lands on same-color columns). Parts of the prev
+/// run sticking out past the overlap stay behind as dead side pieces
+/// (their bottom edge borders a different color below).
+fn split_extend(
+    out: &mut Vec<BgRun>,
+    cur: &mut Vec<usize>,
+    pi: usize,
+    o0: u16,
+    o1: u16,
+    y: u16,
+    c: Color32,
+) {
+    let r = out[pi];
+    let p1 = r.x + r.cols;
+    if r.x == o0 && p1 == o1 {
+        // fully inside the current run: extend in place
+        out[pi].rows += 1;
+        cur.push(pi);
+        return;
+    }
+    if r.x < o0 {
+        out[pi].cols = o0 - r.x; // left dead remainder keeps the slot
+    } else {
+        out[pi] = BgRun {
+            // right dead remainder keeps the slot
+            x: o1,
+            y: r.y,
+            cols: p1 - o1,
+            rows: r.rows,
+            color: c,
+        };
+    }
+    if r.x < o0 && o1 < p1 {
+        // sticking out on BOTH sides: the right remainder needs a slot
+        out.push(BgRun {
+            x: o1,
+            y: r.y,
+            cols: p1 - o1,
+            rows: r.rows,
+            color: c,
+        });
+    }
+    cur.push(out.len());
+    out.push(BgRun {
+        x: o0,
+        y: r.y,
+        cols: o1 - o0,
+        rows: y - r.y + 1,
+        color: c,
+    });
 }
 
 /// All background runs of a frame merged into maximal rectangles.
@@ -157,10 +246,17 @@ pub(crate) fn cursor_ink(
 }
 
 /// Screen rect of a run inside `pane`. Runs reaching the last grid
-/// column bleed their right side to the pane edge so full-width
-/// background regions cover the sub-cell remainder; the pane clip rect
-/// guards any overshoot.
-pub(crate) fn run_rect(pane: Rect, run: &BgRun, cell: CellSize, grid_cols: u16) -> Rect {
+/// column/row bleed their right/bottom side to the pane edge so
+/// full-width/full-height background regions cover the sub-cell
+/// remainder (the grid is floor(pane/cell) cells wide/tall); the pane
+/// clip rect guards any overshoot.
+pub(crate) fn run_rect(
+    pane: Rect,
+    run: &BgRun,
+    cell: CellSize,
+    grid_cols: u16,
+    grid_rows: u16,
+) -> Rect {
     let left = pane.min.x + f32::from(run.x) * cell.w;
     let mut r = Rect::from_min_size(
         Pos2::new(left, pane.min.y + f32::from(run.y) * cell.h),
@@ -168,6 +264,9 @@ pub(crate) fn run_rect(pane: Rect, run: &BgRun, cell: CellSize, grid_cols: u16) 
     );
     if run.x + run.cols == grid_cols {
         r.max.x = r.right().max(pane.right());
+    }
+    if run.y + run.rows == grid_rows {
+        r.max.y = r.bottom().max(pane.bottom());
     }
     r
 }
@@ -217,6 +316,89 @@ mod tests {
         let rs = runs(&one);
         assert_eq!(rs.len(), 1);
         assert_eq!(rs[0].rows, 1);
+    }
+
+    #[test]
+    fn misaligned_rows_absorb_over_their_overlap() {
+        // row0: red red BLUE red red; row1: red across all five. The
+        // exact-match rule opened a fresh full-width run at row1 (a
+        // seam along the whole boundary); absorption extends both red
+        // runs over their overlap and only the column above the blue
+        // cell starts fresh.
+        let red = || CellData {
+            text: " ".into(),
+            bg: vtc(200, 20, 20),
+            ..CellData::default()
+        };
+        let mut r0 = vec![red(), red()];
+        r0.push(CellData {
+            text: " ".into(),
+            bg: vtc(20, 40, 220),
+            ..CellData::default()
+        });
+        r0.push(red());
+        r0.push(red());
+        let r1 = vec![red(); 5];
+        let rs = runs(&frame(5, 2, vec![r0, r1]));
+        let got: Vec<(u16, u16, u16, u16)> =
+            rs.iter().map(|r| (r.x, r.y, r.cols, r.rows)).collect();
+        assert_eq!(
+            got,
+            vec![(0, 0, 2, 2), (2, 0, 1, 1), (3, 0, 2, 2), (2, 1, 1, 1)],
+            "{rs:?}"
+        );
+    }
+
+    #[test]
+    fn sticking_out_prev_run_splits_dead_sides() {
+        // row0: red x6; row1: red only over cols 2..5. The prev run
+        // sticks out on both sides: the overlap piece spans the row
+        // boundary, the side remainders stay one row tall.
+        let red = || CellData {
+            text: " ".into(),
+            bg: vtc(200, 20, 20),
+            ..CellData::default()
+        };
+        let r0 = vec![red(); 6];
+        let mut r1 = vec![CellData::default(); 6];
+        for cd in r1[2..5].iter_mut() {
+            *cd = red();
+        }
+        let rs = runs(&frame(6, 2, vec![r0, r1]));
+        let got: Vec<(u16, u16, u16, u16)> =
+            rs.iter().map(|r| (r.x, r.y, r.cols, r.rows)).collect();
+        assert_eq!(
+            got,
+            vec![(0, 0, 2, 1), (5, 0, 1, 1), (2, 0, 3, 2)],
+            "{rs:?}"
+        );
+    }
+
+    #[test]
+    fn drifting_boundaries_chain_without_row_seams() {
+        // A selection whose column window drifts every row: each row
+        // boundary is crossed by a rect over the same-color overlap
+        // (the exact-match rule re-opened a full-width run each row).
+        let red = || CellData {
+            text: " ".into(),
+            bg: vtc(200, 20, 20),
+            ..CellData::default()
+        };
+        let mut r0 = vec![CellData::default(); 3];
+        r0[0] = red();
+        r0[1] = red();
+        let mut r1 = vec![CellData::default(); 3];
+        r1[1] = red();
+        r1[2] = red();
+        let r2 = vec![red(); 3];
+        let rs = runs(&frame(3, 3, vec![r0, r1, r2]));
+        let got: Vec<(u16, u16, u16, u16)> =
+            rs.iter().map(|r| (r.x, r.y, r.cols, r.rows)).collect();
+        assert_eq!(
+            got,
+            vec![(0, 0, 1, 1), (1, 0, 1, 3), (2, 1, 1, 2), (0, 2, 1, 1)],
+            "{rs:?}"
+        );
     }
 
     #[test]
@@ -317,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn run_rect_bleeds_only_at_the_last_grid_column() {
+    fn run_rect_bleeds_only_at_the_last_grid_column_and_row() {
         let pane = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(49.0, 60.0));
         let cell = CellSize {
             w: 9.0,
@@ -333,16 +515,31 @@ mod tests {
             rows: 2,
             color: Color32::RED,
         };
-        let r = run_rect(pane, &full, cell, 5);
+        let r = run_rect(pane, &full, cell, 5, 3);
         assert_eq!(r.left(), 10.0);
         assert_eq!(r.top(), 38.0);
-        assert_eq!(r.height(), 36.0);
         assert_eq!(
             r.right(),
             pane.right(),
             "full-width runs bleed to the pane edge"
         );
         assert_ne!(r.width(), 45.0);
+        assert_eq!(
+            r.bottom(),
+            pane.bottom(),
+            "full-height runs bleed to the pane bottom edge"
+        );
+        assert_ne!(r.height(), 36.0);
+
+        // one row short of the grid: no bottom bleed
+        let tall = BgRun {
+            x: 0,
+            y: 0,
+            cols: 5,
+            rows: 2,
+            color: Color32::RED,
+        };
+        assert_eq!(run_rect(pane, &tall, cell, 5, 3).bottom(), 56.0);
 
         // interior runs stop exactly at cols*cell.w
         let mid = BgRun {
@@ -352,7 +549,7 @@ mod tests {
             rows: 1,
             color: Color32::RED,
         };
-        assert_eq!(run_rect(pane, &mid, cell, 5).width(), 27.0);
+        assert_eq!(run_rect(pane, &mid, cell, 5, 3).width(), 27.0);
 
         // one column short of the grid: no bleed
         let short = BgRun {
@@ -362,6 +559,6 @@ mod tests {
             rows: 1,
             color: Color32::RED,
         };
-        assert_eq!(run_rect(pane, &short, cell, 5).right(), 46.0);
+        assert_eq!(run_rect(pane, &short, cell, 5, 3).right(), 46.0);
     }
 }

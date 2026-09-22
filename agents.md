@@ -233,8 +233,13 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   and the sub-cell remainder right of the last grid column showed the
   pane bg instead of the row color. bg_runs folds equal colors into
   maximal rectangles (selected > inverse > explicit > default; wide
-  cells cover both columns) and run_rect bleeds last-column runs to the
-  pane edge. Cursor-block glyph ink = the cursor CELL's own bg at full
+  cells cover both columns) and run_rect bleeds runs at the last grid
+  COLUMN AND the last grid ROW to the pane edge (bottom bleed is
+  symmetric to the right bleed; the caller passes grid cols+rows).
+  merge_row INTERVAL-ABSORBS: a current run overlapping a same-color
+  prev run extends it across the row boundary (split_extend keeps dead
+  prev pieces in their slots), so misaligned row boundaries no longer
+  feather. e2e: scripts/bin/e2e-bg-seams.sh K1-K5. Cursor-block glyph ink = the cursor CELL's own bg at full
   alpha (bg_runs::cursor_ink), not the pane bg. PIXEL-GATE GOTCHA: the
   NVIDIA/Vulkan present path dithers exactly-1-off columns at
   screen-fixed positions on ANY fill (single rects too; GL clean) - seam
@@ -276,6 +281,24 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   and every secondary viewport pass (windows.rs); never remove.
 - libghostty default palette green ~(181,189,104) red ~(224,108,117) -
   color tests assert dominance, not VGA values.
+- vendored ghostty (22d1317) FAST-FILL HANG (2026-09-23, K5 chase): a
+  multi-KB wrapped print of SGR-bg spaces ending mid-BOTTOM-row can spin
+  the engine forever in printSliceFill -> printWrap -> index ->
+  cursorScrollAbove -> cursorDownScroll -> PageList.grow (unbounded RSS,
+  main-thread spin, ctl "app not responding"). BUILD-LAYOUT-DEPENDENT
+  and currently UNREPRODUCIBLE: identical-source rebuilds stop hanging
+  (6/6 hangs on one binary, 0/23 across three rebuilds, incl. one with
+  never-executed code added next to pump) - treat it as latent UB in
+  the engine fast path, do not chase via payload bisection. RULE: e2e
+  full-grid bg fills use BCE erase (printf '\033[41m\033[H\033[2J'),
+  NEVER a wrapped spaces print.
+- e2e payload ESCAPING (bit during K5): ctl send --text $'...' with
+  SINGLE \033 sends LITERAL ESC bytes - an interactive readline mangles
+  the meta-sequences and the command never runs (capture shows
+  garbled `m'printf 'm`). Send DOUBLE backslash (\033 as text) so
+  bash's printf interprets it inside the pane. e2e scripts already
+  follow this for every SGR payload; keep it that way.
+
 - control socket: $XDG_RUNTIME_DIR/terminator-rust/ipc.sock (fallback
   ~/.terminator-rust/); start() live-probes and reclaims stale files
   (SIGTERM runs no destructors, the file survives; next start removes it);
