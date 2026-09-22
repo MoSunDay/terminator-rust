@@ -36,13 +36,13 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    // CLOEXEC on BOTH descriptors (openpty has no flags): a sibling
-    // thread forking while our slave is open would otherwise leak it into
-    // a foreign child, and that holder keeps our master from ever seeing
-    // EOF (exit detection waits for it). The child's dup2(2) clears
-    // FD_CLOEXEC on stdio, so stdio survives exec.
-    let (master, slave) = open_pty_pair(&winsize)?;
-
+    // Pre-fork: build every string/pointer table and resolve the program
+    // BEFORE opening the pty pair - a malformed entry (interior NUL) must
+    // fail without leaking the just-opened fds. And once other sessions
+    // exist their reader threads are running, and the forked child must
+    // not malloc (a sibling thread can hold the arena lock at fork time
+    // and wedge the child before exec). After the fork the child only
+    // runs async-signal-safe calls on these pre-built tables.
     let prog = CString::new(argv[0]).context("argv[0] contains NUL")?;
     let cargv: Vec<CString> = argv
         .iter()
@@ -70,12 +70,6 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
             env.push(c);
         }
     }
-
-    // Pre-fork: build every pointer table and resolve the program NOW.
-    // Once other sessions exist their reader threads are running, and the
-    // forked child must not malloc (a sibling thread can hold the arena
-    // lock at fork time and wedge the child before exec). After the fork
-    // the child only runs async-signal-safe calls.
     let argvp: Vec<*const libc::c_char> = cargv
         .iter()
         .map(|c| c.as_ptr())
@@ -92,6 +86,13 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
     } else {
         resolve_on_path(&prog, &env).unwrap_or_else(|| prog.clone())
     };
+
+    // CLOEXEC on BOTH descriptors (openpty has no flags): a sibling
+    // thread forking while our slave is open would otherwise leak it into
+    // a foreign child, and that holder keeps our master from ever seeing
+    // EOF (exit detection waits for it). The child's dup2(2) clears
+    // FD_CLOEXEC on stdio, so stdio survives exec.
+    let (master, slave) = open_pty_pair(&winsize)?;
 
     // SAFETY: the child branch below only calls async-signal-safe
     // functions on pre-built tables.

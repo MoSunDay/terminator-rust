@@ -30,9 +30,19 @@ pub fn find_db(pid: i32) -> Result<Option<PathBuf>, String> {
         .flatten()
         .filter_map(|e| e.ok())
         .filter_map(|e| std::fs::read_link(e.path()).ok())
-        .filter(|p| p.to_string_lossy().ends_with("opencoder.db"))
+        .filter(|p| is_db_link(p))
         .collect();
     pick_db(links)
+}
+
+/// An fd's link target names an opencoder store? Unlinked-but-open files
+/// readlink as `".../opencoder.db (deleted)"` on Linux, so that kernel
+/// suffix is trimmed before the ends_with check.
+fn is_db_link(target: &std::path::Path) -> bool {
+    target
+        .to_string_lossy()
+        .trim_end_matches(" (deleted)")
+        .ends_with("opencoder.db")
 }
 
 /// Working directory of `pid` (empty PathBuf when unreadable).
@@ -79,6 +89,18 @@ fn ppid_of(stat_line: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_db_link_matches_unlinked_files() {
+        assert!(is_db_link(std::path::Path::new(
+            "/home/u/.cache/opencoder/wd/opencoder.db"
+        )));
+        assert!(is_db_link(std::path::Path::new(
+            "/home/u/.cache/opencoder/wd/opencoder.db (deleted)"
+        )));
+        assert!(!is_db_link(std::path::Path::new("/x/opencoder.db-journal")));
+        assert!(!is_db_link(std::path::Path::new("/x/other.db")));
+    }
 
     #[test]
     fn ppid_of_handles_parens_in_comm() {

@@ -18,7 +18,9 @@ pub fn pane_table(panes: &[PaneInfo]) -> String {
     let mut rows: Vec<Vec<String>> = vec![HEADER.iter().map(|h| (*h).to_string()).collect()];
     rows.extend(panes.iter().map(row_of));
     let widths: Vec<usize> = (0..HEADER.len())
-        .map(|c| rows.iter().map(|r| r[c].len()).max().unwrap_or(0))
+        // chars, not bytes: `{:<width$}` pads by chars, so a CJK/emoji
+        // name (3 bytes/char) would blow the column apart otherwise.
+        .map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0))
         .collect();
     let mut out = String::new();
     for row in rows {
@@ -106,6 +108,28 @@ mod tests {
         assert!(out.contains(" - "), "name dash: {out}");
         // "no" pads to ALIVE-width 5, then the column gap: 4 spaces to 127.
         assert!(out.contains("no    127"), "alive/exit: {out}");
+    }
+
+    #[test]
+    fn table_widths_count_chars_not_bytes() {
+        let mut cjk = pane();
+        cjk.name = Some("汉字测试".into()); // 4 chars, 12 bytes
+        let table = pane_table(&[pane(), cjk]);
+        let mut lines = table.lines();
+        let _header = lines.next().unwrap();
+        let ascii_row = lines.next().unwrap();
+        let cjk_row = lines.next().unwrap();
+        // NAME width = max(4, 9, 4 chars) = 9: the CJK name field pads to
+        // 9 chars (4 han + 5 spaces). Byte-width (12) would push its KIND
+        // column 3 chars right of the ASCII row's.
+        let kind_at = |s: &str| {
+            s.match_indices("local")
+                .next()
+                .map(|(i, _)| s[..i].chars().count())
+        };
+        assert_eq!(kind_at(ascii_row), kind_at(cjk_row));
+        // 4 han chars padded to the 9-char NAME width + 1 column separator.
+        assert!(cjk_row.contains("汉字测试      local"), "{cjk_row}");
     }
 
     #[test]

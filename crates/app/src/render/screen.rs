@@ -61,7 +61,9 @@ fn draw_viewport_bar(
     );
     painter.rect_filled(track_rect, 1.0, track);
     let ratio = |v: u64| v as f32 / total as f32;
-    let thumb_h = (h * ratio(len)).clamp(12.0, h);
+    // h < 12 in tiny panes: clamp(12.0, h) would invert min>max and
+    // panic, so the minimum degrades to h (thumb fills the track).
+    let thumb_h = (h * ratio(len)).clamp(h.min(12.0), h);
     let top = (h * ratio(offset)).min(h - thumb_h);
     let bar = Rect::from_min_max(
         egui::pos2(track_rect.left(), content.top() + top),
@@ -153,6 +155,14 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     }
 
     for &(pane, lt) in &rects {
+        // A dead-pane click or the pane-header X can close the LAST pane
+        // and remove this window mid-loop (handle_empty_window); the
+        // next st.win() lookup would clamp to another window and render
+        // its tree into this dying viewport - same guard as the
+        // frame-start one, re-checked per pane.
+        if st.win().map(|w| w.id) != win_id {
+            break;
+        }
         let full = grid::egui_rect(lt);
         if full.width() < 4.0 || full.height() < 4.0 {
             continue;

@@ -1,6 +1,7 @@
 //! Session wiring: pty reader thread, terminal state, key encoding.
 
 use std::io;
+use std::os::fd::RawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -105,6 +106,24 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
     let argv: Vec<&str> = opts.argv.iter().map(String::as_str).collect();
     let handle = pty::open_pty(opts.cols, opts.rows, &argv, &opts.env).context("spawning pty")?;
 
+    // The fork already happened: until the reader thread exists nobody
+    // owns or closes the master fd, so EVERY failure below is cleaned up
+    // at this single call site (kill child + close master). See
+    // `build_session`: it spawns the reader thread LAST, so an Err from
+    // it always means "no reader thread owns the fd yet".
+    match build_session(opts, handle) {
+        Ok(sess) => Ok(sess),
+        Err(e) => {
+            kill_pty_child(handle.child_pid, handle.master_fd);
+            Err(e)
+        }
+    }
+}
+
+/// Everything after a successful `pty::open_pty`: terminal setup, the
+/// fallible constructors, and finally the reader thread. All `?` returns
+/// here happen while the caller still owns the master fd.
+fn build_session(opts: &SessionOpts, handle: PtyHandle) -> Result<Session> {
     let mut term = Terminal::new(opts.cols, opts.rows)?;
     term.set_scrollback_max_lines(Some(opts.scrollback_lines))?;
 
@@ -124,6 +143,14 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
     })?;
     let cell_px = effects::new_cell_px();
     effects::install(&mut term, Arc::clone(&cell_px), opts.dark)?;
+    // Build every fallible field before the reader thread exists; the
+    // struct literal below is infallible.
+    let render_state = RenderState::new()?;
+    let row_it = RowIterator::new()?;
+    let cell_it = CellIterator::new()?;
+    let key_encoder = KeyEncoder::new()?;
+    let key_event = KeyEvent::new()?;
+    let pointer = crate::mouse::new_pointer_state().context("pointer state")?;
 
     let (tx, rx) = channel::<PtyEvent>();
     let read_fd = handle.master_fd;
@@ -131,22 +158,10 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_reader = Arc::clone(&stop);
     let closed_reader = Arc::clone(&closed);
-    let reader = thread::Builder::new()
+    thread::Builder::new()
         .name("pty-reader".to_string())
-        .spawn(move || reader_loop(read_fd, pid, stop_reader, closed_reader, tx));
-    match reader {
-        Ok(_) => {}
-        Err(e) => {
-            // No reader thread will own or close the fd: clean up the
-            // just-forked child and the master fd ourselves.
-            signal_group(handle.child_pid, libc::SIGKILL);
-            // SAFETY: plain C close.
-            unsafe {
-                libc::close(handle.master_fd);
-            }
-            return Err(e).context("spawning reader thread");
-        }
-    }
+        .spawn(move || reader_loop(read_fd, pid, stop_reader, closed_reader, tx))
+        .context("spawning reader thread")?;
 
     Ok(Session {
         handle,
@@ -154,15 +169,27 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
         stop,
         closed,
         term,
-        render_state: RenderState::new()?,
-        row_it: RowIterator::new()?,
-        cell_it: CellIterator::new()?,
-        key_encoder: KeyEncoder::new()?,
-        key_event: KeyEvent::new()?,
+        render_state,
+        row_it,
+        cell_it,
+        key_encoder,
+        key_event,
         exit: None,
         cell_px,
-        pointer: crate::mouse::new_pointer_state().context("pointer state")?,
+        pointer,
     })
+}
+
+/// Kill the just-forked child and close the master fd: no reader thread
+/// will own or close the fd on this path, so clean up both ourselves.
+/// Reaps so a retried spawn (app `ensure_sessions`) leaves no zombie.
+fn kill_pty_child(pid: i32, master: RawFd) {
+    signal_group(pid, libc::SIGKILL);
+    // SAFETY: plain C close.
+    unsafe {
+        libc::close(master);
+    }
+    let _ = pty::pty_wait(pid, false);
 }
 
 /// Reader loop for the pty master; runs on its own thread.

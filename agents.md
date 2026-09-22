@@ -243,6 +243,14 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   value list for a real 256x256 icon (reads as "no icon") - verify with
   XGetWindowProperty(AnyPropertyType) and remember format-32 items come
   back as `long` (8 bytes) on LP64.
+- f32::clamp(min,max) PANICS on min>max even in release (std assert,
+  not debug_assert) - audit every clamp whose max is a runtime-derived
+  size: render/screen.rs draw_viewport_bar (content h < 12 in a tiny
+  pane + scrollback unpinned), vt-pane mouse.rs clamp_grid_px (0 cols/
+  rows). Pattern: `.max(1.0)` / `h.min(12.0)` guards at the clamp site,
+  never trust a remote resizer invariant. std::env::args() likewise
+  PANICS on non-UTF-8 argv - ctl main uses args_os + to_string_lossy
+  (unknown pane name -> clean not-found error).
 - GPU surface-size guard (2026-09-22 crash): wgpu ABORTS the process
   (fatal validation error, "Surface width and height must be within the
   maximum supported texture size", 8192 on llvmpipe; 5K window at 2.0

@@ -16,8 +16,10 @@ use crate::state::{
 use crate::ui::chrome;
 
 /// None when the candidate manual title is acceptable: names must be
-/// unique (control-socket addressing) and not digits-only (reserved for
-/// pane ids in ctl's untagged PaneSelector).
+/// unique (control-socket addressing), not digits-only (reserved for
+/// pane ids in ctl's untagged PaneSelector) and not `--`-prefixed
+/// (ctl parses those as unknown flags, so the pane becomes
+/// unaddressable).
 fn reject_reason(
     panes: &BTreeMap<PaneId, PaneMeta>,
     value: &str,
@@ -28,6 +30,9 @@ fn reject_reason(
     }
     if value.chars().all(|c| c.is_ascii_digit()) {
         return Some("digits-only names are reserved for pane ids");
+    }
+    if value.starts_with("--") {
+        return Some("names starting with -- parse as ctl flags");
     }
     if crate::state::manual_title_taken(panes, value, pane) {
         return Some("another pane already uses this name");
@@ -166,9 +171,13 @@ pub fn show(
         .iter()
         .map(|b| (26.0 + b.len() as f32 * 6.5) * m.s)
         .sum::<f32>();
+    // Narrow panes (vertical split + wide badges at a big font size)
+    // would push the title's right edge past its left: clamp so the
+    // rect stays well-formed and centering holds.
+    let title_right = (rect.right() - btn_w - badge_w - 8.0 * m.s).max(rect.left() + 8.0 * m.s);
     let title_rect = Rect::from_min_max(
         rect.min + Vec2::new(8.0 * m.s, 2.0 * m.s),
-        rect.right_top() + Vec2::new(-(btn_w + badge_w + 8.0 * m.s), rect.height() - 2.0),
+        egui::pos2(title_right, rect.bottom() - 2.0),
     );
 
     let editing = st
@@ -370,7 +379,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_reason_blocks_digits_and_duplicates_only() {
+    fn reject_reason_blocks_digits_duplicates_and_flag_names() {
         let mut st = fresh_state();
         st.panes.get_mut(&1).unwrap().manual_title = Some("agent".into());
         assert_eq!(
@@ -386,6 +395,15 @@ mod tests {
         assert!(
             reject_reason(&st.panes, "7", 1).is_some(),
             "digits-only -> id"
+        );
+        assert!(
+            reject_reason(&st.panes, "--urgent", 1).is_some(),
+            "-- prefix parses as a ctl flag"
+        );
+        assert_eq!(
+            reject_reason(&st.panes, "-urgent", 1),
+            None,
+            "single dash is still addressable"
         );
         assert_eq!(
             reject_reason(&st.panes, "42x", 1),
