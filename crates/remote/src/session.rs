@@ -10,6 +10,18 @@ use crate::registry::RemoteTarget;
 /// [`crate::bootstrap::EXIT_NO_ZELLIJ_SHELL`]).
 pub const EXIT_NO_ZELLIJ: i32 = 42;
 
+/// ssh's own failure exit code: connection refused/unreachable/reset,
+/// keepalive timeout, broken pipe. The connection died - the session on
+/// the remote host is still alive and can be reattached.
+pub const EXIT_SSH_FAIL: i32 = 255;
+
+/// True when an observed exit code means "the connection dropped"
+/// rather than "the session ended": such panes are kept and reattached
+/// instead of closed. Negative codes are poll/read failures on our side.
+pub fn is_disconnect(code: i32) -> bool {
+    code == EXIT_SSH_FAIL || code < 0
+}
+
 /// What a pane is running.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PaneKind {
@@ -37,8 +49,9 @@ pub enum PaneStatus {
     /// Remote reported "no zellij installed" (exit 42): caller should
     /// degrade to a plain ssh shell.
     NoZellij,
-    /// Reader hit EOF without an exit code (connection drop); set by the
-    /// UI layer when that happens.
+    /// Connection dropped (exit 255 or a negative poll/read failure):
+    /// produced by `interpret_exit` for connection-failure exits, the
+    /// pane is kept and reattached.
     Disconnected,
 }
 
@@ -88,11 +101,13 @@ pub fn reconnect_argv(target: &RemoteTarget) -> Vec<String> {
 /// Map an observed wait-status exit code to a [`PaneStatus`].
 ///
 /// `None` (still running) maps to [`PaneStatus::Running`]; `Some(42)` is
-/// the remote "no zellij" marker; anything else is a plain exit.
+/// the remote "no zellij" marker; 255/-1 means the connection dropped
+/// (now [`PaneStatus::Disconnected`]); anything else is a plain exit.
 pub fn interpret_exit(code: Option<i32>) -> PaneStatus {
     match code {
         None => PaneStatus::Running,
         Some(EXIT_NO_ZELLIJ) => PaneStatus::NoZellij,
+        Some(code) if is_disconnect(code) => PaneStatus::Disconnected,
         Some(other) => PaneStatus::Exited(other),
     }
 }
@@ -185,7 +200,12 @@ mod tests {
         assert_eq!(interpret_exit(Some(0)), PaneStatus::Exited(0));
         assert_eq!(interpret_exit(Some(1)), PaneStatus::Exited(1));
         assert_eq!(interpret_exit(Some(130)), PaneStatus::Exited(130));
-        // Disconnected is never produced here: the UI sets it on EOF.
+        assert_eq!(
+            interpret_exit(Some(EXIT_SSH_FAIL)),
+            PaneStatus::Disconnected
+        );
+        assert_eq!(interpret_exit(Some(-1)), PaneStatus::Disconnected);
+        // Only connection-failure codes map to Disconnected, never None.
         assert_ne!(interpret_exit(None), PaneStatus::Disconnected);
     }
 }

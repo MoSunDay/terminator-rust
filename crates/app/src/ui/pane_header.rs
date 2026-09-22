@@ -56,6 +56,7 @@ pub fn show(
     let meta = st.panes.get(&pane);
     let osc = crate::session_map::osc_title(sess, pane);
     let exit = crate::session_map::exit_code(sess, pane);
+    let reconnecting = crate::actions::reconnect::pending(sess, pane);
     let title = match meta {
         Some(m) => effective_title(m.manual_title.as_deref(), &osc, &m.kind),
         None => "?".to_string(),
@@ -153,7 +154,9 @@ pub fn show(
     if degraded {
         badges.push("ssh".to_string());
     }
-    if let Some(code) = exit {
+    if reconnecting {
+        badges.push("reconnecting".to_string());
+    } else if let Some(code) = exit {
         badges.push(format!("exit {code}"));
     }
 
