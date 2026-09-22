@@ -22,6 +22,14 @@
 #   K4 CJK wide-cell bg: inside the magenta CJK run (汉字测试 x2) there
 #      are ZERO pane-bg pixels (wide cells used to leave holes in their
 #      background).
+#   K5 bottom-edge bleed: a full-grid red fill (SGR 41 + BCE
+#      CSI 2 J erase - never a wrapped spaces print, see the hang
+#      note at the K5 step) must cover the pane's sub-cell
+#      BOTTOM remainder -
+#      symmetric to K3's right bleed. Reference bottom = the last
+#      pane-bg row of the FIRST scrot (the pane-bg rect always covers
+#      the full pane); before the fix full-height runs stopped at
+#      rows*cell.h and the remainder strip showed the pane bg.
 # Expected band colors are the libghostty default ANSI palette (the VT
 # engine owns cell colors); tolerance 8 covers GPU dither noise.
 # TERMINATOR_OPAQUE=1 pins window opacity 1.0 (no compositor in Xvfb).
@@ -291,6 +299,52 @@ else:
           f"{len(holes)} pane-bg holes [{'OK' if ok else 'FAIL'}]")
 
 sys.exit(rc)
+PY
+
+# --- K5 bottom bleed (2nd scrot): BCE full-grid fill.
+#     SGR 41 + CSI 2 J paints every cell red in ONE erase op
+#     (background-color-erase) - no wrapped print run. A multi-KB
+#     spaces print ending mid-bottom-row triggered a build-layout-
+#     dependent fast-fill hang in the vendored ghostty engine
+#     (printSliceFill -> printWrap -> grow loop, rev 22d1317);
+#     the e2e must never feed that shape again.
+step "K5 full-screen red fill (BCE 2J)"
+"$CTL" send 1 --text $'printf \'\\033[41m\\033[H\\033[2J\\033[0m\'\n' >/dev/null
+sleep 0.6
+scrot -o "$ROOT/scr-red.png"
+export SCRRED="$ROOT/scr-red.png"
+python3 - <<'PY'
+import os, sys
+from collections import Counter
+from PIL import Image
+
+PANE_BG = (40, 42, 54)
+RED = (204, 102, 102)     # SGR 41, same pin as K1
+
+def close(p, e, tol):
+    return all(abs(a - b) <= tol for a, b in zip(p, e))
+
+def bottom_of(path, color, tol):
+    # Last row (walking up from the window bottom) whose MODAL color
+    # over a central span matches - the pane spans the window width,
+    # and prompt/cursor ink never reaches the central span.
+    img = Image.open(path).convert("RGB")
+    px = img.load()
+    X, Y, W, H = (int(os.environ[k]) for k in ("X", "Y", "WIDTH", "HEIGHT"))
+    x0, x1 = X + W // 4, X + 3 * W // 4
+    for y in range(Y + H - 1, Y, -1):
+        row = [px[x, y] for x in range(x0, x1)]
+        modal, _ = Counter(row).most_common(1)[0]
+        if close(modal, color, tol):
+            return y
+    return -1
+
+bg = bottom_of(os.environ["SCRCAP"], PANE_BG, 6)
+red = bottom_of(os.environ["SCRRED"], RED, 8)
+gap = bg - red
+print(f"K5 bottom bleed: red ends y={red}, pane-bg ends y={bg} "
+      f"(gap {gap}px, want 0) [{'OK' if gap == 0 else 'FAIL'}]")
+sys.exit(0 if gap == 0 else 1)
 PY
 step "seam assertions passed"
 

@@ -152,10 +152,15 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     let wide_font = FontId::monospace(cell.wide_size);
     // Cell backgrounds as MERGED maximal rectangles: epaint feathers
     // every rect edge, so one rect per cell leaves a lattice of faint
-    // seams in same-color regions; full-width runs also bleed into the
-    // pane's right remainder (grid is floor(w/cell) columns wide).
+    // seams in same-color regions; full-width/full-height runs also
+    // bleed into the pane's right/bottom remainder (the grid is
+    // floor(pane/cell) cells wide and tall).
     for run in bg_runs::bg_runs(fr, default_fg, sel_opaque, fill_alpha) {
-        painter.rect_filled(bg_runs::run_rect(rect, &run, cell, fr.cols), 0.0, run.color);
+        painter.rect_filled(
+            bg_runs::run_rect(rect, &run, cell, fr.cols, fr.rows),
+            0.0,
+            run.color,
+        );
     }
     for (y, row) in fr.cells.iter().enumerate() {
         let mut skip_tail = false;
@@ -241,8 +246,9 @@ mod tests {
     fn merged_bg_paints_one_full_width_rect() {
         // Headless paint (same pattern as the preedit tests): a 5x3
         // frame of uniform red-bg cells must produce EXACTLY ONE red
-        // rect shape - not 15 - and its right side must bleed to the
-        // pane edge (the grid covers only 5*9=45pt of the 49pt pane).
+        // rect shape - not 15 - and its right/bottom sides must bleed
+        // to the pane edge (the grid covers only 5*9=45pt of the 49pt
+        // pane and 3*18=54pt of the 60pt pane).
         let ctx = egui::Context::default();
         crate::ui::fonts::install(&ctx);
         ctx.begin_pass(egui::RawInput::default());
@@ -312,7 +318,16 @@ mod tests {
             "full-width runs bleed into the pane remainder"
         );
         assert_ne!(r.rect.width(), 5.0 * 9.0, "must not stop at the grid edge");
-        assert_eq!(r.rect.height(), 3.0 * 18.0);
+        assert_eq!(
+            r.rect.bottom(),
+            pane.bottom(),
+            "full-height runs bleed into the pane bottom remainder"
+        );
+        assert_ne!(
+            r.rect.height(),
+            3.0 * 18.0,
+            "must not stop at the grid bottom"
+        );
         // Only the pane bg fill remains as the other solid rect.
         let pane_bg = with_opacity(Color32::from_rgb(40, 42, 54), 0.5);
         let bg_rects = out
