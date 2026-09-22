@@ -36,7 +36,7 @@ pub struct Metrics {
     pub close_btn: f32,
     /// Active-chip accent underline height (base 2).
     pub accent_h: f32,
-    /// Chip label font size (base 12).
+    /// Chip label font size: equal to the terminal font size.
     pub chip_font: f32,
     /// Top/bottom inset of the chip row (base 4).
     pub row_inset: f32,
@@ -82,7 +82,7 @@ pub fn metrics(font_size: f32) -> Metrics {
         close_w: 14.0 * s,
         close_btn: 12.0 * s,
         accent_h: 2.0 * s,
-        chip_font: 12.0 * s,
+        chip_font: font_size,
         row_inset: 4.0 * s,
         icon: 16.0 * s,
         icon_gap: 4.0 * s,
@@ -116,6 +116,8 @@ mod tests {
         assert_eq!(m.group_w, 56.0);
         assert_eq!(m.icon, 16.0);
         assert_eq!(m.header_h, 24.0);
+        // The tab title renders at the terminal font size.
+        assert_eq!(m.chip_font, DEFAULT_FONT_SIZE);
     }
 
     #[test]
@@ -124,6 +126,12 @@ mod tests {
             metrics(30.0).reserve,
             2.0 * metrics(DEFAULT_FONT_SIZE).reserve
         );
+    }
+
+    #[test]
+    fn chip_font_tracks_the_terminal_font() {
+        assert_eq!(metrics(20.0).chip_font, 20.0);
+        assert_eq!(metrics(9.0).chip_font, 9.0);
     }
 
     #[test]

@@ -395,9 +395,10 @@ WID=""
 sleep 0.5
 
 # Two short chips fit easily, so the group rides 8px right of chip 2:
-# 106 + 5 + 106 = 217px of chips, + 8px gap, + 8px half-icon puts the
-# '+' center at X+233. The OLD fixed slot (W-137) is bare chrome now -
-# a click there must be a no-op.
+# the chip label renders at the terminal font (15pt), so each
+# "tabname-NN" chip is 124px -> 124 + 5 + 124 = 253px of chips, + 8px
+# gap, + 8px half-icon puts the '+' center at X+269. The OLD fixed slot
+# (W-137) is bare chrome now - a click there must be a no-op.
 python3 - "$STATE" <<'PY'
 import json, sys
 # 2 single-pane tabs "tabname-01"/"tabname-02": same PTab shape as the
@@ -422,20 +423,20 @@ geo
 [ "$(tab_count)" -eq 2 ] \
     || fail "S4 preset did not restore 2 tabs (tabs=$(tab_count))"
 
-click_at $((X+233)) $((Y+CHROME_Y))    # '+' following the second chip
+click_at $((X+269)) $((Y+CHROME_Y))    # '+' following the second chip
 ok=""
 for _ in $(seq 1 20); do
     if [ "$(tab_count)" -eq 3 ] && [ "$(active_tab)" -eq 2 ]; then ok=1; break; fi
     sleep 0.25
 done
 [ -n "$ok" ] \
-    || fail "trailing group did not follow the chips: '+' at X+233 did not add+activate tab 3 (tabs=$(tab_count) active=$(active_tab))"
+    || fail "trailing group did not follow the chips: '+' at X+269 did not add+activate tab 3 (tabs=$(tab_count) active=$(active_tab))"
 
 click_at $((X+WIDTH-137)) $((Y+CHROME_Y))   # OLD fixed '+' slot = bare chrome
 sleep 1
 [ "$(tab_count)" -eq 3 ] \
     || fail "old fixed slot still hosts the + button (tabs=$(tab_count))"
-echo "S4: group follows the chips ('+' at X+233 works, W-137 slot inert)"
+echo "S4: group follows the chips ('+' at X+269 works, W-137 slot inert)"
 
 step "S5: Ctrl+Shift+Q quits the app"
 activate

@@ -7,11 +7,11 @@ use crate::render::colors::{self, palette_of};
 use crate::render::tokens;
 use crate::state::UiState;
 
-/// Install a dark egui style derived from the active theme, with the
-/// default text styles scaled by the chrome scale (tooltips, context
-/// menus, the Settings panel and TextEdits all grow with the terminal
-/// font). Idempotent per theme name AND font size: `UiState.styled_theme`
-/// + `UiState.styled_font` track the last applied pair.
+/// Install a dark egui style derived from the active theme. Body/Button/
+/// Monospace/Heading text (tooltips, context menus, the Settings panel
+/// and TextEdits) render at the TERMINAL font size; Small stays a notch
+/// below for secondary hints. Idempotent per theme name AND font size:
+/// `UiState.styled_theme` + `UiState.styled_font` track the pair.
 pub fn sync(ctx: &Context, theme_name: &str, font_size: f32, uist: &mut UiState) {
     if uist.styled_theme.as_deref() == Some(theme_name) && uist.styled_font == font_size {
         return;
@@ -31,18 +31,15 @@ pub fn sync(ctx: &Context, theme_name: &str, font_size: f32, uist: &mut UiState)
         ..Default::default()
     };
     // egui text styles (tooltips, context menus, the Settings panel,
-    // TextEdits, buttons) ride on chrome-sized bases - one notch below
-    // egui's defaults (Body/Button/Mono 13 -> 11.5) so floating chrome
-    // stays subordinate to the terminal grid - still scaled by the
-    // chrome scale.
+    // TextEdits, buttons) render at the TERMINAL font size so floating
+    // chrome content matches the grid it floats over; Small stays
+    // proportional for secondary hints.
     let mut text_styles = Style::default().text_styles;
     for (ts, font) in text_styles.iter_mut() {
-        let base = match ts {
-            TextStyle::Small => 8.5,
-            TextStyle::Heading => 15.0,
-            _ => 11.5,
+        font.size = match ts {
+            TextStyle::Small => 8.5 * s,
+            _ => font_size,
         };
-        font.size = base * s;
     }
     style.text_styles = text_styles;
     style.spacing.item_spacing = vec2(7.0 * s, 5.0 * s);
