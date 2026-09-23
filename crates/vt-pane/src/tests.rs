@@ -279,6 +279,46 @@ fn write_after_reader_closed_fd_is_ok() {
 }
 
 // ---------------------------------------------------------------------------
+// PTY device plumbing
+// ---------------------------------------------------------------------------
+
+/// The slave device must be resolvable, the child must actually run, and
+/// reading the master must yield its output.
+///
+/// Regression guard for the macOS `TIOCPTYGNAME` request, whose `_IOC`
+/// encoding (direction bit AND command number) differs between SDKs: a
+/// stale hardcoded request makes the ioctl fail with `ENOTTY`, which used
+/// to make EVERY pane spawn fail on macOS. Unlike the shell tests above
+/// this does not `skip` on failure - a broken pty path is the bug.
+#[test]
+fn pty_spawn_resolves_the_slave_device() {
+    let h = crate::pty::open_pty(80, 24, &["/bin/sh", "-c", "printf pty-ok; exit 7"], &[])
+        .expect("open_pty must resolve the pty slave device");
+
+    let mut out = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        // SAFETY: plain read into a valid buffer.
+        let n = unsafe { libc::read(h.master_fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if n < 0 {
+            // EINTR retries; EIO means the child side is gone (EOF).
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n as usize]);
+    }
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("pty-ok"), "pty output was {text:?}");
+    assert_eq!(crate::pty::pty_wait(h.child_pid, false).unwrap(), Some(7));
+}
+
+// ---------------------------------------------------------------------------
 // Mouse reporting, wheel routing and selection gestures
 // ---------------------------------------------------------------------------
 

@@ -216,9 +216,17 @@ pub fn pty_wait(pid: i32, non_blocking: bool) -> Result<Option<i32>> {
 ///
 /// glibc exposes the thread-safe `ptsname_r`; Apple platforms instead use
 /// the `TIOCPTYGNAME` ioctl, which the libc crate does not export.
-// _IOW('t', 99, 128): Apple's official thread-safe ptsname equivalent.
+// Apple's thread-safe ptsname equivalent. The encoding is
+// `_IOC(IOC_OUT, 't', N, 128)`: the command number moved from 99 to 83 in
+// the modern SDKs and the direction is IOC_OUT, not IOC_IN. The request
+// previously hardcoded here (0x80807463) got BOTH wrong, so
+// `ioctl(TIOCPTYGNAME)` failed with ENOTTY, `pty_slave_name` errored, and
+// every pane spawn failed. Try the current SDK's request first, then the
+// legacy encoding, so both old and new macOS work.
 #[cfg(target_os = "macos")]
-const TIOCPTYGNAME: libc::c_ulong = 0x80807463;
+const TIOCPTYGNAME: libc::c_ulong = 0x4080_7453; // _IOC(IOC_OUT, 't', 83, 128)
+#[cfg(target_os = "macos")]
+const TIOCPTYGNAME_LEGACY: libc::c_ulong = 0x4080_7463; // _IOC(IOC_OUT, 't', 99, 128)
 
 /// Darwin's libc exposes TIOCSCTTY as `c_uint` while `ioctl` takes
 /// `c_ulong`; normalize per platform so call sites stay uniform.
@@ -231,13 +239,31 @@ fn pty_slave_name(master: RawFd) -> io::Result<String> {
     #[cfg(target_os = "macos")]
     {
         let mut buf = [0u8; 128];
-        // SAFETY: plain ioctl writing into a valid buffer.
-        if unsafe { libc::ioctl(master, TIOCPTYGNAME, buf.as_mut_ptr(), buf.len()) } != 0 {
-            return Err(io::Error::last_os_error());
+        let mut last_err = None;
+        for req in [TIOCPTYGNAME, TIOCPTYGNAME_LEGACY] {
+            // SAFETY: plain ioctl writing into a valid buffer.
+            if unsafe { libc::ioctl(master, req, buf.as_mut_ptr(), buf.len()) } == 0 {
+                let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
+                return String::from_utf8(buf[..end].to_vec()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "pty slave name not UTF-8")
+                });
+            }
+            last_err = Some(io::Error::last_os_error());
         }
-        let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
-        String::from_utf8(buf[..end].to_vec())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "pty slave name not UTF-8"))
+        // Last resort: libc's own ptsname(3), which issues the same ioctl
+        // with whatever encoding this SDK ships.
+        // SAFETY: plain C call; the returned pointer is a static buffer we
+        // immediately copy out of. Only pane spawn (one UI-thread caller)
+        // reaches here, so there is no concurrent writer to race with.
+        let name = unsafe { libc::ptsname(master) };
+        if !name.is_null() {
+            // SAFETY: non-null, NUL-terminated C string owned by libc.
+            return Ok(unsafe { std::ffi::CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned());
+        }
+        Err(last_err
+            .unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "ptsname returned NULL")))
     }
     #[cfg(not(target_os = "macos"))]
     {
