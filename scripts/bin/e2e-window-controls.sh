@@ -43,81 +43,23 @@
 # Usage: scripts/bin/e2e-window-controls.sh  (repo root; needs Xvfb +
 #        xdotool + openbox).  E2E_KEEP=1 keeps the scratch dir.
 set -euo pipefail
+source "$(dirname "$0")/e2e-lib.sh"
 cd "$(dirname "$0")/../.."
 
 ROOT=$(mktemp -d /tmp/term-e2e-wc-XXXXXX)
 APP=target/debug/terminator-rust
-DISPLAY_N=""                  # probed below (stale sockets break ":$$")
+DISPLAY_N=""                  # probed by e2e_start_xvfb
 XVFB_PID=""
 OPENBOX_PID=""
 APP_PID=""
 WID=""
 CHROME_Y=18                   # chip-row center y offset inside the window
+E2E_FAIL_LOG="$ROOT/app*.log"
 
-cleanup() {
-    [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
-    [ -n "$OPENBOX_PID" ] && kill "$OPENBOX_PID" 2>/dev/null || true
-    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
-    sleep 0.3
-    if [ "${E2E_KEEP:-0}" = "1" ]; then
-        echo "(E2E_KEEP=1: scratch dir kept at $ROOT)"
-    else
-        rm -rf "$ROOT"
-    fi
-}
+cleanup() { e2e_cleanup "$APP_PID" "$OPENBOX_PID" "$XVFB_PID"; }
 trap cleanup EXIT
 
-fail() { echo "FAIL: $*" >&2; tail -20 "$ROOT"/app*.log 2>/dev/null || true; exit 1; }
-step() { echo "== $*"; }
-
-# --- window helpers -------------------------------------------------------
-
-# wait_win <name-regex> [tries] -> echoes the newest matching window id.
-wait_win() {
-    local pat=$1 tries=${2:-40} ids
-    for _ in $(seq 1 "$tries"); do
-        ids=$(xdotool search --name "$pat" 2>/dev/null || true)
-        if [ -n "$ids" ]; then
-            echo "$ids" | tail -1
-            return 0
-        fi
-        sleep 0.25
-    done
-    return 1
-}
-
-wait_pid_gone() {
-    local pid=$1 tries=${2:-40}
-    for _ in $(seq 1 "$tries"); do
-        kill -0 "$pid" 2>/dev/null || return 0
-        sleep 0.25
-    done
-    return 1
-}
-
-# geo: refresh the X/Y/WIDTH/HEIGHT shell vars from the live window.
-geo() {
-    local out
-    out=$(xdotool getwindowgeometry --shell "$WID") \
-        || fail "getwindowgeometry failed for '$WID'"
-    eval "$out"
-}
-
-# wait_geo <desc> <predicate-fn>: poll the predicate against fresh
-# geometry every 0.25s (40 tries = 10s), then re-check once after the
-# final sleep so a last-instant WM transition is not missed.
-wait_geo() {
-    local desc=$1
-    shift
-    for _ in $(seq 1 40); do
-        geo
-        if "$@"; then return 0; fi
-        sleep 0.25
-    done
-    geo
-    if "$@"; then return 0; fi
-    fail "geometry never became: $desc (now ${X},${Y} ${WIDTH}x${HEIGHT})"
-}
+# --- script-specific geometry predicates ---------------------------------
 
 is_maximized()     { [ "$WIDTH" -eq 1400 ] && [ "$HEIGHT" -eq 900 ]; }
 is_not_maximized() { [ "$WIDTH" -lt 1400 ]; }
@@ -128,37 +70,6 @@ near_target() {
     is_not_maximized || return 1
     local d=$((WIDTH - W_TARGET))
     [ "$d" -le 10 ] && [ "$((0 - d))" -le 10 ]
-}
-
-# park <x> <y>: move the pointer and let an app frame hit-test it
-# (egui hit-tests per frame at a ~50ms cadence; an instant click races
-# it and can land on the previous frame's target).
-park() { xdotool mousemove "$1" "$2"; sleep 0.3; }
-
-# click_at <x> <y>: park, then a global XTest button-1 click (never
-# --window: winit drops XSendEvent-delivered input).
-click_at() { park "$1" "$2"; xdotool click 1; sleep 0.5; }
-
-# activate: EWMH-activate the window. With a WM present, windowfocus
-# alone does NOT deliver keyboard events; retry while the WM settles.
-activate() {
-    for _ in $(seq 1 20); do
-        xdotool windowactivate "$WID" 2>/dev/null && return 0
-        sleep 0.3
-    done
-    fail "windowactivate never succeeded for $WID"
-}
-
-# --- state.json helpers ---------------------------------------------------
-
-tab_count() {
-    python3 -c 'import json,sys
-print(len(json.load(open(sys.argv[1]))["windows"][0]["tabs"]))' "$STATE"
-}
-
-active_tab() {
-    python3 -c 'import json,sys
-print(json.load(open(sys.argv[1]))["windows"][0]["active_tab"])' "$STATE"
 }
 
 # launch_app <log>: start the app on the running Xvfb, wait for the
@@ -186,37 +97,13 @@ launch_app() {
 
 # --- build + sandbox ------------------------------------------------------
 cargo build -p app -p ctl --bins >/dev/null
-
-export XDG_RUNTIME_DIR="$ROOT/runtime"
-export HOME="$ROOT/home"
-export SHELL=/bin/sh      # no OSC title churn; window names stay stable
-SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
-export TERMINATOR_SOCK="$SOCK"
-STATE="$HOME/.terminator-rust/state.json"
-export TERMINATOR_OPAQUE=1     # no compositor on Xvfb
-export TERMINATOR_NO_MOTION=1  # pin hover fades / cursor blink
-# e2e presets rely on session restore; the default launch is a fresh tab
-export TERMINATOR_RESTORE=1
-mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+# plain sh panes: no OSC title churn, window names stay deterministic;
+# session restore ON: the part-2 presets below must load.
+e2e_sandbox /bin/sh 1
 
 # --- Xvfb + openbox -------------------------------------------------------
 step "launch Xvfb + openbox"
-# Random display probe: a fixed/PID-derived number can collide with a
-# stale /tmp/.X11-unix socket left by an earlier crashed run.
-for _ in $(seq 1 12); do
-    N=$((100 + RANDOM % 880))
-    [ -S "/tmp/.X11-unix/X$N" ] && continue
-    Xvfb ":$N" -screen 0 1400x900x24 & XVFB_PID=$!
-    sleep 0.7
-    if kill -0 "$XVFB_PID" 2>/dev/null && DISPLAY=":$N" xdpyinfo >/dev/null 2>&1; then
-        DISPLAY_N=":$N"
-        break
-    fi
-    kill "$XVFB_PID" 2>/dev/null || true
-    XVFB_PID=""
-done
-[ -n "$DISPLAY_N" ] || fail "no free X display for Xvfb"
-export DISPLAY="$DISPLAY_N"   # for xdotool (app gets it via env below)
+e2e_start_xvfb 1400x900x24
 
 # A real EWMH WM: keyboard focus needs windowactivate, and maximize /
 # minimize / move-resize land via EWMH properties.
@@ -315,25 +202,11 @@ sleep 0.5
 
 # --- part 2: chip-row overflow scrolling ----------------------------------
 step "part 2: preset 12 overflowing tabs and relaunch"
-python3 - "$STATE" <<'PY'
-import json, sys
 # 12 single-pane tabs "tabname-01".."tabname-12": fixed-width titles ->
 # uniform ~106px chips, 12 * 106 = 1272px > the ~1047px chip area of a
 # 1200px window. Pane/meta shape mirrors e2e-dragdrop.sh's preset (ids
 # are remapped in preorder on load anyway).
-meta = {"kind": "Local", "manual_title": None, "bg": None,
-        "transparency": 0.0, "degraded": False}
-tabs = []
-for i in range(1, 13):
-    pid = 10 + i
-    tabs.append({"title": "tabname-%02d" % i, "focused": pid,
-                 "root": {"Pane": {"id": pid, "meta": meta}}})
-state = {"theme": "dracula",
-         "settings": {"split_axis": "v", "split_ratio": 0.5},
-         "windows": [{"id": 1, "active_tab": 0, "tabs": tabs}]}
-with open(sys.argv[1], "w") as f:
-    json.dump(state, f, indent=2)
-PY
+e2e_preset_tabs "$STATE" 12
 
 launch_app app2.log
 sleep 1   # let the 12 preset shells settle
@@ -399,23 +272,9 @@ sleep 0.5
 # "tabname-NN" chip is 124px -> 124 + 5 + 124 = 253px of chips, + 8px
 # gap, + 8px half-icon puts the '+' center at X+269. The OLD fixed slot
 # (W-137) is bare chrome now - a click there must be a no-op.
-python3 - "$STATE" <<'PY'
-import json, sys
 # 2 single-pane tabs "tabname-01"/"tabname-02": same PTab shape as the
 # 12-tab preset above (ids are remapped in preorder on load anyway).
-meta = {"kind": "Local", "manual_title": None, "bg": None,
-        "transparency": 0.0, "degraded": False}
-tabs = []
-for i in range(1, 3):
-    pid = 10 + i
-    tabs.append({"title": "tabname-%02d" % i, "focused": pid,
-                 "root": {"Pane": {"id": pid, "meta": meta}}})
-state = {"theme": "dracula",
-         "settings": {"split_axis": "v", "split_ratio": 0.5},
-         "windows": [{"id": 1, "active_tab": 0, "tabs": tabs}]}
-with open(sys.argv[1], "w") as f:
-    json.dump(state, f, indent=2)
-PY
+e2e_preset_tabs "$STATE" 2
 
 launch_app app3.log
 sleep 1   # let the two preset shells settle

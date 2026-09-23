@@ -35,47 +35,24 @@
 # Usage: scripts/bin/e2e-dragdrop.sh   (repo root; needs Xvfb + xdotool +
 # scrot + python3-PIL). Set E2E_KEEP=1 to keep the scratch dir.
 set -euo pipefail
+source "$(dirname "$0")/e2e-lib.sh"
 cd "$(dirname "$0")/../.."
 
 ROOT=$(mktemp -d /tmp/term-e2e-dd-XXXXXX)
 APP=target/debug/terminator-rust
 CTL=target/debug/terminator-ctl
-STATE_REL=".terminator-rust/state.json"
-DISPLAY_N=""                  # probed below (stale sockets break ":$$")
+DISPLAY_N=""                  # probed by e2e_start_xvfb
 XVFB_PID=""
 APP_PID=""
+E2E_FAIL_LOG="$ROOT/app.log"
 
-cleanup() {
-    [ -n "$APP_PID" ] && kill "$APP_PID" 2>/dev/null || true
-    [ -n "$XVFB_PID" ] && kill "$XVFB_PID" 2>/dev/null || true
-    sleep 0.3
-    if [ "${E2E_KEEP:-0}" = "1" ]; then
-        echo "(E2E_KEEP=1: scratch dir kept at $ROOT)"
-    else
-        rm -rf "$ROOT"
-    fi
-}
+cleanup() { e2e_cleanup "$APP_PID" "$XVFB_PID"; }
 trap cleanup EXIT
-
-fail() { echo "FAIL: $*" >&2; tail -20 "$ROOT/app.log" 2>/dev/null || true; exit 1; }
-step() { echo "== $*"; }
 
 # Build first: the sandboxed HOME below would hide rustup/toolchains.
 cargo build -p app -p ctl --bins >/dev/null
-
-export XDG_RUNTIME_DIR="$ROOT/runtime"
-export HOME="$ROOT/home"
-export SHELL=/bin/bash
-SOCK="$XDG_RUNTIME_DIR/terminator-rust/ipc.sock"
-export TERMINATOR_SOCK="$SOCK"
-STATE="$HOME/$STATE_REL"
-# No compositor in Xvfb: pin full opacity for deterministic pixels, and
-# pin hover fades / cursor blink to their end states.
-export TERMINATOR_OPAQUE=1
-export TERMINATOR_NO_MOTION=1
-# e2e presets rely on session restore; the default launch is a fresh tab
-export TERMINATOR_RESTORE=1
-mkdir -p "$HOME/.terminator-rust" "$XDG_RUNTIME_DIR" "$HOME"
+# bash panes + session restore: the preset below must load.
+e2e_sandbox /bin/bash 1
 
 # Preset: dracula, one window; tab "alpha" = vertical 50/50 split (panes
 # remapped to 1,2 in preorder on load), tab "beta" = single pane (3).
@@ -98,22 +75,7 @@ JSON
 
 # --- Xvfb + app ----------------------------------------------------------
 step "launch Xvfb + app"
-# Random display probe: a fixed/PID-derived number can collide with a
-# stale /tmp/.X11-unix socket left by an earlier crashed run.
-for _ in $(seq 1 12); do
-    N=$((100 + RANDOM % 880))
-    [ -S "/tmp/.X11-unix/X$N" ] && continue
-    Xvfb ":$N" -screen 0 1200x800x24 & XVFB_PID=$!
-    sleep 0.7
-    if kill -0 "$XVFB_PID" 2>/dev/null && DISPLAY=":$N" xdpyinfo >/dev/null 2>&1; then
-        DISPLAY_N=":$N"
-        break
-    fi
-    kill "$XVFB_PID" 2>/dev/null || true
-    XVFB_PID=""
-done
-[ -n "$DISPLAY_N" ] || fail "no free X display for Xvfb"
-export DISPLAY="$DISPLAY_N"   # for xdotool + scrot (app gets it via env below)
+e2e_start_xvfb 1200x800x24
 env DISPLAY="$DISPLAY_N" RUST_LOG=info setsid nohup "$APP" </dev/null >"$ROOT/app.log" 2>&1 & APP_PID=$!
 for _ in $(seq 1 40); do [ -S "$SOCK" ] && break; sleep 0.25; done
 [ -S "$SOCK" ] || fail "ipc socket never appeared"
@@ -153,94 +115,60 @@ step "sanity: preset loaded (3 panes, alpha split)"
 [ "$("$CTL" list --json | grep -c '"id": ')" = "3" ] \
     || { "$CTL" list --json; fail "expected 3 panes (alpha split + beta)"; }
 
+# --- local drag helpers ---------------------------------------------------
+
+# press_ctrl_header <x> <y>: ctrl+press a pane header so the pane drag
+# latches. The press frame must not coalesce with the pointer move, and
+# ctrl must be down when it lands (Sense::drag latches on the press).
+press_ctrl_header() {
+    xdotool keydown ctrl
+    xdotool mousemove "$1" "$2"
+    sleep 0.3                       # let egui see ctrl + the press
+    xdotool mousedown 1             # Sense::drag: latch fires on the press frame
+    sleep 0.2
+    xdotool keyup ctrl              # pane_drag latched; plain move is safe now
+}
+
+# scan_active_chip <tag>: scrot the chip row and set CHIP_L/CHIP_R to the
+# ACTIVE chip's edges (chip x positions drift as the " [N]" pane-count
+# suffix widens labels between tests, so each cross-tab drag re-scans
+# fresh; the pointer parks on bare chrome first - Xvfb rests it on the
+# split gutter - so hover fills cannot skew the scan).
+scan_active_chip() {
+    xdotool mousemove $((X + WIDTH * 30 / 100)) $((Y + 6))
+    sleep 0.5
+    scrot -o "$ROOT/chip-$1.png"
+    local out
+    out=$(CHIPSCAN="$ROOT/chip-$1.png" e2e_chip_edges) || return 1
+    CHIP_L=${out% *}
+    CHIP_R=${out#* }
+}
+
 # --- D1: Ctrl+drag pane 1 header -> right edge of pane 2 -----------------
 step "D1: ctrl+drag pane 1 header onto pane 2 right half"
-xdotool keydown ctrl
-xdotool mousemove "$HX1" "$HY1"
-sleep 0.3                       # let egui see ctrl + the press
-xdotool mousedown 1             # Sense::drag: latch fires on the press frame
-sleep 0.2
-xdotool keyup ctrl              # pane_drag latched; plain move is safe now
+press_ctrl_header "$HX1" "$HY1"
 TX1=$((P2X + P2W * 85 / 100))   # dx 0.85 -> Right zone (center square is +-0.25)
 xdotool mousemove "$TX1" "$MIDY"
 sleep 0.6                       # several 50ms repaints: overlay must be up
 kill -0 "$APP_PID" 2>/dev/null || fail "app died mid D1 drag"
 scrot -o "$ROOT/d1.png"
-export D1CAP="$ROOT/d1.png"
-export D1PX=$((P2X + P2W * 3 / 4))   # center of the Right preview share
-export D1MX=$((P2X + P2W / 4))       # mirrored point in pane 2's LEFT half
-python3 - <<'PY'
-import os, sys
-from PIL import Image
-
-BG = (40, 42, 54)          # dracula background
-ACCENT = (189, 147, 249)   # dracula block_highlight
-
-def mix(a, b, t):
-    return tuple(int(round(a[i] + t * (b[i] - a[i]))) for i in range(3))
-
-img = Image.open(os.environ["D1CAP"]).convert("RGB")
-px, mx, my = int(os.environ["D1PX"]), int(os.environ["D1MX"]), int(os.environ["MIDY"])
-TOL = 3
-
-def close(got, exp):
-    return all(abs(g - e) <= TOL for g, e in zip(got, exp))
-
-exp_fill = mix(BG, ACCENT, 0.22)
-got = img.getpixel((px, my))
-mir = img.getpixel((mx, my))
-ok = close(got, exp_fill)
-print(f"D1 preview fill: got {got} want {exp_fill} [{'OK' if ok else 'FAIL'}]")
-ok2 = not close(mir, exp_fill)
-print(f"D1 left half untouched: {mir} != {exp_fill} [{'OK' if ok2 else 'FAIL'}]")
-sys.exit(0 if (ok and ok2) else 1)
-PY
+# probes: center of the Right preview share + the mirrored point in
+# pane 2's LEFT half (must stay untouched)
+E2E_OLCAP="$ROOT/d1.png" E2E_OLPX=$((P2X + P2W * 3 / 4)) \
+E2E_OLMX=$((P2X + P2W / 4)) e2e_overlay_fill_check "D1"
 step "D1 overlay pixels ok; releasing"
 xdotool mouseup 1
 sleep 0.6                      # drop executes + dirty state saves
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-def shape(n):
-    if "Pane" in n:
-        return n["Pane"]["id"]
-    s = n["Split"]
-    return {"axis": s["axis"], "ratio": round(s["ratio"], 3),
-            "first": shape(s["first"]), "second": shape(s["second"])}
-got = shape(w["tabs"][0]["root"])
-ok = (got["axis"] == "v" and abs(got["ratio"] - 0.5) <= 0.01
-      and got["first"] == 2 and got["second"] == 1)
-print(f"D1 root after move: {got} [{'OK' if ok else 'FAIL'}]")
-sys.exit(0 if ok else 1)
-PY
+e2e_assert_root "D1 root after move" 2 1
 
 # --- D2: Ctrl+drag pane 1 header (now right) -> pane 2 CENTER = swap -----
 step "D2: ctrl+drag pane 1 header onto pane 2 center (swap)"
-xdotool keydown ctrl
-xdotool mousemove $((P2X + P2W / 2)) "$HY1"   # pane 1 now owns the right half
-sleep 0.3
-xdotool mousedown 1
-sleep 0.2
-xdotool keyup ctrl
+press_ctrl_header $((P2X + P2W / 2)) "$HY1"   # pane 1 now owns the right half
 xdotool mousemove "$HX1" "$MIDY"              # exact center of pane 2
 sleep 0.6
 xdotool mouseup 1
 sleep 0.6
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-def shape(n):
-    if "Pane" in n:
-        return n["Pane"]["id"]
-    s = n["Split"]
-    return {"axis": s["axis"], "ratio": round(s["ratio"], 3),
-            "first": shape(s["first"]), "second": shape(s["second"])}
-got = shape(w["tabs"][0]["root"])
-ok = (got["axis"] == "v" and abs(got["ratio"] - 0.5) <= 0.01
-      and got["first"] == 1 and got["second"] == 2)
-print(f"D2 root after center swap: {got} [{'OK' if ok else 'FAIL'}]")
-sys.exit(0 if ok else 1)
-PY
+e2e_assert_root "D2 root after center swap" 1 2
 
 # --- D5: plain drag (no modifiers) pane 1 header -> pane 2 right edge ----
 step "D5: plain-drag pane 1 header onto pane 2 right half"
@@ -252,71 +180,41 @@ xdotool mousemove "$TX1" "$MIDY"
 sleep 0.6
 xdotool mouseup 1
 sleep 0.6                       # drop executes + dirty state saves
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-def shape(n):
-    if "Pane" in n:
-        return n["Pane"]["id"]
-    s = n["Split"]
-    return {"axis": s["axis"], "ratio": round(s["ratio"], 3),
-            "first": shape(s["first"]), "second": shape(s["second"])}
-got = shape(w["tabs"][0]["root"])
-ok = (got["axis"] == "v" and abs(got["ratio"] - 0.5) <= 0.01
-      and got["first"] == 2 and got["second"] == 1)
-print(f"D5 root after plain move: {got} [{'OK' if ok else 'FAIL'}]")
-sys.exit(0 if ok else 1)
-PY
+e2e_assert_root "D5 root after plain move" 2 1
 
 # --- D3: drag the active tab chip past the second chip -------------------
 step "D3: chip drag reorders the tabs"
 # Precondition: the D1/D2 pane moves must not have touched the tabs.
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-titles = [t["title"] for t in w["tabs"]]
-ok = titles == ["alpha", "beta"] and w["active_tab"] == 0
-print(f"D3 precondition: tabs {titles} active {w['active_tab']} "
-      f"[{'OK' if ok else 'FAIL'}]")
-sys.exit(0 if ok else 1)
-PY
+e2e_assert_tabs "D3 precondition" alpha beta 0
 # Park the pointer on bare chrome first (Xvfb rests it at the screen
 # center = the split gutter) so the chip scan sees resting colors.
 xdotool mousemove $((X + WIDTH * 30 / 100)) $((Y + 6))
 sleep 0.5
 scrot -o "$ROOT/d3scan.png"
-export D3SCAN="$ROOT/d3scan.png"
-CHIPX=$(python3 - <<'PY'
+out=$(CHIPSCAN="$ROOT/d3scan.png" e2e_chip_edges) || out=""
+if [ -n "$out" ]; then
+    # Active chip found: press its center (text glyphs interrupt the
+    # fill runs but min/max still span the whole chip).
+    CHIPX=$(( (${out% *} + ${out#* }) / 2 ))
+else
+    # Fallback: known chrome geometry - first chip starts at the row's
+    # left edge, chips are 44px+ wide; sanity-assert the row IS chrome
+    # at x=400.
+    CHIPX=$(CHIPSCAN="$ROOT/d3scan.png" python3 - <<'PY'
 import os, sys
 from PIL import Image
 
 BG = (40, 42, 54)
-ACCENT = (189, 147, 249)
 
 def mix(a, b, t):
     return tuple(int(round(a[i] + t * (b[i] - a[i]))) for i in range(3))
 
 X, Y = int(os.environ["X"]), int(os.environ["Y"])
-img = Image.open(os.environ["D3SCAN"]).convert("RGB")
-fill = mix(BG, ACCENT, 0.18)          # active-chip fill (tab_active)
+img = Image.open(os.environ["CHIPSCAN"]).convert("RGB")
+
 def close(p, e, tol=3):
     return all(abs(a - b) <= tol for a, b in zip(p, e))
-# Chip row Y+4..Y+32 (underline at Y+30..32 excluded): scan for the
-# active chip's fill; text glyphs interrupt runs but min/max still span it.
-xs = [x for yy in range(Y + 6, Y + 30) for x in range(X, X + min(int(os.environ["WIDTH"]), 500))
-      if close(img.getpixel((x, yy)), fill)]
-if xs:
-    left, right = min(xs), max(xs)
-    w = right - left
-    if 40 <= w <= 250:
-        print((left + right) // 2)
-        sys.exit(0)
-    print(f"active-chip run width {w}px outside 40..250 (left {left}, right {right})",
-          file=sys.stderr)
-else:
-    print("no active-chip fill found in the chip row", file=sys.stderr)
-# Fallback: known chrome geometry - first chip starts at the row's left
-# edge, chips are 44px+ wide; sanity-assert the row IS chrome at x=400.
+
 chrome = mix(BG, (248, 248, 242), 0.045)
 if not close(img.getpixel((X + 400, Y + 18)), chrome, 3):
     print(f"row sanity fail: pixel at (X+400,Y+18) is not bare chrome",
@@ -324,7 +222,8 @@ if not close(img.getpixel((X + 400, Y + 18)), chrome, 3):
     sys.exit(1)
 print(X + 60)
 PY
-) || fail "chip scan failed"
+    ) || fail "chip scan failed"
+fi
 CHIP1X=$CHIPX
 CHIPY=$((Y + 18))
 CHIP1_RIGHT=$((CHIP1X + 45))     # ~half the alpha chip's width
@@ -345,9 +244,7 @@ done
 sleep 0.3
 xdotool mouseup 1
 sleep 0.8
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
+e2e_state "$STATE" <<'PY'
 titles = [t["title"] for t in w["tabs"]]
 active = w["active_tab"]
 ok = titles == ["beta", "alpha"]
@@ -360,125 +257,27 @@ print(f"D3 dragged tab stays active: active_tab={active} -> "
 sys.exit(0 if (ok and ok2) else 1)
 PY
 
-# --- shared: active-chip edge scan for the cross-tab drags (D6-D8) --------
-# The dwell targets below need the ACTIVE chip's edges to aim at the
-# OTHER chip. Chip x positions drift (the " [2]" pane-count suffix
-# widens labels between tests), so each test re-scans fresh instead of
-# caching D3's geometry. The pointer parks on bare chrome first so
-# hover fills cannot skew the scan (Xvfb rests it on the split gutter).
-scan_active_chip() {   # $1 = scrot tag; sets CHIP_L/CHIP_R; fails on a bad scan
-    xdotool mousemove $((X + WIDTH * 30 / 100)) $((Y + 6))
-    sleep 0.5
-    scrot -o "$ROOT/chip-$1.png"
-    local out
-    out=$(CHIPSCAN="$ROOT/chip-$1.png" python3 - <<'PY'
-import os, sys
-from PIL import Image
-
-BG = (40, 42, 54)
-ACCENT = (189, 147, 249)
-
-def mix(a, b, t):
-    return tuple(int(round(a[i] + t * (b[i] - a[i]))) for i in range(3))
-
-X, Y = int(os.environ["X"]), int(os.environ["Y"])
-img = Image.open(os.environ["CHIPSCAN"]).convert("RGB")
-fill = mix(BG, ACCENT, 0.18)          # active-chip fill (tab_active)
-
-def close(p, e, tol=3):
-    return all(abs(a - b) <= tol for a, b in zip(p, e))
-
-# Same rows as the D3 scan (underline band Y+30..32 excluded); text
-# glyphs interrupt the fill runs but min/max still span the whole chip.
-xs = [x for yy in range(Y + 6, Y + 30)
-      for x in range(X, X + min(int(os.environ["WIDTH"]), 500))
-      if close(img.getpixel((x, yy)), fill)]
-if not xs:
-    print("no active-chip fill found in the chip row", file=sys.stderr)
-    sys.exit(1)
-left, right = min(xs), max(xs)
-if not 40 <= right - left <= 250:
-    print(f"active-chip run width {right - left}px outside 40..250 "
-          f"(left {left}, right {right})", file=sys.stderr)
-    sys.exit(1)
-print(left, right)
-PY
-    ) || return 1
-    CHIP_L=${out% *}
-    CHIP_R=${out#* }
-}
-
 # --- D6: cross-tab edge migration via chip dwell (alpha pane1 -> beta) ----
 step "D6: cross-tab drag migrates a pane (dwell on chip)"
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-titles = [t["title"] for t in w["tabs"]]
-ok = titles == ["beta", "alpha"] and w["active_tab"] == 1
-print(f"D6 precondition: tabs {titles} active {w['active_tab']} "
-      f"[{'OK' if ok else 'FAIL'}]")
-sys.exit(0 if ok else 1)
-PY
+e2e_assert_tabs "D6 precondition" beta alpha 1
 scan_active_chip d6 || fail "active-chip scan failed before D6"
 ALPHAL=$CHIP_L                    # alpha chip (2nd) left edge
 BETAX=$((ALPHAL - 30))            # inside the beta chip (gap 5, width >=44)
-xdotool keydown ctrl
-xdotool mousemove $((P2X + P2W / 2)) "$HY1"  # pane 1 = alpha's right half
-sleep 0.3                         # let egui see ctrl + the press
-xdotool mousedown 1
-sleep 0.2
-xdotool keyup ctrl                # pane_drag latched; plain move is safe
+press_ctrl_header $((P2X + P2W / 2)) "$HY1"  # pane 1 = alpha's right half
 xdotool mousemove "$BETAX" "$CHIPY"          # dwell on the beta chip
 sleep 1.0                         # 0.4s dwell + repaint: beta fullscreen
 xdotool mousemove $((AX + AW * 85 / 100)) "$MIDY"   # Right zone on pane 3
 sleep 0.6                         # several 50ms repaints: overlay must be up
 kill -0 "$APP_PID" 2>/dev/null || fail "app died mid D6 drag"
 scrot -o "$ROOT/d6.png"
-export D6CAP="$ROOT/d6.png"
-export D6PX=$((AX + AW * 3 / 4))  # center of the Right preview share
-export D6MX=$((AX + AW / 4))      # mirrored point in the left half
-python3 - <<'PY'
-import os, sys
-from PIL import Image
-
-BG = (40, 42, 54)          # dracula background
-ACCENT = (189, 147, 249)   # dracula block_highlight
-
-def mix(a, b, t):
-    return tuple(int(round(a[i] + t * (b[i] - a[i]))) for i in range(3))
-
-img = Image.open(os.environ["D6CAP"]).convert("RGB")
-px, mx, my = int(os.environ["D6PX"]), int(os.environ["D6MX"]), int(os.environ["MIDY"])
-TOL = 3
-
-def close(got, exp):
-    return all(abs(g - e) <= TOL for g, e in zip(got, exp))
-
 # Cross-tab drag: the SOURCE pane is not on screen anymore (its tab was
 # dwelled away from) - the overlay must still paint the Right preview.
-exp_fill = mix(BG, ACCENT, 0.22)
-got = img.getpixel((px, my))
-mir = img.getpixel((mx, my))
-ok = close(got, exp_fill)
-print(f"D6 cross-tab preview fill: got {got} want {exp_fill} "
-      f"[{'OK' if ok else 'FAIL'}]")
-ok2 = not close(mir, exp_fill)
-print(f"D6 left half untouched: {mir} != {exp_fill} "
-      f"[{'OK' if ok2 else 'FAIL'}]")
-sys.exit(0 if (ok and ok2) else 1)
-PY
+E2E_OLCAP="$ROOT/d6.png" E2E_OLPX=$((AX + AW * 3 / 4)) \
+E2E_OLMX=$((AX + AW / 4)) e2e_overlay_fill_check "D6 cross-tab"
 step "D6 overlay pixels ok; releasing"
 xdotool mouseup 1
 sleep 0.8                         # cross-tab move + dirty state saves
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-def shape(n):
-    if "Pane" in n:
-        return n["Pane"]["id"]
-    s = n["Split"]
-    return {"axis": s["axis"], "ratio": round(s["ratio"], 3),
-            "first": shape(s["first"]), "second": shape(s["second"])}
+e2e_state "$STATE" <<'PY'
 titles = [t["title"] for t in w["tabs"]]
 beta = shape(w["tabs"][0]["root"])
 alpha = shape(w["tabs"][1]["root"])
@@ -496,39 +295,18 @@ PY
 
 # --- D7: cross-tab CENTER swap via chip dwell (beta pane3 <-> alpha pane2) -
 step "D7: cross-tab center swap via chip dwell"
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-titles = [t["title"] for t in w["tabs"]]
-ok = titles == ["beta", "alpha"] and w["active_tab"] == 0
-print(f"D7 precondition: tabs {titles} active {w['active_tab']} "
-      f"[{'OK' if ok else 'FAIL'}]")
-sys.exit(0 if ok else 1)
-PY
+e2e_assert_tabs "D7 precondition" beta alpha 0
 scan_active_chip d7 || fail "active-chip scan failed before D7"
 BETAR=$CHIP_R                     # beta chip (1st) right edge
 ALPHAX=$((BETAR + 35))            # inside the alpha chip (gap 5, width >=44)
-xdotool keydown ctrl
-xdotool mousemove $((AX + AW / 4)) "$HY1"    # pane 3 = beta v(3,1) left half
-sleep 0.3
-xdotool mousedown 1
-sleep 0.2
-xdotool keyup ctrl
-xdotool mousemove "$ALPHAX" "$CHIPY"         # dwell on the alpha chip
+press_ctrl_header $((AX + AW / 4)) "$HY1"     # pane 3 = beta v(3,1) left half
+xdotool mousemove "$ALPHAX" "$CHIPY"          # dwell on the alpha chip
 sleep 1.0                         # dwell + repaint: alpha (pane 2) fullscreen
 xdotool mousemove $((AX + AW / 2)) "$MIDY"   # pane 2 exact center = swap
 sleep 0.6
 xdotool mouseup 1
 sleep 0.8
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-def shape(n):
-    if "Pane" in n:
-        return n["Pane"]["id"]
-    s = n["Split"]
-    return {"axis": s["axis"], "ratio": round(s["ratio"], 3),
-            "first": shape(s["first"]), "second": shape(s["second"])}
+e2e_state "$STATE" <<'PY'
 beta = shape(w["tabs"][0]["root"])
 alpha = shape(w["tabs"][1]["root"])
 ok = (beta["axis"] == "v" and abs(beta["ratio"] - 0.5) <= 0.01
@@ -546,26 +324,13 @@ PY
 
 # --- D8: dragging the LAST pane away closes the emptied source tab --------
 step "D8: emptied source tab closes (alpha pane3 -> beta pane2 left)"
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-titles = [t["title"] for t in w["tabs"]]
-ok = titles == ["beta", "alpha"] and w["active_tab"] == 1
-print(f"D8 precondition: tabs {titles} active {w['active_tab']} "
-      f"[{'OK' if ok else 'FAIL'}]")
-sys.exit(0 if ok else 1)
-PY
+e2e_assert_tabs "D8 precondition" beta alpha 1
 scan_active_chip d8 || fail "active-chip scan failed before D8"
 ALPHAL=$CHIP_L                    # alpha chip (2nd) left edge
 BETAX=$((ALPHAL - 30))            # inside the wider "beta [2]" chip
 # alpha holds a SINGLE pane now: a bare header press would latch the
 # OS-window drag instead - ctrl must still be down when the press lands.
-xdotool keydown ctrl
-xdotool mousemove $((AX + AW / 2)) "$HY1"    # fullscreen pane 3 header
-sleep 0.3
-xdotool mousedown 1
-sleep 0.2
-xdotool keyup ctrl
+press_ctrl_header $((AX + AW / 2)) "$HY1"     # fullscreen pane 3 header
 xdotool mousemove "$BETAX" "$CHIPY"          # dwell on the beta chip
 sleep 1.0                         # switch: beta v(2,1), pane 2 left half
 # Left zone on pane 2: pane 2 owns only the LEFT HALF of the area, so
@@ -574,15 +339,7 @@ xdotool mousemove $((AX + AW * 10 / 100)) "$MIDY"
 sleep 0.6
 xdotool mouseup 1
 sleep 0.8
-python3 - "$STATE" <<'PY'
-import json, sys
-w = json.load(open(sys.argv[1]))["windows"][0]
-def shape(n):
-    if "Pane" in n:
-        return n["Pane"]["id"]
-    s = n["Split"]
-    return {"axis": s["axis"], "ratio": round(s["ratio"], 3),
-            "first": shape(s["first"]), "second": shape(s["second"])}
+e2e_state "$STATE" <<'PY'
 titles = [t["title"] for t in w["tabs"]]
 root = shape(w["tabs"][0]["root"])
 inner = root["first"]             # pane 3 nested left of pane 2

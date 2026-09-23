@@ -59,8 +59,9 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - headless UI smoke: Xvfb :NN + xdotool (type into window works; needs
   `xdotool windowfocus` - no WM focus otherwise)
 - remote e2e: `cargo test -p remote --test zellij_e2e -- --ignored`
-  (needs local sshd key auth + zellij; cleanup uses delete-all-sessions
-  --force)
+  (needs local sshd key auth + zellij; cleanup deletes ONLY the test's
+  own session via `zellij delete-session <name> --force` - the
+  net-drop rule below spells out why never delete-all-sessions)
 - net-drop e2e (REAL network interruption + session recovery):
   `cargo test -p remote --test net_drop_e2e -- --ignored` +
   `cargo test -p app reconnect_net -- --ignored` (the latter drives the
@@ -227,13 +228,18 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   pre-motion frame). All Xvfb e2e scripts export TERMINATOR_NO_MOTION=1
   (hover fades + cursor sine blink pinned to end states; see
   render/tokens.rs - radius/shadow/motion token layer, pure functions).
-- cell backgrounds paint as MERGED runs (render/bg_runs.rs, 2026-09-22):
+- cell backgrounds paint as MERGED runs (render/bg_runs/ since 2026-09-23 split: row.rs classify, merge.rs interval-absorb, rect.rs bleed; 2026-09-22):
   one rect_filled PER CELL feathered a seam lattice (1/255/column at the
   cell pitch, vertical AND row boundaries) across every ANSI-bg region,
   and the sub-cell remainder right of the last grid column showed the
   pane bg instead of the row color. bg_runs folds equal colors into
   maximal rectangles (selected > inverse > explicit > default; wide
-  cells cover both columns) and run_rect bleeds runs at the last grid
+  cells cover both columns) and SELECTION IS GLYPH-ATOMIC over a wide
+  pair (row.rs third pass: a selection range starting on the spacer
+  column or ending on the head painted a pane-default half beside a
+  selected half - the run boundary feathered a vertical line through
+  the CJK char; either half selected => BOTH columns sel, 2026-09-23)
+  and run_rect bleeds runs at the last grid
   COLUMN AND the last grid ROW to the pane edge (bottom bleed is
   symmetric to the right bleed; the caller passes grid cols+rows).
   merge_row INTERVAL-ABSORBS: a current run overlapping a same-color
@@ -379,10 +385,11 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   (chip sizes/fonts, CHROME_RESERVE, pane-header height/fonts, icon
   cells, badge widths) derive per frame from Settings.font_size via
   app/src/ui/chrome.rs (pure metrics(font_size) -> Metrics; scale =
-  font/15, every value = base*scale EXCEPT chip_font which EQUALS
-  font_size (tab titles render at the terminal font, 2026-09-22; at the
-  default 15 the rest are NUMERICALLY IDENTICAL to the old constants -
-  e2e pixel gates rely on it). style::sync sets egui Body/Button/Mono/
+  font/15, every value = base*scale EXCEPT chip_font AND title_font
+  which EQUAL font_size (tab + pane-header titles render at the
+  terminal font, 2026-09-22/23; at the default 15 the rest are
+  NUMERICALLY IDENTICAL to the old constants - e2e pixel gates rely on
+  it; title_font was base-12*scale before 2026-09-23). style::sync sets egui Body/Button/Mono/
   Heading text_styles to font_size EXACTLY (menus/tooltips/Settings
   panel/rename TextEdits match the terminal; only Small stays 8.5/15*
   font) and rescales item_spacing/button_padding (memo keyed on theme
@@ -396,7 +403,7 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   chrome toggles maximize (chrome_drag is Sense::click_and_drag - egui
   click/double_click flags REQUIRE senses_click, pure-drag never fires
   them; a double-click's first press may StartDrag - harmless). Window
-  edge resize is APP-DRIVEN (2026-09-20 rewrite): input/resize.rs strips
+  edge resize is APP-DRIVEN (2026-09-20 rewrite): input/resize/ since 2026-09-23 split (hit.rs strips, gesture.rs rect math, strips.rs glue); strips
   (EDGE 6px, CORNER 14) are registered as the LAST widgets of each
   window pass -> topmost, they steal edge presses from chrome/panes for
   free (hit-test picks latest widget in a layer); screen.rs still
