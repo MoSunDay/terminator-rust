@@ -59,7 +59,7 @@ pub struct Metrics {
     pub header_h: f32,
     /// Header close-button size (base 16).
     pub header_btn: f32,
-    /// Header title font size (base 12).
+    /// Header title font size: equal to the terminal font size.
     pub title_font: f32,
     /// Header badge font size (base 11).
     pub badge_font: f32,
@@ -92,7 +92,7 @@ pub fn metrics(font_size: f32) -> Metrics {
         wheel_step: 48.0 * s,
         header_h: 24.0 * s,
         header_btn: 16.0 * s,
-        title_font: 12.0 * s,
+        title_font: font_size,
         badge_font: 11.0 * s,
         note_font: 11.0 * s,
         dead_font: 13.0 * s,
@@ -116,8 +116,10 @@ mod tests {
         assert_eq!(m.group_w, 56.0);
         assert_eq!(m.icon, 16.0);
         assert_eq!(m.header_h, 24.0);
-        // The tab title renders at the terminal font size.
+        // The tab title and the pane header title render at the
+        // terminal font size.
         assert_eq!(m.chip_font, DEFAULT_FONT_SIZE);
+        assert_eq!(m.title_font, DEFAULT_FONT_SIZE);
     }
 
     #[test]
