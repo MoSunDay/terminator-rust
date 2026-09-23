@@ -1,14 +1,47 @@
 #!/bin/sh
 # zig launcher: prefer the pypi ziglang wheel path this env pinned
-# (ziglang.org unreachable), else PATH, else `python3 -m ziglang`.
+# (ziglang.org unreachable), else a zig installed system-wide, else
+# `python3 -m ziglang`.
+#
+# NOTE: callers prepend this script's own directory to PATH, so a bare
+# `command -v zig` resolves back to THIS script and the launcher
+# exec-recurses into itself forever (it just hangs). Every lookup below
+# therefore skips the launcher itself.
 ZIG_WHEEL=/usr/local/lib/python3.10/dist-packages/ziglang/zig
-if [ -x "$ZIG_WHEEL" ]; then
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+SELF="$SELF_DIR/$(basename "$0")"
+
+if [ -x "$ZIG_WHEEL" ] && [ "$ZIG_WHEEL" != "$SELF" ]; then
   exec "$ZIG_WHEEL" "$@"
-elif command -v zig >/dev/null 2>&1; then
-  exec zig "$@"
-elif python3 -m ziglang --version >/dev/null 2>&1; then
-  exec python3 -m ziglang "$@"
-else
-  echo "zig not found. Install with: pip install ziglang==0.16.0 (or brew install zig)" >&2
-  exit 1
 fi
+
+# Well-known install locations first (Homebrew on Apple Silicon, then
+# Homebrew/other on Intel paths).
+for cand in /opt/homebrew/bin/zig /usr/local/bin/zig; do
+  if [ -x "$cand" ] && [ "$cand" != "$SELF" ]; then
+    exec "$cand" "$@"
+  fi
+done
+
+# PATH scan, skipping this launcher.
+OLDIFS=$IFS
+IFS=:
+for dir in $PATH; do
+  [ -n "$dir" ] || dir=.
+  case "$dir" in
+  /*) cand="$dir/zig" ;;
+  *) cand="$PWD/$dir/zig" ;;
+  esac
+  if [ -x "$cand" ] && [ "$cand" != "$SELF" ]; then
+    IFS=$OLDIFS
+    exec "$cand" "$@"
+  fi
+done
+IFS=$OLDIFS
+
+if python3 -m ziglang --version >/dev/null 2>&1; then
+  exec python3 -m ziglang "$@"
+fi
+
+echo "zig not found. Install with: pip install ziglang==0.16.0 (or brew install zig)" >&2
+exit 1
