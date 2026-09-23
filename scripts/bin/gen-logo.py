@@ -25,8 +25,11 @@ Regenerate / verify:
     python3 scripts/bin/gen-logo.py --out DIR  # custom output dir
 
 Writes (default assets/logo/): terminator-rust.svg (vector master),
-icon-{16,24,32,48,64,128,256,512,1024}.png (RGBA), terminator-rust.ico
-(multi-size 16..256 via PIL), terminator-rust.icns (hand-built Apple ICNS).
+icon-{16,24,32,48,64,128,256,512,1024}.png (RGBA, FULL-BLEED Linux/Windows
+art), icon-256-mac.png (Apple icon-template margin - the raster the app
+embeds on macOS), terminator-rust.ico (multi-size 16..256 via PIL),
+terminator-rust.icns (hand-built Apple ICNS; every entry carries the same
+icon-template margin).
 """
 
 import argparse
@@ -71,6 +74,15 @@ PNG_SIZES = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
 ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 ICNS_TYPES = (("ic11", 32), ("ic12", 64), ("ic07", 128),
               ("ic08", 256), ("ic09", 512), ("ic10", 1024))
+
+# Apple icon template: macOS scales the WHOLE raster into the icon slot
+# (Finder, Dock, and eframe's setApplicationIconImage all publish the
+# artwork verbatim), so a full-bleed tile renders ~24% larger than every
+# other app's icon. The template body is 824/1024 of the canvas (100u
+# margin per side); RADIUS/S == 0.225 already matches Apple's body corner
+# ratio, so only the margin is added. Linux/Windows art stays full-bleed.
+MAC_BODY = 824
+MAC_SIZES = tuple(sorted({s for _, s in ICNS_TYPES}))
 
 # --- raster rendering ---------------------------------------------------------
 
@@ -131,6 +143,21 @@ def stroke_for(size):
 
 def raster(master_img, size):
     return master_img.resize((size, size), Image.LANCZOS)
+
+
+def mac_margin(size):
+    """Transparent margin (px) of a macOS-template raster of `size`."""
+    return size * (S - MAC_BODY) // (2 * S)
+
+
+def mac_raster(master_img, size):
+    """Apple icon-template raster: the master scaled into the body
+    (size - 2*margin) and centered on a transparent canvas."""
+    m = mac_margin(size)
+    body = size - 2 * m
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.alpha_composite(master_img.resize((body, body), Image.LANCZOS), (m, m))
+    return out
 
 
 # --- vector master ------------------------------------------------------------
@@ -206,7 +233,7 @@ def icns_bytes(pngs):
 
 
 def parse_icns(data):
-    """Parse-back validation; returns the OSType order found."""
+    """Parse-back validation; returns [(OSType, payload bytes), ...]."""
     assert data[:4] == b"icns", "bad icns magic"
     total = struct.unpack(">I", data[4:8])[0]
     assert total == len(data), f"icns length {total} != file {len(data)}"
@@ -215,10 +242,10 @@ def parse_icns(data):
         t = data[off:off + 4].decode("ascii")
         n = struct.unpack(">I", data[off + 4:off + 8])[0]
         assert n >= 8 and off + n <= total, f"icns entry {t} out of bounds"
-        seen.append(t)
+        seen.append((t, data[off + 8:off + n]))
         off += n
     assert off == total, "icns trailing garbage"
-    return tuple(seen)
+    return seen
 
 
 def build():
@@ -226,10 +253,15 @@ def build():
     ms = {STROKE: render(STROKE), STROKE_SMALL: render(STROKE_SMALL)}
     rasters = {s: raster(ms[stroke_for(s)], s) for s in PNG_SIZES}
     pngs = {s: png_bytes(rasters[s]) for s in PNG_SIZES}
+    mac = {s: mac_raster(ms[stroke_for(s)], s) for s in MAC_SIZES}
+    mac_pngs = {s: png_bytes(mac[s]) for s in MAC_SIZES}
     files = {"terminator-rust.svg": svg_text().encode("utf-8")}
     files.update({f"icon-{s}.png": pngs[s] for s in PNG_SIZES})
+    # macOS Dock raster (eframe publishes it via setApplicationIconImage).
+    files["icon-256-mac.png"] = mac_pngs[256]
     files["terminator-rust.ico"] = ico_bytes({s: rasters[s] for s in ICO_SIZES})
-    files["terminator-rust.icns"] = icns_bytes({s: pngs[s] for _, s in ICNS_TYPES})
+    files["terminator-rust.icns"] = icns_bytes(
+        {s: mac_pngs[s] for _, s in ICNS_TYPES})
     return files, rasters
 
 
@@ -273,6 +305,27 @@ def px_at(design, size):
     return max(0, min(size - 1, int(round(design * size / S))))
 
 
+def verify_mac(img, size, label):
+    """Assert an Apple icon-template raster of `size`: a fully transparent
+    margin ring, an inked body, and the design samples at their
+    margin-shifted places."""
+    px = img.load()
+    m = mac_margin(size)
+    assert m > 0, f"{label}: no margin at size {size}"
+    body = size - 2 * m
+    for i in range(size):                     # (a) margin ring transparent
+        for x, y in ((i, m - 1), (i, size - m), (m - 1, i), (size - m, i)):
+            assert px[x, y][3] == 0, (
+                f"{label}: margin ({x},{y}) alpha {px[x, y][3]} != 0")
+    assert px[m + 2, size // 2][3] > 96, f"{label}: body left edge not inked"
+    for name, (dx, dy), want in SAMPLES:      # (c) hues inside the body
+        x, y = m + px_at(dx, body), m + px_at(dy, body)
+        got = px[x, y]
+        assert got[3] >= 96, f"{label}: {name} alpha {got[3]}"
+        assert hue(got) == want, (
+            f"{label}: {name} hue {hue(got)} rgb {got[:3]} != {want}")
+
+
 def verify(out):
     """Assert the written files are structurally + visually correct."""
     svg = (out / "terminator-rust.svg").read_text("utf-8")
@@ -304,9 +357,34 @@ def verify(out):
     ico = Image.open(out / "terminator-rust.ico")
     assert set(ico.info.get("sizes", ())) == {(s, s) for s in ICO_SIZES}, (
         f"ico sizes {sorted(ico.info.get('sizes', ()))}")
-    assert parse_icns((out / "terminator-rust.icns").read_bytes()) == tuple(
-        t for t, _ in ICNS_TYPES), "icns entry order"
-    print("verify: OK (svg, 9 pngs, ico sizes, icns entries, glyph hues)")
+    # Linux/Windows art must stay FULL-BLEED (only macOS gets the margin):
+    # the tile still reaches the canvas edge at the middle of each side.
+    # (LANCZOS kernel clipping at the border costs a little alpha - the
+    # measured values are 239/195/254 at 48/256/1024, a mac template is 0.)
+    for size in (48, 256, S):
+        edge = Image.open(out / f"icon-{size}.png")
+        edge.load()
+        ep = edge.load()
+        for x, y in ((0, size // 2), (size // 2, 0)):
+            assert ep[x, y][3] > 128, (
+                f"icon-{size}: full-bleed edge ({x},{y}) alpha "
+                f"{ep[x, y][3]} <= 128")
+    mac = Image.open(out / "icon-256-mac.png")
+    mac.load()
+    assert mac.mode == "RGBA", f"icon-256-mac: mode {mac.mode} != RGBA"
+    assert mac.size == (256, 256), f"icon-256-mac: size {mac.size}"
+    verify_mac(mac, 256, "icon-256-mac")
+    entries = parse_icns((out / "terminator-rust.icns").read_bytes())
+    assert [t for t, _ in entries] == [t for t, _ in ICNS_TYPES], (
+        "icns entry order")
+    for (ostype, blob), (_, size) in zip(entries, ICNS_TYPES):
+        img = Image.open(io.BytesIO(blob))
+        img.load()
+        assert img.size == (size, size), f"icns {ostype}: size {img.size}"
+        assert img.mode == "RGBA", f"icns {ostype}: mode {img.mode} != RGBA"
+        verify_mac(img, size, f"icns {ostype}")
+    print("verify: OK (svg, 9 full-bleed pngs, mac-template 256 + icns "
+          "entries, ico sizes, glyph hues)")
 
 
 def report(files):
