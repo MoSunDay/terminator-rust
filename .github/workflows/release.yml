@@ -42,10 +42,15 @@ jobs:
 
       - name: Install host deps (${{ matrix.name }})
         if: matrix.brew != ''
-        run: brew install ${{ matrix.brew }}
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1' # auto-update flakes on ephemeral runners
+        run: |
+          brew install --quiet ${{ matrix.brew }}             || brew install --quiet ${{ matrix.brew }}
 
+      # Homebrew python on the macos-15 image is PEP 668
+      # externally-managed -> plain pip3 refuses.
       - name: Install zig 0.16.0 (ghostty vendor build)
-        run: ${{ matrix.pip }} install ziglang==0.16.0
+        run: ${{ matrix.pip }} install --break-system-packages ziglang==0.16.0
 
       - name: Vendor the ghostty VT engine
         run: scripts/fetch-vendor.sh
