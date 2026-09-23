@@ -51,7 +51,7 @@ pub(crate) fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
         ) {
             Ok(s) => session_map::note_spawned(sess, id, s),
             Err(e) => {
-                warn!("spawn pane {id}: {e}");
+                warn!("spawn pane {id}: {e:#}");
                 sess.retry_at
                     .insert(id, Instant::now() + session_map::SPAWN_BACKOFF);
             }
