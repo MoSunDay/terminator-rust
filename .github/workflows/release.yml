@@ -52,8 +52,14 @@ jobs:
       - name: Install zig 0.16.0 (ghostty vendor build)
         run: ${{ matrix.pip }} install --break-system-packages ziglang==0.16.0
 
+      # Concurrent vendor jobs can stall on the upstream ghostty/git
+      # fetch with no timeout in cargo -> retry once on a fresh runner
+      # connection instead of burning the whole job timeout.
       - name: Vendor the ghostty VT engine
-        run: scripts/fetch-vendor.sh
+        run: |
+          scripts/fetch-vendor.sh \
+            || (echo '::warning::vendor attempt 1 failed, retrying'; \
+                sleep 30; scripts/fetch-vendor.sh)
 
       - name: Build release binaries
         run: cargo build --release --workspace
