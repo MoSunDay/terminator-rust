@@ -118,9 +118,10 @@ jobs:
           set -eu
           files=(dist/*.tar.gz dist/*.sha256)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # Release already exists (e.g. curated by hand from the tag):
+            # refresh assets + notes, keep the existing title untouched.
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" \
-              --title "terminator-rust $GITHUB_REF_NAME" --notes-file notes.md
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
           else
             gh release create "$GITHUB_REF_NAME" "${files[@]}" \
               --title "terminator-rust $GITHUB_REF_NAME" --notes-file notes.md
