@@ -63,8 +63,10 @@ jobs:
       - name: "macos: Install pkg-config"
         run: brew install pkg-config
 
+      # Homebrew python on the macos-15 image is PEP 668
+      # externally-managed -> plain pip3 refuses.
       - name: "macos: Install zig 0.16.0 (ghostty vendor build)"
-        run: pip3 install ziglang==0.16.0
+        run: pip3 install --break-system-packages ziglang==0.16.0
 
       - name: "macos: Vendor the ghostty VT engine"
         run: ./scripts/fetch-vendor.sh
