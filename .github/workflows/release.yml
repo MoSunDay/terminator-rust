@@ -1,0 +1,116 @@
+# Release pipeline: a pushed v* tag builds release binaries for Linux
+# x86_64 and macOS aarch64, packs deterministic tarballs
+# (scripts/bin/pack-release.sh) and publishes the GitHub Release with
+# sha256 sidecars. The ghostty VT engine is vendored per-OS exactly like
+# ci.yml (zig 0.16.0 from PyPI + scripts/fetch-vendor.sh); the annotated
+# tag body becomes the curated release notes.
+#
+# Cutting a release:
+#   git tag -a v0.x.0 -F <notes> && git push origin v0.x.0
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: # manual rebuild of the artifacts (publish stays tag-only)
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            pip: pip
+            brew: ''
+          - name: macos-aarch64
+            os: macos-15
+            pip: pip3
+            brew: pkg-config gnu-tar
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Install host deps (${{ matrix.name }})
+        if: matrix.brew != ''
+        run: brew install ${{ matrix.brew }}
+
+      - name: Install zig 0.16.0 (ghostty vendor build)
+        run: ${{ matrix.pip }} install ziglang==0.16.0
+
+      - name: Vendor the ghostty VT engine
+        run: scripts/fetch-vendor.sh
+
+      - name: Build release binaries
+        run: cargo build --release --workspace
+
+      - name: Pack tarball + sha256
+        run: scripts/bin/pack-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the annotated-tag body feeds the release notes
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Compose release notes (tag body + checksums)
+        run: |
+          set -eu
+          {
+            git tag -l --format='%(contents:body)' "$GITHUB_REF_NAME"
+            echo
+            echo '## Artifacts'
+            echo
+            echo 'Linux x86_64 and macOS aarch64 tarballs with'
+            echo '`bin/terminator-rust` + `bin/terminator-ctl`; verify against the'
+            echo 'attached `.sha256` sidecars.'
+            echo
+            echo '## Checksums'
+            echo
+            echo '```'
+            (cd dist && sha256sum ./*.tar.gz)
+            echo '```'
+          } > notes.md
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          files=(dist/*.tar.gz dist/*.sha256)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "terminator-rust $GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "terminator-rust $GITHUB_REF_NAME" --notes-file notes.md
+          fi
