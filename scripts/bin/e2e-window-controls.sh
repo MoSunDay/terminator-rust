@@ -15,6 +15,9 @@
 #   R4: the minimize button iconifies the window: no longer
 #       --onlyvisible while the app stays alive; windowactivate restores.
 #   R5: Ctrl+Shift+Q quits the app cleanly.
+#   R6: the chrome close X needs a SECOND confirming click: the first
+#       click only arms (app + window stay alive), a click anywhere
+#       else disarms, and a fresh second click quits the whole app.
 #   S1: at scroll 0 (wheel-up normalised) the chip slot at
 #       (chip-right - 40px, safely left of the per-chip close button)
 #       holds an EARLY tab, not the last one.
@@ -25,20 +28,20 @@
 #       activates tab 13.
 #   S4: with only TWO chips (no overflow) the trailing +/split group
 #       FOLLOWS the chips: '+' at chips-right + 8px spawns + activates
-#       tab 3, while the old fixed slot at W-137 is bare chrome (a
+#       tab 3, while the old parked slot at W-157 is bare chrome (a
 #       click there must not add a tab).
 #   S5: Ctrl+Shift+Q quits the app cleanly.
 #
 # Chrome geometry contract under test (single ~36px row): the EDGE
-# CELLS (zoom/inspector/min/max) stay PINNED at the far right - 16px
-# wide / 4px apart / rightmost 5px from the edge, maximize center at
-# W-13, minimize W-33, inspector W-53, zoom W-73. The trailing group
-# ('+', split-v, split-h) no longer pins: it FOLLOWS the chips (8px
-# right of the last chip) and only PARKS flush left of the edge cells
-# when the chips overflow the strip (GROUP_PARK: parked '+' center at
-# W-137, chip strip bound at W-153) - S1/S2/S3 coordinates are
-# unchanged. The chip-row center y sits at Y+18. Vertical wheel =
-# horizontal chip scroll, one notch = 48px.
+# CELLS (close/max/min/insp/zoom) stay PINNED at the far right - 16px
+# wide / 4px apart / rightmost 5px from the edge, close center at W-13
+# (double-confirm quit, see R6), maximize W-33, minimize W-53,
+# inspector W-73, zoom W-93. The trailing group ('+', split-v,
+# split-h) no longer pins: it FOLLOWS the chips (8px right of the last
+# chip) and only PARKS flush left of the edge cells when the chips
+# overflow the strip (GROUP_PARK: parked '+' center at W-157, chip
+# strip bound at W-173). The chip-row center y sits at Y+18. Vertical
+# wheel = horizontal chip scroll, one notch = 48px.
 #
 # Usage: scripts/bin/e2e-window-controls.sh  (repo root; needs Xvfb +
 #        xdotool + openbox).  E2E_KEEP=1 keeps the scratch dir.
@@ -156,9 +159,9 @@ echo "R1c: origin ${X0} -> ${X}, width -> ${WIDTH}"
 W_TARGET=$WIDTH
 
 step "R2: maximize button toggles 1400x900 and restores"
-click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # maximize/restore
+click_at $((X+WIDTH-33)) $((Y+CHROME_Y))    # maximize/restore
 wait_geo "maximized (1400x900)" is_maximized
-click_at $((X+WIDTH-13)) $((Y+CHROME_Y))
+click_at $((X+WIDTH-33)) $((Y+CHROME_Y))
 wait_geo "restored to ~${W_TARGET}px" near_target
 echo "R2: toggled to 1400x900 and back to ${WIDTH}"
 
@@ -174,7 +177,7 @@ wait_geo "restored via double-click" is_not_maximized
 echo "R3: double-click toggle ok (${WIDTH}x${HEIGHT})"
 
 step "R4: minimize button iconifies; windowactivate restores"
-click_at $((X+WIDTH-33)) $((Y+CHROME_Y))    # minimize
+click_at $((X+WIDTH-53)) $((Y+CHROME_Y))    # minimize
 sleep 0.5
 ids=$(xdotool search --onlyvisible --name '^terminator-rust$' 2>/dev/null || true)
 [ -z "$ids" ] || fail "window still visible after minimize: $ids"
@@ -200,10 +203,29 @@ APP_PID=""
 WID=""
 sleep 0.5
 
+step "R6: chrome close X needs a second confirming click"
+launch_app app1b.log
+click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # close: first click only ARMS
+sleep 0.6
+kill -0 "$APP_PID" 2>/dev/null || fail "app died on the arming close click"
+ids=$(xdotool search --name '^terminator-rust$' 2>/dev/null || true)
+[ -n "$ids" ] || fail "window vanished on the arming close click"
+click_at $((X+WIDTH*60/100)) $((Y+CHROME_Y))   # bare chrome click disarms
+sleep 0.6
+kill -0 "$APP_PID" 2>/dev/null || fail "app died after the cancelling click"
+click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # re-arm
+sleep 0.3
+click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # confirming click quits all
+wait_pid_gone "$APP_PID" 40 || fail "app survived the confirmed close click"
+echo "R6: one close click arms, the second quits"
+APP_PID=""
+WID=""
+sleep 0.5
+
 # --- part 2: chip-row overflow scrolling ----------------------------------
 step "part 2: preset 12 overflowing tabs and relaunch"
 # 12 single-pane tabs "tabname-01".."tabname-12": fixed-width titles ->
-# uniform ~106px chips, 12 * 106 = 1272px > the ~1047px chip area of a
+# uniform ~106px chips, 12 * 106 = 1272px > the ~1027px chip area of a
 # 1200px window. Pane/meta shape mirrors e2e-dragdrop.sh's preset (ids
 # are remapped in preorder on load anyway).
 e2e_preset_tabs "$STATE" 12
@@ -220,7 +242,7 @@ step "S1: at scroll 0, the chip at right-60 is an EARLY tab"
 park $((X+WIDTH/2)) $((Y+CHROME_Y))
 for _ in $(seq 1 10); do xdotool click 4; sleep 0.12; done   # wheel up = scroll 0
 sleep 0.5
-click_at $((X+WIDTH-153-40)) $((Y+CHROME_Y))
+click_at $((X+WIDTH-173-40)) $((Y+CHROME_Y))
 A=""
 for _ in $(seq 1 20); do
     A=$(active_tab)
@@ -237,7 +259,7 @@ step "S2: 10 wheel notches (48px each) scroll the chip row to its end"
 park $((X+WIDTH/2)) $((Y+CHROME_Y))
 for _ in $(seq 1 10); do xdotool click 5; sleep 0.12; done
 sleep 0.5
-click_at $((X+WIDTH-153-40)) $((Y+CHROME_Y))
+click_at $((X+WIDTH-173-40)) $((Y+CHROME_Y))
 ok=""
 for _ in $(seq 1 20); do
     if [ "$(active_tab)" -eq 11 ]; then ok=1; break; fi
@@ -249,7 +271,7 @@ done
 echo "S2: last tab now under the slot; 12 tabs intact"
 
 step "S3: overflow parks the trailing '+' left of the edge cells"
-click_at $((X+WIDTH-137)) $((Y+CHROME_Y))   # parked '+' (new tab)
+click_at $((X+WIDTH-157)) $((Y+CHROME_Y))   # parked '+' (new tab)
 ok=""
 for _ in $(seq 1 20); do
     if [ "$(tab_count)" -eq 13 ] && [ "$(active_tab)" -eq 12 ]; then ok=1; break; fi
@@ -270,8 +292,8 @@ sleep 0.5
 # Two short chips fit easily, so the group rides 8px right of chip 2:
 # the chip label renders at the terminal font (15pt), so each
 # "tabname-NN" chip is 124px -> 124 + 5 + 124 = 253px of chips, + 8px
-# gap, + 8px half-icon puts the '+' center at X+269. The OLD fixed slot
-# (W-137) is bare chrome now - a click there must be a no-op.
+# gap, + 8px half-icon puts the '+' center at X+269. The OLD parked slot
+# (W-157) is bare chrome now - a click there must be a no-op.
 # 2 single-pane tabs "tabname-01"/"tabname-02": same PTab shape as the
 # 12-tab preset above (ids are remapped in preorder on load anyway).
 e2e_preset_tabs "$STATE" 2
@@ -291,11 +313,11 @@ done
 [ -n "$ok" ] \
     || fail "trailing group did not follow the chips: '+' at X+269 did not add+activate tab 3 (tabs=$(tab_count) active=$(active_tab))"
 
-click_at $((X+WIDTH-137)) $((Y+CHROME_Y))   # OLD fixed '+' slot = bare chrome
+click_at $((X+WIDTH-157)) $((Y+CHROME_Y))   # OLD parked '+' slot = bare chrome
 sleep 1
 [ "$(tab_count)" -eq 3 ] \
-    || fail "old fixed slot still hosts the + button (tabs=$(tab_count))"
-echo "S4: group follows the chips ('+' at X+269 works, W-137 slot inert)"
+    || fail "old parked slot still hosts the + button (tabs=$(tab_count))"
+echo "S4: group follows the chips ('+' at X+269 works, W-157 slot inert)"
 
 step "S5: Ctrl+Shift+Q quits the app"
 activate
