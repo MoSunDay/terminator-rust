@@ -15,6 +15,6 @@ pub mod term;
 mod tests;
 pub mod viewport;
 
-pub use pty::{pty_resize, pty_wait, pty_write, PtyHandle};
+pub use pty::{dup_fd, pty_resize, pty_wait, pty_write, PtyHandle};
 pub use task::{PtyEvent, Session, SessionOpts};
 pub use term::{CellData, Frame, FrameCursor};

@@ -109,7 +109,7 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
     // The fork already happened: until the reader thread exists nobody
     // owns or closes the master fd, so EVERY failure below is cleaned up
     // at this single call site (kill child + close master). See
-    // `build_session`: it spawns the reader thread LAST, so an Err from
+    // `assemble`: it spawns the reader thread LAST, so an Err from
     // it always means "no reader thread owns the fd yet".
     match build_session(opts, handle) {
         Ok(sess) => Ok(sess),
@@ -124,8 +124,44 @@ pub fn spawn_session(opts: &SessionOpts) -> Result<Session> {
 /// fallible constructors, and finally the reader thread. All `?` returns
 /// here happen while the caller still owns the master fd.
 fn build_session(opts: &SessionOpts, handle: PtyHandle) -> Result<Session> {
+    let term = fresh_terminal(opts)?;
+    assemble(term, opts, handle)
+}
+
+/// Cap on retained VT continuation bytes: the replay-safe suffix of an
+/// unfinished escape sequence / UTF-8 rune left over by the last
+/// `vt_write`. Tracking is DISABLED by default, and snapshot encoding
+/// only works on a mid-sequence parser when tracking was enabled BEFORE
+/// the bytes that produced that state arrived - so every session turns
+/// it on up front (1 MiB is far beyond any real sequence) and stays
+/// snapshot-encodable for its whole life (see `snapshot`).
+const SNAPSHOT_CONTINUATION_MAX: usize = 1 << 20;
+
+/// A fresh terminal with this session's engine limits applied.
+fn fresh_terminal(opts: &SessionOpts) -> Result<Terminal<'static, 'static>> {
     let mut term = Terminal::new(opts.cols, opts.rows)?;
+    configure_terminal(&mut term, opts)?;
+    Ok(term)
+}
+
+/// Engine-level limits every session terminal gets: the scrollback
+/// ceiling and the continuation tracking snapshots depend on.
+fn configure_terminal(term: &mut Terminal<'static, 'static>, opts: &SessionOpts) -> Result<()> {
     term.set_scrollback_max_lines(Some(opts.scrollback_lines))?;
+    term.set_continuation_max_bytes(SNAPSHOT_CONTINUATION_MAX)?;
+    Ok(())
+}
+
+/// Wire a fully-configured terminal and pty handle into a `Session`,
+/// spawning the reader thread last. Every `?` return here happens while
+/// the caller still owns the master fd (a spawn failure means no reader
+/// thread ever owned it).
+fn assemble(
+    term: Terminal<'static, 'static>,
+    opts: &SessionOpts,
+    handle: PtyHandle,
+) -> Result<Session> {
+    let mut term = term;
 
     // Closed-guard: the reader thread is the sole closer of the master fd.
     // It flips `closed` before closing, so query-response writes (issued
@@ -192,6 +228,17 @@ fn kill_pty_child(pid: i32, master: RawFd) {
     let _ = pty::pty_wait(pid, false);
 }
 
+/// Reap the child for the reader's exit event - without ever letting a
+/// non-positive pid reach waitpid: waitpid(0)/waitpid(-1) would block on /
+/// reap UNRELATED children of this process, so an unknown or invalid pid
+/// maps straight to a failure status instead.
+fn reap_exit_status(pid: i32, on_error: i32) -> i32 {
+    if pid <= 0 {
+        return -1;
+    }
+    pty::pty_wait(pid, false).ok().flatten().unwrap_or(on_error)
+}
+
 /// Reader loop for the pty master; runs on its own thread.
 ///
 /// Polls with a bounded timeout so a `terminate` request (stop flag) is
@@ -242,14 +289,14 @@ fn reader_loop(
         }
         if n == 0 || io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::EIO {
             // EOF or EIO: child side closed.
-            let status = pty::pty_wait(pid, false).ok().flatten().unwrap_or(0);
+            let status = reap_exit_status(pid, 0);
             let _ = tx.send(PtyEvent::Exit(status));
             break;
         }
         if io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::EINTR {
             continue;
         }
-        let status = pty::pty_wait(pid, false).ok().flatten().unwrap_or(-1);
+        let status = reap_exit_status(pid, -1);
         let _ = tx.send(PtyEvent::Exit(status));
         break;
     }
@@ -300,6 +347,100 @@ fn signal_group(pid: i32, sig: i32) {
     unsafe {
         if libc::kill(-pid, sig) < 0 {
             let _ = libc::kill(pid, sig);
+        }
+    }
+}
+
+/// Signal the reader thread to exit at its next poll boundary (<= ~200ms).
+/// Does NOT signal or close the child; the master fd stays open until the
+/// reader thread closes it (it remains the sole closer).
+pub fn stop_reader(sess: &Session) {
+    sess.stop.store(true, Ordering::Relaxed);
+}
+
+/// True once the reader thread has closed the master fd (its `closed` flag).
+pub fn reader_done(sess: &Session) -> bool {
+    sess.closed.load(Ordering::Acquire)
+}
+
+/// Duplicate the pty master fd (F_DUPFD_CLOEXEC). The dup is independent of
+/// the reader thread's close.
+pub fn dup_master(sess: &Session) -> io::Result<std::os::fd::OwnedFd> {
+    // Same guard as `write`: once the reader has closed the master, the fd
+    // number may already belong to another pane's pty.
+    if reader_done(sess) {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "master fd already closed by the reader thread",
+        ));
+    }
+    pty::dup_fd(sess.handle.master_fd)
+}
+
+/// Encode the full terminal state (screen + scrollback + VT parser state).
+/// Call AFTER stop_reader + a final pump. Returns Ok(None) when the engine
+/// cannot encode (caller falls back to a fresh terminal).
+pub fn snapshot(sess: &mut Session) -> Result<Option<Vec<u8>>> {
+    // Input must already be quiesced (the caller's stop_reader + pump
+    // contract): encoding walks the whole scrollback and reads the
+    // continuation tracked since `configure_terminal` enabled it.
+    match sess.term.encode_snapshot_alloc(None) {
+        Ok(bytes) => Ok(bytes.map(|b| b.to_vec())),
+        Err(e) => {
+            log::warn!("terminal snapshot encode failed: {e}");
+            Ok(None)
+        }
+    }
+}
+
+/// Build a Session around an ALREADY-OPEN master fd (e.g. received via
+/// SCM_RIGHTS from another process). `handle.child_pid` must be the real
+/// child pid (may be a foreign process; kill(-pid) still works, waitpid will
+/// just return ECHILD which pty_wait maps to Some(0)). `snap` restores full
+/// state when Some and decodable; otherwise a fresh Terminal at opts size.
+/// Starts a new reader thread on the fd. Takes ownership of the fd.
+pub fn adopt_session(
+    handle: PtyHandle,
+    snap: Option<&[u8]>,
+    opts: &SessionOpts,
+) -> Result<Session> {
+    let master = handle.master_fd;
+    let term = restore_terminal(snap, opts)?;
+    match assemble(term, opts, handle) {
+        Ok(sess) => Ok(sess),
+        Err(e) => {
+            // No reader thread owns the fd on this path (`assemble` spawns
+            // it last; a spawn failure means there is no owner), so close it
+            // ourselves. The child is deliberately NOT signalled: it may be
+            // a foreign process the caller wants left running.
+            // SAFETY: plain C close.
+            unsafe { libc::close(master) };
+            Err(e)
+        }
+    }
+}
+
+/// The terminal an adopted session starts from: the decoded snapshot when
+/// one was supplied and decodes, else a fresh one at the requested size.
+fn restore_terminal(snap: Option<&[u8]>, opts: &SessionOpts) -> Result<Terminal<'static, 'static>> {
+    let bytes = match snap {
+        Some(b) if !b.is_empty() => b,
+        _ => return fresh_terminal(opts),
+    };
+    let decoded = libghostty_vt::snapshot::Decoder::new_buf(bytes).and_then(|dec| dec.decode());
+    match decoded {
+        Ok(mut term) => {
+            // Decoded terminals come back with continuation tracking OFF
+            // (the decoder's limit is an input check, not runtime policy)
+            // and the snapshot's own scrollback ceiling: re-apply ours so
+            // the adopted session behaves like a spawned one and stays
+            // re-snapshot-able itself.
+            configure_terminal(&mut term, opts)?;
+            Ok(term)
+        }
+        Err(e) => {
+            log::warn!("snapshot undecodable, adopting a fresh terminal: {e}");
+            fresh_terminal(opts)
         }
     }
 }

@@ -24,6 +24,12 @@ pub enum Action {
     Copy,
     /// Open a new OS window (Ctrl+Shift+N).
     NewWindow,
+    /// Merge every other window's tabs into the root window (Ctrl+Shift+M);
+    /// panes/sessions survive untouched.
+    MergeWindows,
+    /// Move the focused window's active tab to the next window, cyclic
+    /// (Ctrl+Shift+J); a lone window spawns a fresh one to receive it.
+    MoveTabNextWindow,
     /// Quit the whole app (Ctrl+Shift+Q); WM-close equivalent.
     Quit,
 }
@@ -51,6 +57,8 @@ pub enum SKey {
     C,
     V,
     N,
+    M,
+    J,
     Tab,
     PageUp,
     PageDown,
@@ -80,6 +88,8 @@ pub fn route_shortcut(m: SMods, k: SKey) -> Option<Action> {
         (true, SKey::D) => Some(Action::SplitDefault),
         (true, SKey::W) => Some(Action::ClosePane),
         (true, SKey::N) => Some(Action::NewWindow),
+        (true, SKey::M) => Some(Action::MergeWindows),
+        (true, SKey::J) => Some(Action::MoveTabNextWindow),
         (true, SKey::Q) => Some(Action::Quit),
         (true, SKey::R) => Some(Action::Respawn),
         (true, SKey::F) => Some(Action::ToggleZoom),
@@ -137,6 +147,16 @@ mod tests {
             Some(Action::NewWindow)
         );
         assert_eq!(route_shortcut(mods(true, false), SKey::N), None);
+        assert_eq!(
+            route_shortcut(mods(true, true), SKey::M),
+            Some(Action::MergeWindows)
+        );
+        assert_eq!(route_shortcut(mods(true, false), SKey::M), None);
+        assert_eq!(
+            route_shortcut(mods(true, true), SKey::J),
+            Some(Action::MoveTabNextWindow)
+        );
+        assert_eq!(route_shortcut(mods(true, false), SKey::J), None);
         assert_eq!(
             route_shortcut(mods(true, true), SKey::Q),
             Some(Action::Quit)

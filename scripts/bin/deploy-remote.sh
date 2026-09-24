@@ -182,13 +182,23 @@ REMOTE
 # --- stage 5: restart the app ------------------------------------------------
 stage_restart() {
     step "5/6 restart app as $DEPLOY_USER on $HOST"
-    # pgrep -f alone would also match the ssh/zsh wrapper carrying this
-    # script text; keep only pids whose /proc/<pid>/exe is the installed
-    # binary, then kill by pid (never pkill -f).
+    # Candidates by cmdline AND by process name: an instance started from
+    # a desktop/panel launcher carries a bare "terminator-rust" argv[0]
+    # (no install path), so the -f pattern alone misses it - that is how a
+    # deploy once left the old instance running beside the fresh one.
+    # /proc/<pid>/exe is still the only gate that decides: a candidate is
+    # kept only when the running image lives under $root (never kill a
+    # foreign process; the ssh/zsh wrapper carrying this script text
+    # resolves elsewhere and is dropped).
     run_user "$OPT_ROOT" "$RUNTIME_DIR" <<'REMOTE' || fail "stopping the old instance failed"
 root=$1; rt=$2
 pids_of() {
-    for p in $(pgrep -f "$root/.*/bin/terminator-rust" || true); do
+    local cand p
+    cand=$( (
+        pgrep -f "$root/.*/bin/terminator-rust" || true
+        pgrep -x terminator-rust || true
+    ) | sort -u )
+    for p in $cand; do
         # a pgrep hit can surface before execve lands -> empty readlink
         # (same race e2e-oc-exit.sh K1 guards). Retry only the EMPTY read,
         # bounded 20x0.25s: wrapper shells carrying this script text never

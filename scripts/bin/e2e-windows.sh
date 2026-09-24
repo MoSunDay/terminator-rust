@@ -11,6 +11,17 @@
 #   W6: closing the ROOT window's last pane while a sibling window lives
 #       respawns a fresh root tab (root never dies with siblings) instead
 #       of quitting the app.
+#   W7: Ctrl+Shift+J in the secondary hands its tab back to the root: the
+#       emptied secondary disappears, the moved pane keeps its child pid
+#       and becomes the root's active tab.
+#   W8: Ctrl+Shift+J with a SINGLE window spawns one for the active tab
+#       (seed tab closed through the normal path) - both panes keep their
+#       pids and each window types into its own pane.
+#   W9: Ctrl+Shift+M merges every window back into the root, panes alive.
+#   W10: dragging a chip onto the OTHER window's tab strip moves
+#       the tab there (the source window disappears, the pane keeps
+#       its pid, the receiver activates it); the receiving strip
+#       shows the drop tint while the drag hovers it.
 #
 # Usage: scripts/bin/e2e-windows.sh  (repo root; needs Xvfb + xdotool).
 #        E2E_KEEP=1 keeps the scratch dir for debugging.
@@ -42,6 +53,107 @@ step() { echo "== $*"; }
 # pane_ids: all pane ids from `list --json`, ascending.
 pane_ids() {
     "$CTL" list --json 2>/dev/null | grep -o '"id": [0-9]*' | grep -o '[0-9]*' | sort -n
+}
+
+# pane_pid <pane-id>: the pane's child pid (empty when it is gone).
+pane_pid() {
+    "$CTL" list --json 2>/dev/null | awk -v want="$1" '
+        /"id": / { id = $2; sub(/,.*/, "", id) }
+        /"pid": / { pid = $2; sub(/,.*/, "", pid) }
+        /"pid": / && id == want { print pid }
+    '
+}
+
+# pane_win <pane-id>: the OS window id owning the pane ("1" = root).
+pane_win() {
+    "$CTL" list --json 2>/dev/null | awk -v want="$1" '
+        /"id": / { id = $2; sub(/,.*/, "", id) }
+        /"window": / && id == want { w = $2; sub(/,.*/, "", w); print w }
+    '
+}
+
+# win_geom <wid>: "<x> <y> <width> <height>" of an X window (screen coords).
+win_geom() {
+    xdotool getwindowgeometry --shell "$1" | awk -F= '
+        $1 == "X"      { x = $2 }
+        $1 == "Y"      { y = $2 }
+        $1 == "WIDTH"  { w = $2 }
+        $1 == "HEIGHT" { h = $2 }
+        END { print x, y, w, h }'
+}
+
+# chip_edges <png> <x> <y> <w>: theme-agnostic scan of one window's chip
+# row, printing "<left> <right>" of the ACTIVE chip's fill run. Bare
+# chrome (far right of the chips) is the reference colour: a chip column
+# differs from it across most of the band, and the FIRST wide run of such
+# columns (chips are left-aligned) is the chip.
+chip_edges() {
+    W10_SCAN="$1" W10_X="$2" W10_Y="$3" W10_W="$4" python3 - <<'PYS'
+import os
+import sys
+from PIL import Image
+
+img = Image.open(os.environ["W10_SCAN"]).convert("RGB")
+x0, y0, w = (int(os.environ[k]) for k in ("W10_X", "W10_Y", "W10_W"))
+rows = list(range(y0 + 8, y0 + 25))
+bare = img.getpixel((x0 + w * 2 // 3, y0 + 16))
+
+def differs(x):
+    hits = sum(
+        1
+        for y in rows
+        if max(abs(a - b) for a, b in zip(img.getpixel((x, y)), bare)) > 6
+    )
+    return hits > len(rows) // 2
+
+# Chips are LEFT-aligned, so the chip (one tab here) is the first wide
+# run in the row's left half - not the longest one: the trailing chrome
+# cells (zoom / settings / + / split / window buttons) can merge into a
+# longer run on the right.
+runs = []
+run = None
+for x in range(x0 + 2, x0 + w - 2):
+    if differs(x):
+        run = x if run is None else run
+    elif run is not None:
+        runs.append((run, x))
+        run = None
+if run is not None:
+    runs.append((run, x0 + w - 2))
+wide = [r for r in runs if r[1] - r[0] >= 40 and r[0] <= x0 + w // 2]
+if not wide:
+    print(f"no chip run found (runs {runs})", file=sys.stderr)
+    sys.exit(1)
+left, right = wide[0]
+if right - left > 300:
+    print(f"chip run too wide ({left}..{right})", file=sys.stderr)
+    sys.exit(1)
+print(left, right)
+PYS
+}
+
+# strip_diff <png-a> <png-b> <x0> <x1> <y>: count pixels of the chip-row
+# band (y+6..y+40, x0..x1) whose channels differ by more than 6. Used to
+# spot the drop tint a receiving window paints under a foreign drag -
+# always against a baseline scrot of the same band, so it needs no
+# palette constants.
+strip_diff() {
+    W10_A="$1" W10_B="$2" W10_X0="$3" W10_X1="$4" W10_Y="$5" python3 - <<'PYS'
+import os
+from PIL import Image
+
+a = Image.open(os.environ["W10_A"]).convert("RGB")
+b = Image.open(os.environ["W10_B"]).convert("RGB")
+x0, x1, y = (int(os.environ[k]) for k in ("W10_X0", "W10_X1", "W10_Y"))
+print(
+    sum(
+        1
+        for yy in range(y + 6, y + 40)
+        for x in range(x0, x1)
+        if max(abs(p - q) for p, q in zip(a.getpixel((x, yy)), b.getpixel((x, yy)))) > 6
+    )
+)
+PYS
 }
 
 # wait_capture <pane-id> <marker> [tries]: until the pane shows the marker.
@@ -201,10 +313,131 @@ wait_capture "$NEW_ROOT" E2EWIN4 || { "$CTL" capture "$NEW_ROOT" | tail -3; fail
 wait_capture "$P_SEC2" E2EWIN3 || fail "sibling pane disturbed by root respawn"
 echo "root respawned pane $NEW_ROOT (was $P_ROOT), sibling intact"
 
-# --- W5: Ctrl+Shift+Q from the secondary quits the whole app --------------
-step "W5: Ctrl+Shift+Q in the secondary quits the app"
+# --- W7: Ctrl+Shift+J hands the secondary's tab back to the root ----------
+step "W7: Ctrl+Shift+J from the secondary moves its tab into the root"
+SEC_PID=$(pane_pid "$P_SEC2")
+[ -n "$SEC_PID" ] || { "$CTL" list; fail "no child pid for pane $P_SEC2"; }
 xdotool windowfocus "$SEC2_WID"
 until xdotool windowfocus "$SEC2_WID" 2>/dev/null; do sleep 0.3; done
+sleep 0.5
+xdotool key --clearmodifiers ctrl+shift+j
+wait_win_gone 'terminator-rust #' || fail "emptied secondary survived Ctrl+Shift+J"
+kill -0 "$APP_PID" 2>/dev/null || { tail "$ROOT/app.log"; fail "app died moving the tab"; }
+[ "$(pane_ids | wc -l)" -eq 2 ] || { "$CTL" list; fail "pane count changed in W7"; }
+[ "$(pane_pid "$P_SEC2")" = "$SEC_PID" ] || { "$CTL" list; fail "moved pane lost its child in W7"; }
+# The moved tab arrives ACTIVE in the root: typing must land in it.
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+xdotool type --delay 60 "E2EWIN5"
+wait_capture "$P_SEC2" E2EWIN5 || { "$CTL" capture "$P_SEC2" | tail -3; fail "moved pane is not the root's active tab"; }
+echo "pane $P_SEC2 now lives in the root (pid $SEC_PID)"
+
+# --- W8: Ctrl+Shift+J with a single window spawns one for the tab ---------
+step "W8: Ctrl+Shift+J in the only window spawns a window for the active tab"
+ROOT_PID=$(pane_pid "$NEW_ROOT")
+[ -n "$ROOT_PID" ] || { "$CTL" list; fail "no child pid for pane $NEW_ROOT"; }
+sleep 0.5
+xdotool key --clearmodifiers ctrl+shift+j
+SEC3_WID=$(wait_win 'terminator-rust #') || { tail "$ROOT/app.log"; fail "Ctrl+Shift+J spawned no window"; }
+kill -0 "$APP_PID" 2>/dev/null || { tail "$ROOT/app.log"; fail "app died in W8"; }
+[ "$(pane_ids | wc -l)" -eq 2 ] || { "$CTL" list; fail "W8 leaked the seed tab's pane"; }
+[ "$(pane_pid "$P_SEC2")" = "$SEC_PID" ] || fail "W8 disturbed the moved pane"
+[ "$(pane_pid "$NEW_ROOT")" = "$ROOT_PID" ] || fail "W8 disturbed the root pane"
+until xdotool windowfocus "$SEC3_WID" 2>/dev/null; do sleep 0.3; done
+xdotool type --delay 60 "E2EWIN6"
+wait_capture "$P_SEC2" E2EWIN6 || fail "the spawned window does not own the moved pane"
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+xdotool type --delay 60 "E2EWIN7"
+wait_capture "$NEW_ROOT" E2EWIN7 || fail "the root lost its own tab in W8"
+echo "window split: $NEW_ROOT in the root, $P_SEC2 in $SEC3_WID"
+
+# --- W9: Ctrl+Shift+M merges every window back into the root --------------
+step "W9: Ctrl+Shift+M merges the windows"
+xdotool windowfocus "$SEC3_WID"
+until xdotool windowfocus "$SEC3_WID" 2>/dev/null; do sleep 0.3; done
+sleep 0.5
+xdotool key --clearmodifiers ctrl+shift+m
+wait_win_gone 'terminator-rust #' || fail "merge left a secondary window alive"
+kill -0 "$APP_PID" 2>/dev/null || { tail "$ROOT/app.log"; fail "app died in the merge"; }
+[ "$(pane_ids | wc -l)" -eq 2 ] || { "$CTL" list; fail "merge lost panes"; }
+[ "$(pane_pid "$P_SEC2")" = "$SEC_PID" ] || fail "merge disturbed the moved pane"
+[ "$(pane_pid "$NEW_ROOT")" = "$ROOT_PID" ] || fail "merge disturbed the root pane"
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+wait_capture "$NEW_ROOT" E2EWIN7 || fail "merged root lost its tab's screen"
+echo "merged back: panes $NEW_ROOT + $P_SEC2 in the root"
+
+# --- W10: cross-window chip drag hands the tab to another window ----------
+step "W10: dragging the chip onto the other window's strip moves the tab"
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+sleep 0.5
+xdotool key --clearmodifiers ctrl+shift+n
+DRAG_WID=$(wait_win 'terminator-rust #') || { tail "$ROOT/app.log"; fail "no secondary for the drag check"; }
+until xdotool windowfocus "$DRAG_WID" 2>/dev/null; do sleep 0.3; done
+sleep 1
+DRAG_PANE=$(pane_ids | tail -1)
+DRAG_PID=$(pane_pid "$DRAG_PANE")
+[ -n "$DRAG_PID" ] || { "$CTL" list; fail "no child pid for the drag pane"; }
+# Bare Xvfb has no WM: the newest window sits on top, but raise the source
+# explicitly - the press must hit ITS chip, not the root's chrome below.
+xdotool windowraise "$DRAG_WID"
+read X Y DRAG_W DRAG_H <<<"$(win_geom "$DRAG_WID")"
+read RX RY ROOT_W ROOT_H <<<"$(win_geom "$ROOT_WID")"
+# Park the pointer inside the source's pane first: bare chrome there is
+# live (hover fills / icon cells) and would skew the baseline scrot.
+xdotool mousemove --sync "$(( X + DRAG_W * 2 / 3 ))" "$(( Y + 200 ))"
+sleep 0.5
+scrot -o "$ROOT/w10-base.png"
+CHIP_EDGES=$(chip_edges "$ROOT/w10-base.png" "$X" "$Y" "$DRAG_W") \
+    || fail "no active chip found in the source window's row"
+read CHIP_L CHIP_R <<<"$CHIP_EDGES"
+CHIPX=$(( (CHIP_L + CHIP_R) / 2 ))
+CHIPY=$(( Y + 18 ))
+DRAGX=$(( RX + ROOT_W / 2 ))
+DRAGY=$(( RY + 18 ))
+BAND0=$(( RX + 400 ))              # bare chrome right of any chip...
+BAND1=$(( RX + ROOT_W - 200 ))     # ...and left of the fixed cells
+# The press frame must land on the chip BEFORE the first motion frame
+# (egui hit-tests per frame: a coalesced press+move latches bare chrome
+# and turns into a window-move StartDrag instead).
+xdotool mousemove --sync "$CHIPX" "$CHIPY"
+sleep 0.4
+xdotool mousedown 1
+sleep 0.4
+xdotool mousemove --sync "$CHIPX" "$(( (CHIPY + DRAGY) / 2 ))"
+sleep 0.2
+xdotool mousemove --sync "$DRAGX" "$DRAGY"
+sleep 0.6
+# Hovering the foreign strip tints it (chips paint over their own slice,
+# so the assertion band is bare chrome): the band must change.
+scrot -o "$ROOT/w10-over.png"
+TINT=$(strip_diff "$ROOT/w10-base.png" "$ROOT/w10-over.png" "$BAND0" "$BAND1" "$RY")
+[ "$TINT" -ge 5000 ] || fail "no drop tint on the target strip while hovering (${TINT}px changed)"
+xdotool mouseup 1
+sleep 0.5
+# The source window held only this tab: it is gone, the app is not.
+wait_win_gone 'terminator-rust #' || { tail "$ROOT/app.log"; fail "cross-window drop left the source window alive"; }
+kill -0 "$APP_PID" 2>/dev/null || { tail "$ROOT/app.log"; fail "app died in the cross-window drop"; }
+[ "$(pane_ids | wc -l)" -eq 3 ] || { "$CTL" list; fail "cross-window drop lost panes"; }
+[ "$(pane_pid "$DRAG_PANE")" = "$DRAG_PID" ] || { "$CTL" list; fail "moved pane lost its child in W10"; }
+[ "$(pane_win "$DRAG_PANE")" = "1" ] || { "$CTL" list; fail "moved pane did not land in the root window"; }
+scrot -o "$ROOT/w10-after.png"
+AFTER=$(strip_diff "$ROOT/w10-base.png" "$ROOT/w10-after.png" "$BAND0" "$BAND1" "$RY")
+[ "$AFTER" -le 50 ] || fail "drop tint lingered on the receiving strip (${AFTER}px changed)"
+# The dropped tab arrives ACTIVE in the receiving window: typing lands there.
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+xdotool type --delay 60 "E2EWIN8"
+wait_capture "$DRAG_PANE" E2EWIN8 || { "$CTL" capture "$DRAG_PANE" | tail -3; fail "dropped tab is not the receiver's active tab"; }
+echo "dragged pane $DRAG_PANE (pid $DRAG_PID) into the root"
+
+# --- W5: Ctrl+Shift+Q from a secondary quits the whole app ----------------
+step "W5: Ctrl+Shift+Q in the secondary quits the app"
+xdotool key --clearmodifiers ctrl+shift+n
+QUIT_WID=$(wait_win 'terminator-rust #') || { tail "$ROOT/app.log"; fail "no secondary for the quit check"; }
+until xdotool windowfocus "$QUIT_WID" 2>/dev/null; do sleep 0.3; done
 sleep 0.5
 xdotool key --clearmodifiers ctrl+shift+q
 wait_pid_gone "$APP_PID" 40 || { tail "$ROOT/app.log"; fail "app survived Ctrl+Shift+Q from secondary"; }

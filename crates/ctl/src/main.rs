@@ -4,6 +4,7 @@
 //! `cmd_oc`/`procfs` are the landing zone for opencoder tooling.
 
 mod args;
+mod args_extra;
 mod cmd_oc;
 mod format;
 mod procfs;
@@ -30,7 +31,7 @@ fn main() {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     let cli = match args::parse(&argv) {
-        Ok(cli) => cli,
+        Ok(parsed) => parsed,
         Err(e) => {
             // Help / empty argv already *is* the usage text; anything else
             // gets the reason first, usage after.
@@ -41,17 +42,17 @@ fn main() {
             std::process::exit(2);
         }
     };
-    if let Err(e) = dispatch(cli) {
+    if let Err(e) = dispatch(cli.cmd, cli.socket.as_deref()) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
 
-fn dispatch(cli: Cli) -> Result<()> {
+fn dispatch(cli: Cli, socket: Option<&str>) -> Result<()> {
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
     match cli {
         Cli::List { json } => {
-            let panes = match uds::request(&Request::List, timeout)? {
+            let panes = match uds::request_flagged(socket, &Request::List, timeout)? {
                 Response::List { panes } => panes,
                 other => return Err(unexpected(&other)),
             };
@@ -63,10 +64,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             print!("{out}");
         }
         Cli::Capture { pane, lines, json } => {
-            let cap = match uds::request(&Request::Capture { pane, lines }, timeout)? {
-                Response::Capture(out) => out,
-                other => return Err(unexpected(&other)),
-            };
+            let cap =
+                match uds::request_flagged(socket, &Request::Capture { pane, lines }, timeout)? {
+                    Response::Capture(out) => out,
+                    other => return Err(unexpected(&other)),
+                };
             let out = if json {
                 format::capture_json(&cap)
             } else {
@@ -79,7 +81,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             text,
             bracketed,
         } => {
-            let bytes = match uds::request(
+            let bytes = match uds::request_flagged(
+                socket,
                 &Request::Write {
                     pane,
                     text,
@@ -92,7 +95,37 @@ fn dispatch(cli: Cli) -> Result<()> {
             };
             println!("wrote {bytes} bytes");
         }
-        Cli::Oc(rest) => cmd_oc::dispatch_oc(&rest)?,
+        Cli::Instances { json, all } => {
+            let mut rows = Vec::new();
+            for path in uds::discover() {
+                let answer = uds::probe(&path, uds::PROBE_TIMEOUT);
+                if !all && answer.is_none() {
+                    continue;
+                }
+                rows.push(format::instance_row(&path, answer.as_ref()));
+            }
+            let out = if json {
+                format::instances_json(&rows)
+            } else {
+                format::instances_table(&rows)
+            };
+            print!("{out}");
+        }
+        Cli::Migrate { pane, to } => {
+            let answer = uds::request_flagged(
+                socket,
+                &Request::MigrateOut {
+                    pane,
+                    target: to.clone(),
+                },
+                timeout,
+            )?;
+            match answer {
+                Response::Migrated { panes } => println!("migrated {panes} pane(s) to {to}"),
+                other => return Err(unexpected(&other)),
+            }
+        }
+        Cli::Oc(rest) => cmd_oc::dispatch_oc(&rest, socket)?,
     }
     Ok(())
 }

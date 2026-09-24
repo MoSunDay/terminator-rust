@@ -266,6 +266,14 @@ pub struct UiState {
     /// The last pane/tab was closed: the app is shutting down. Guards the
     /// empty-tabs auto-respawn until the ViewportCommand::Close lands.
     pub quitting: bool,
+    /// Screen-space strip geometry of every window, published by each
+    /// window's pass (cross-window tab-drag hit-testing).
+    pub screens: WinScreens,
+    /// Live cross-window tab drag (mirrors the source window's tab_drag).
+    pub xdrag: Option<XTabDrag>,
+    /// Global pointer in screen points while a cross-window-capable drag
+    /// is live (X11 pointer poll; None elsewhere/on Wayland).
+    pub pointer_screen: Option<egui::Pos2>,
 }
 
 pub fn window_ui() -> WindowUi {
@@ -301,6 +309,9 @@ pub fn ui_state() -> UiState {
         styled_theme: None,
         styled_font: 0.0,
         quitting: false,
+        screens: WinScreens::default(),
+        xdrag: None,
+        pointer_screen: None,
     }
 }
 
@@ -461,6 +472,11 @@ pub fn split_tree_pane(st: &mut AppState, tab: usize, pane: PaneId, axis: Axis) 
 pub mod shortcuts;
 
 pub use shortcuts::{route_shortcut, Action, PaneAction, SKey, SMods};
+
+/// Screen-space geometry + drag state for cross-window tab drags.
+pub mod screens;
+
+pub use screens::{WinScreens, XTabDrag};
 
 // ---------------------------------------------------------------------------
 // Composition root

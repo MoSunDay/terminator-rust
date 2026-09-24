@@ -5,11 +5,12 @@ use layout_tree::Tab;
 use theme::Palette;
 
 use crate::actions;
+use crate::actions::winops;
 use crate::render::colors::{self, to_c32};
 use crate::render::tokens;
 use crate::state::{self, AppState, Data, WindowState};
 use crate::ui::chrome::{self, Metrics};
-use crate::ui::tabs_widgets;
+use crate::ui::{tabs_widgets, xdrag};
 
 /// How long a pane-drag must hover another tab's chip before the active
 /// tab switches there (browser tab-drag dwell).
@@ -124,6 +125,14 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
         pos2(row.left(), row.top() + m.row_inset),
         pos2(row.right() - m.reserve, row.bottom()),
     );
+    // Cross-window tab drags: publish this window's strip in SCREEN
+    // points every pass (strip_hit consumes it while a chip drag is
+    // live), and tint this strip when ANOTHER window's drag hovers it.
+    let win_id = d.st.win().map(|w| w.id).unwrap_or(0);
+    xdrag::publish(ui, d, strip);
+    if d.ui.xdrag.as_ref().and_then(|x| x.over) == Some(win_id) {
+        xdrag::paint_strip_tint(ui, pal, strip);
+    }
     let strip_w = (strip.right() - row.left()).max(0.0);
     let overflow = (total_w - strip_w).max(0.0);
     let mut scroll = d.st.win().map(|w| w.ui.tab_scroll).unwrap_or(0.0);
@@ -176,7 +185,6 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
         } = d;
         let mut close_tab: Option<usize> = None;
         let count = st.win().map(|w| w.tree.tabs.len()).unwrap_or(0);
-        let win_id = st.win().map(|w| w.id).unwrap_or(0);
         let chrome_base = to_c32(colors::chrome_bg(pal));
         let chrome_hover = to_c32(colors::chrome_hover(pal));
         for i in 0..count {
@@ -430,8 +438,12 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
     // In-flight chip drag: live reorder + ghost chip. Runs after the row
     // closure so the ghost paints above the trailing buttons/edge cells;
     // the anchor pane closing mid-drag (impossible from the bar itself,
-    // reachable via ctl) drops the drag.
+    // reachable via ctl) drops the drag. Cross-window: the pointer is
+    // hit-tested against every OTHER window's published strip, a hovered
+    // foreign strip suppresses the local live reorder, and the release
+    // hands the tab to that window (sessions follow the pane ids).
     if let Some(td) = d.st.win().and_then(|w| w.ui.tab_drag) {
+        let win_id = d.st.win().map(|w| w.id).unwrap_or(0);
         let cur = d.st.win().and_then(|w| {
             w.tree
                 .tabs
@@ -439,12 +451,22 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 .position(|t| state::tab_anchor(t) == td.anchor)
         });
         let pos = ui.input(|i| i.pointer.interact_pos());
-        let held = pos.is_some() && ui.input(|i| i.pointer.primary_down());
+        let (over, polled_down) = xdrag::step(ui, d, td.anchor, win_id);
+        // Release truth while the pointer is in ANOTHER window: this
+        // window then receives no pointer events at all, so
+        // i.pointer.primary_down() would never clear - the X11 poll
+        // (position + button mask) answers. Event path = Wayland/tests.
+        let held = match polled_down {
+            Some(down) => down,
+            None => pos.is_some() && ui.input(|i| i.pointer.primary_down()),
+        };
         match cur {
             None => {
                 if let Some(w) = d.st.win_mut() {
                     w.ui.tab_drag = None;
                 }
+                d.ui.xdrag = None;
+                d.ui.pointer_screen = None;
             }
             Some(cur) => {
                 if let Some(pos) = pos {
@@ -456,14 +478,14 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                         .iter()
                         .filter(|(cx, i)| *i != cur && *cx < ghost_left + td.w * 0.5)
                         .count();
-                    if target != cur {
+                    if target != cur && over.is_none() {
                         if let Some(w) = d.st.win_mut() {
                             if layout_tree::move_tab(&mut w.tree, cur, target) {
                                 d.dirty = true;
                             }
                         }
                     }
-                    if held {
+                    if held && over.is_none() {
                         let label =
                             d.st.win()
                                 .and_then(|w| {
@@ -482,9 +504,26 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                     if let Some(w) = d.st.win_mut() {
                         w.ui.tab_drag = None;
                     }
+                    // Released over another window's strip: pure state
+                    // surgery (the panes keep their live sessions), then
+                    // raise the receiving window.
+                    if let Some(dst) = over {
+                        let vp = winops::viewport_of(&d.st, dst);
+                        ui.ctx()
+                            .send_viewport_cmd_to(vp, egui::ViewportCommand::Focus);
+                        winops::do_move_tab_to_window(&mut d.st, &mut d.dirty, td.anchor, dst);
+                    }
+                    d.ui.xdrag = None;
+                    d.ui.pointer_screen = None;
                 }
             }
         }
+    }
+    // Cross-window drop affordance on the RECEIVING side: 2px accent
+    // caret in the gap beside the chip nearest the incoming pointer.
+    if d.ui.xdrag.as_ref().and_then(|x| x.over) == Some(win_id) {
+        let ptr = xdrag::local_pointer(ui, d.ui.pointer_screen);
+        xdrag::paint_caret(ui, pal, strip, &chip_rects, ptr, m.chip_gap);
     }
     ui.add_space(m.row_inset);
     // Hairline under the merged chrome row (was under the removed title

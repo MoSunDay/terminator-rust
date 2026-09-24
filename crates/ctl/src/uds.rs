@@ -3,7 +3,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -23,14 +23,23 @@ pub fn socket_path() -> Option<PathBuf> {
 }
 
 pub fn request(req: &Request, timeout: Duration) -> Result<Response> {
-    let path = socket_path().ok_or_else(|| {
-        anyhow!(
-            "terminator-rust control socket not found (is the app running? expected ${} or {})",
-            ENV_SOCKET,
-            hint_path().display()
-        )
-    })?;
-    let mut stream = UnixStream::connect(&path).with_context(|| {
+    request_via(socket_path(), req, timeout)
+}
+
+/// [`request`] with a `--socket <path>` override: a non-empty flag wins
+/// over `$TERMINATOR_SOCK` and the default locations and talks straight to
+/// that path; `None`/empty falls back to the default resolution.
+pub fn request_flagged(flag: Option<&str>, req: &Request, timeout: Duration) -> Result<Response> {
+    match flag.filter(|f| !f.is_empty()) {
+        Some(f) => request_at(Path::new(f), req, timeout),
+        None => request(req, timeout),
+    }
+}
+
+/// [`request`] against an explicit socket path (`--socket`, `migrate`
+/// targets, `instances` probes): same wire behavior, caller-chosen endpoint.
+pub fn request_at(path: &Path, req: &Request, timeout: Duration) -> Result<Response> {
+    let mut stream = UnixStream::connect(path).with_context(|| {
         format!(
             "cannot connect to terminator-rust (app running?) at {}",
             path.display()
@@ -60,6 +69,40 @@ pub fn request(req: &Request, timeout: Duration) -> Result<Response> {
         );
     }
     decode_response(&buf)
+}
+
+/// Shared tail of [`request`]/[`request_flagged`]: a resolved-but-missing
+/// path becomes the familiar "not found" error.
+fn request_via(path: Option<PathBuf>, req: &Request, timeout: Duration) -> Result<Response> {
+    let path = path.ok_or_else(|| {
+        anyhow!(
+            "terminator-rust control socket not found (is the app running? expected ${} or {})",
+            ENV_SOCKET,
+            hint_path().display()
+        )
+    })?;
+    request_at(&path, req, timeout)
+}
+
+/// Sibling instance sockets (`ipc*.sock`) in the runtime dir, sorted, no
+/// liveness probing (see [`probe`]). This is the `instances` roster and the
+/// `--to` target vocabulary for `migrate`.
+pub fn discover() -> Vec<PathBuf> {
+    ipc_proto::migrate::discover_sockets(&paths::runtime_dir(), None)
+}
+
+/// Liveness probe budget per discovered socket: short enough that a dir of
+/// dead sockets does not make `instances` feel slow.
+pub const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Probe one discovered socket: a live terminator-rust instance answers
+/// `List`, which comes back as `Some`; every failure (missing file, refused
+/// connect, dead peer, malformed reply) folds into `None`.
+pub fn probe(path: &Path, timeout: Duration) -> Option<Response> {
+    match request_at(path, &Request::List, timeout) {
+        Ok(resp @ Response::List { .. }) => Some(resp),
+        _ => None,
+    }
 }
 
 /// One response line -> `Ok(Response)`; app-reported errors become `Err` so
@@ -122,5 +165,14 @@ mod tests {
         let err = decode_response(&line).unwrap_err().to_string();
         assert_eq!(err, "no such pane");
         assert!(decode_response("not json").is_err());
+    }
+
+    #[test]
+    fn request_at_and_probe_on_dead_paths() {
+        // No server needed: connect failure is the whole behavior under test.
+        let dead = Path::new("/nonexistent/terminator-ctl-probe.sock");
+        let err = request_at(dead, &Request::List, Duration::from_millis(50)).unwrap_err();
+        assert!(err.to_string().contains("cannot connect"), "{err}");
+        assert!(probe(dead, Duration::from_millis(50)).is_none());
     }
 }
