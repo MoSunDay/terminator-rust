@@ -124,24 +124,24 @@ fn flag_value<'a>(rest: &'a [String], i: &mut usize, flag: &str) -> Result<&'a s
     Ok(v)
 }
 
-pub fn dispatch_oc(rest: &[String]) -> Result<()> {
+pub fn dispatch_oc(rest: &[String], socket: Option<&str>) -> Result<()> {
     match parse_oc(rest).map_err(|e| anyhow!("{e}"))? {
-        Oc::Link { pane, session } => cmd_link(&pane, session.as_deref()),
+        Oc::Link { pane, session } => cmd_link(&pane, session.as_deref(), socket),
         Oc::Unlink { pane } => cmd_unlink(&pane),
         Oc::Submit {
             pane,
             text,
             delivery,
             wait,
-        } => cmd_submit(&pane, &text, &delivery, wait),
-        Oc::Status { pane } => cmd_status(&pane),
-        Oc::Sessions { pane } => cmd_sessions(&pane),
+        } => cmd_submit(&pane, &text, &delivery, wait, socket),
+        Oc::Status { pane } => cmd_status(&pane, socket),
+        Oc::Sessions { pane } => cmd_sessions(&pane, socket),
     }
 }
 
 /// Pane address from the CLI -> live PaneInfo via the app.
-fn pane_info(selector: &PaneSelector) -> Result<PaneInfo> {
-    let panes = match uds::request(&Request::List, TIMEOUT)? {
+fn pane_info(selector: &PaneSelector, socket: Option<&str>) -> Result<PaneInfo> {
+    let panes = match uds::request_flagged(socket, &Request::List, TIMEOUT)? {
         Response::List { panes } => panes,
         other => return Err(anyhow!("unexpected response: {other:?}")),
     };
@@ -185,8 +185,8 @@ fn resolve(pane: &str, info: &PaneInfo) -> Result<(PathBuf, String)> {
     Ok((found.db, session))
 }
 
-fn cmd_link(pane: &str, session: Option<&str>) -> Result<()> {
-    let info = pane_info(&PaneSelector::Name(pane.to_string()))?;
+fn cmd_link(pane: &str, session: Option<&str>, socket: Option<&str>) -> Result<()> {
+    let info = pane_info(&PaneSelector::Name(pane.to_string()), socket)?;
     let found = procfs::find_opencoder(info.pid)
         .map_err(anyhow::Error::msg)?
         .ok_or_else(|| anyhow!("no opencoder process found under pane '{pane}'"))?;
@@ -219,8 +219,14 @@ fn cmd_unlink(pane: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_submit(pane: &str, text: &str, delivery: &str, wait: u64) -> Result<()> {
-    let info = pane_info(&PaneSelector::Name(pane.to_string()))?;
+fn cmd_submit(
+    pane: &str,
+    text: &str,
+    delivery: &str,
+    wait: u64,
+    socket: Option<&str>,
+) -> Result<()> {
+    let info = pane_info(&PaneSelector::Name(pane.to_string()), socket)?;
     let (db, session) = resolve(pane, &info)?;
     let store = oc_store::db::open_rw(&db)?;
     let seq = store.insert_input(&session, delivery, text)?;
@@ -254,8 +260,8 @@ fn wait_consumed(db: &std::path::Path, session: &str, seq: i64, wait: u64) -> Re
     }
 }
 
-fn cmd_status(pane: &str) -> Result<()> {
-    let info = pane_info(&PaneSelector::Name(pane.to_string()))?;
+fn cmd_status(pane: &str, socket: Option<&str>) -> Result<()> {
+    let info = pane_info(&PaneSelector::Name(pane.to_string()), socket)?;
     let (db, session) = resolve(pane, &info)?;
     let store = oc_store::db::open_ro(&db)?;
     println!("session {session}");
@@ -287,8 +293,8 @@ fn cmd_status(pane: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_sessions(pane: &str) -> Result<()> {
-    let info = pane_info(&PaneSelector::Name(pane.to_string()))?;
+fn cmd_sessions(pane: &str, socket: Option<&str>) -> Result<()> {
+    let info = pane_info(&PaneSelector::Name(pane.to_string()), socket)?;
     let (db, _) = resolve(pane, &info)?;
     let store = oc_store::db::open_ro(&db)?;
     let rows = store.sessions(20)?;

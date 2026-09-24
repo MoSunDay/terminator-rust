@@ -7,6 +7,8 @@
 //! untagged: a JSON string addresses a pane by its (unique) manual title,
 //! a JSON number by pane id.
 
+pub mod migrate;
+
 use serde::{Deserialize, Serialize};
 
 /// Env var carrying the control socket path to pane children.
@@ -85,6 +87,18 @@ pub enum Request {
         #[serde(default)]
         bracketed: bool,
     },
+    /// Ask this instance to migrate the tab containing `pane` to the
+    /// instance listening on `target` socket path. Sender side of the
+    /// handoff.
+    MigrateOut {
+        pane: PaneSelector,
+        target: String,
+    },
+    /// Arrives on the target instance's socket from the source instance,
+    /// accompanied by SCM_RIGHTS fds + payload bytes after the header line.
+    TabOffer {
+        tab: migrate::MigrateTab,
+    },
 }
 
 fn default_lines() -> u32 {
@@ -101,6 +115,10 @@ pub enum Response {
     Capture(CaptureOut),
     #[serde(rename = "written")]
     Written { bytes: usize },
+    /// Success ack for both `MigrateOut` and `TabOffer`; `panes` = leaf
+    /// count moved in.
+    #[serde(rename = "migrated")]
+    Migrated { panes: usize },
     #[serde(rename = "error")]
     Error { message: String },
 }

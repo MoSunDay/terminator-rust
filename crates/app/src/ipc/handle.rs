@@ -7,13 +7,16 @@ use ipc_proto::{CaptureOut, PaneInfo, PaneSelector, Request, Response};
 use layout_tree::PaneId;
 use log::warn;
 use remote::PaneKind;
+use std::os::fd::OwnedFd;
 use vt_pane::task as vtask;
 
 use crate::session_map::SessionMap;
 use crate::state::{AppState, Data};
 
-/// Dispatch one request against the live app state.
-pub fn execute(req: Request, data: &mut Data) -> Response {
+/// Dispatch one request against the live app state. `fds`/`payload` are
+/// the migration attachments (SCM_RIGHTS descriptors and per-leaf
+/// snapshot blocks) and are empty for every ordinary request.
+pub fn execute(req: Request, fds: Vec<OwnedFd>, payload: Vec<u8>, data: &mut Data) -> Response {
     match req {
         Request::List => list(&data.st, &mut data.sess),
         Request::Capture { pane, lines } => match resolve(&data.st, &pane) {
@@ -34,6 +37,12 @@ pub fn execute(req: Request, data: &mut Data) -> Response {
             },
             Err(resp) => resp,
         },
+        Request::MigrateOut { pane, target } => {
+            crate::ipc::handle_migrate::migrate_out(data, pane, target)
+        }
+        Request::TabOffer { tab } => {
+            crate::ipc::handle_migrate::tab_offer(data, tab, &payload, fds)
+        }
     }
 }
 
@@ -140,7 +149,7 @@ pub fn frame_text(frame: &vt_pane::Frame, lines: u32) -> String {
 
 /// Map a selector to a pane id. Ids must exist in `st.panes` (membership in
 /// a tab is not required); names must match exactly one pane.
-fn resolve(st: &AppState, sel: &PaneSelector) -> Result<PaneId, Response> {
+pub(crate) fn resolve(st: &AppState, sel: &PaneSelector) -> Result<PaneId, Response> {
     match sel {
         PaneSelector::Id(id) => {
             if st.panes.contains_key(id) {
@@ -176,6 +185,12 @@ mod tests {
     use std::thread::sleep;
     use std::time::Duration;
     use vt_pane::{CellData, SessionOpts};
+
+    /// `execute` with no migration attachments (fds/payload empty), the
+    /// shape every ordinary request arrives in.
+    fn exec(req: Request, d: &mut Data) -> Response {
+        execute(req, Vec::new(), Vec::new(), d)
+    }
 
     fn cell(t: &str) -> CellData {
         CellData {
@@ -245,7 +260,7 @@ mod tests {
         };
         let mut d = data(fresh_state(), vec![]);
         d.sess.map.insert(1, sess);
-        let _ = execute(
+        let _ = exec(
             Request::Write {
                 pane: PaneSelector::Id(1),
                 text: "\u{6c49}\u{5b57}\n".into(),
@@ -257,7 +272,7 @@ mod tests {
         // the exact line: one leading cell + one empty spacer per glyph.
         let mut text = String::new();
         for _ in 0..200 {
-            match execute(
+            match exec(
                 Request::Capture {
                     pane: PaneSelector::Id(1),
                     lines: 6,
@@ -304,7 +319,7 @@ mod tests {
         d.st.panes.get_mut(&1).unwrap().manual_title = Some("t1".into());
         d.sess.map.insert(1, sess);
 
-        let w = execute(
+        let w = exec(
             Request::Write {
                 pane: PaneSelector::Name("t1".into()),
                 text: "hello\n".into(),
@@ -317,7 +332,7 @@ mod tests {
         // cat echoes the input back; poll until the frame shows it.
         let mut text = String::new();
         for _ in 0..200 {
-            match execute(
+            match exec(
                 Request::Capture {
                     pane: PaneSelector::Id(1),
                     lines: 10,
@@ -337,7 +352,7 @@ mod tests {
         }
         assert!(text.contains("hello"), "capture text: {text:?}");
 
-        match execute(Request::List, &mut d) {
+        match exec(Request::List, &mut d) {
             Response::List { panes } => {
                 let p = panes.iter().find(|p| p.id == 1).unwrap();
                 assert_eq!(p.name.as_deref(), Some("t1"));
@@ -349,7 +364,7 @@ mod tests {
             other => panic!("list: {other:?}"),
         }
 
-        let bad = execute(
+        let bad = exec(
             Request::Write {
                 pane: PaneSelector::Name("nope".into()),
                 text: "x".into(),
@@ -387,7 +402,7 @@ mod tests {
             .insert(pane, crate::state::new_pane_meta(PaneKind::Local));
         st.collect_alloc();
         let mut d = data(st, vec![]);
-        match execute(Request::List, &mut d) {
+        match exec(Request::List, &mut d) {
             Response::List { panes } => {
                 assert_eq!(panes.len(), 2);
                 let by_window: Vec<(u64, u64)> = panes

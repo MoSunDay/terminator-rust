@@ -16,6 +16,7 @@ use crate::state::{
 };
 
 pub(crate) mod reconnect;
+pub(crate) mod winops;
 
 /// Spawn sessions for every pane that lacks one; drop orphaned sessions.
 pub fn ensure_sessions(st: &AppState, sess: &mut SessionMap) {
@@ -140,7 +141,7 @@ pub fn do_close_pane(
 }
 
 /// Drop a tab-rename edit whose anchor pane no longer exists.
-fn prune_tab_edit(tree: &layout_tree::LayoutTree, wui: &mut WindowUi) {
+pub(crate) fn prune_tab_edit(tree: &layout_tree::LayoutTree, wui: &mut WindowUi) {
     if wui
         .tab_edit
         .as_ref()
@@ -396,6 +397,12 @@ pub fn apply_action(
             // Normally intercepted in keyboard.rs; kept here so any other
             // caller (IPC) gets the same behavior.
             crate::windows::spawn(st, sess, dirty);
+        }
+        Action::MergeWindows => {
+            winops::do_merge_windows(st, dirty);
+        }
+        Action::MoveTabNextWindow => {
+            winops::do_move_tab_next_window(st, sess, ui, dirty);
         }
         Action::SplitHorizontal => {
             do_split(st, sess, tab, None, Axis::Horizontal, dirty);

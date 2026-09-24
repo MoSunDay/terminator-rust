@@ -327,8 +327,9 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     }
     insp.on_hover_text("Settings (theme, font, glass, splits, hosts)");
 
-    // Minimize: centered dash glyph. The command goes to the CURRENT
-    // viewport (send_viewport_cmd resolves inside the immediate pass).
+    // Minimize: a dash ON the cell's vertical centre (a lowered dash
+    // reads as '_', not '-'). The command goes to the CURRENT viewport
+    // (send_viewport_cmd resolves inside the immediate pass).
     let min_col = |hovered: bool| {
         to_c32(if hovered {
             pal.foreground
@@ -348,10 +349,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     let c = min_rect.center();
     let line = Stroke::new(1.5 * m.s, min_col(min.hovered()));
     painter.line_segment(
-        [
-            pos2(c.x - 4.5 * m.s, c.y + 4.0 * m.s),
-            pos2(c.x + 4.5 * m.s, c.y + 4.0 * m.s),
-        ],
+        [pos2(c.x - 4.5 * m.s, c.y), pos2(c.x + 4.5 * m.s, c.y)],
         line,
     );
     if min.clicked() {

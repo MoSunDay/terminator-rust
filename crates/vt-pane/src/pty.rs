@@ -2,7 +2,7 @@
 
 use std::ffi::CString;
 use std::io;
-use std::os::fd::RawFd;
+use std::os::fd::{FromRawFd, RawFd};
 
 use anyhow::{bail, Context, Result};
 
@@ -142,6 +142,20 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
             })
         }
     }
+}
+
+/// Duplicate an fd (`F_DUPFD_CLOEXEC`, portable across the supported
+/// unices). The duplicate is independent of any later close of the
+/// original descriptor.
+pub fn dup_fd(fd: RawFd) -> io::Result<std::os::fd::OwnedFd> {
+    // SAFETY: plain C fcntl with a dummy third arg (ignored for
+    // F_DUPFD_CLOEXEC-style requests).
+    let n = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if n < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fcntl returned this fresh, previously-unowned descriptor.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(n) })
 }
 
 /// Write a slice to the pty master, retrying on partial writes.

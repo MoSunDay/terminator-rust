@@ -75,6 +75,42 @@ pub fn terminate(sess: &mut SessionMap, id: PaneId) {
     sess.reconnect_at.remove(&id);
 }
 
+/// How long `detach` waits for the reader thread to close the master fd.
+pub const DETACH_WAIT: Duration = Duration::from_millis(400);
+
+/// Drop a session WITHOUT signalling its child. The one removal path for
+/// panes whose PTY master has been handed to another instance (migration):
+/// the child must keep running there. The reader thread is stopped and
+/// given a moment to close the master fd, which is why callers must have
+/// taken their own `dup` of it first (see `vtask::dup_master`).
+pub fn detach(sess: &mut SessionMap, id: PaneId) {
+    if let Some(s) = sess.map.remove(&id) {
+        vtask::stop_reader(&s);
+        let deadline = Instant::now() + DETACH_WAIT;
+        while !vtask::reader_done(&s) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        drop(s);
+    }
+    sess.retry_at.remove(&id);
+    sess.exited_seen.remove(&id);
+    sess.reconnect_at.remove(&id);
+}
+
+/// Options for ADOPTING an existing session rather than spawning one:
+/// `argv`/`env` are unused past the fork, so only the terminal-facing
+/// policy (size, scrollback, color-scheme answer) is carried over.
+pub fn adopt_opts(cols: u16, rows: u16, dark: bool) -> SessionOpts {
+    SessionOpts {
+        cols,
+        rows,
+        argv: Vec::new(),
+        env: Vec::new(),
+        scrollback_lines: 10_000,
+        dark,
+    }
+}
+
 /// Insert a freshly spawned session and clear the respawn bookkeeping
 /// markers that must not outlive a spawn (backoff, exit timestamp,
 /// pending reconnect plan), stamping the spawn time for the reconnect

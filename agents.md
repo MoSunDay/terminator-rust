@@ -1,4 +1,4 @@
-Commit: a57e1b153dbd549e6ce240ffa798f0d17c2edc76
+Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
 
 # agents.md - repo memory for terminator-rust
 
@@ -45,8 +45,9 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   third_party/ vendored ghostty artifacts are PER-OS: re-run
   scripts/fetch-vendor.sh on each platform, never copy between them.
 - platform notes: ptsname_r is glibc-only -> pty.rs pty_slave_name uses
-  TIOCPTYGNAME (0x80807463, custom const; libc crate does not export it)
-  on macOS; __errno_location is glibc-only -> task.rs reads
+  TIOCPTYGNAME (0x40807453, legacy 0x40807463 fallback, ptsname(3) last
+  resort; custom consts - libc does not export them) on macOS;
+  __errno_location is glibc-only -> task.rs reads
   io::Error::last_os_error() instead; child locale defaults en_US.UTF-8
   on macOS (no C.UTF-8 there); x11-dl is linux-gated in app/Cargo.toml
   (pointer_poll falls back to event-driven edge resize on macOS);
@@ -86,14 +87,23 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   spawns a real second X window, cross-window typing isolation via ctl
   capture, last-pane close removes the window, re-spawn, quit-from-
   secondary kills the app, W6 root last-pane close with a sibling alive
-  respawns a fresh root tab instead of quitting). CI runs it in
-  .github/workflows/ci.yml (zig via PyPI wheel + fetch-vendor.sh for the
-  ghostty pin; fmt/clippy are hard gates since that workflow landed);
-  e2e-dragdrop.sh runs there too (needs scrot + python3-pil).
+  respawns a fresh root tab, W7/W8/W9 Ctrl+Shift+J move + single-window
+  split + Ctrl+Shift+M merge, W10 = chip drag onto the OTHER window's
+  strip: source window dies, pane keeps its pid and lands ACTIVE in the
+  root). W10's pixel gates are THEME-AGNOSTIC (DEFAULT = kanagawa-wave):
+  chip_edges = FIRST wide non-bare-chrome run (chips left-aligned, the
+  trailing chrome merges into a LONGER run), strip_diff = strip band vs a
+  baseline scrot (never e2e-lib's dracula fill scan). CI runs it (zig via
+  PyPI + fetch-vendor.sh; fmt/clippy hard gates) + e2e-dragdrop.sh
+  (scrot + python3-pil). Rare viewport-churn flake: egui-wgpu
+  staging-buffer / Dropped-frame validation errors (~1/30, upstream).
 - window-chrome e2e: `scripts/bin/e2e-window-controls.sh` (Xvfb + OPENBOX -
   bare Xvfb has no WM so Maximized/Minimized/BeginResize/StartDrag are all
   EWMH no-ops; R1 edge-drag resize, R2/R3 maximize button + chrome
-  double-click toggle, R4 minimize -> iconic + windowactivate restore,
+  double-click toggle, R4 = minimize glyph scrot/PIL probe (dash ink
+  centroid ON the row centre, theme-agnostic lum - bg weight: a lowered
+  dash reads '_'; ui/tabs_widgets.rs edge_cells draws the dash at
+  min_rect.center(), not y+4) THEN iconic + windowactivate restore,
   S1-S3 tab overflow: chip strip scrolls by wheel while '+"/edge cells
   stay pinned at CHROME_RESERVE=173; R6 close X double-confirm (single
   click arms, outside click cancels, second click quits); CI job
@@ -101,8 +111,9 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - drag-and-drop e2e: `scripts/bin/e2e-dragdrop.sh` (Xvfb + xdotool +
   scrot/PIL + state.json tree asserts; D1/D2 = Ctrl+drag pane header to
   sibling edge/center with mid-drag overlay pixel checks, D3 = chip
-  reorder persisted, D6/D7/D8 = cross-tab pane migration via chip dwell
-  (edge/Center-swap/source-tab-close), D4 = alive + quit).
+  reorder persisted, D5 = plain header drag, D6/D7/D8 = cross-tab pane
+  migration via chip dwell (edge/Center-swap/source-tab-close), D4 = alive
+  + quit).
 - empty-window restore e2e: `scripts/bin/e2e-empty-restore.sh`
   (Xvfb + xdotool; E1 = `windows:[{tabs:[]}]` restores a live tab,
   E2 = exit auto-closes + app quits persisting empty tabs, E3 = the
@@ -120,7 +131,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   ~/.opencoder/config.json needed - onboarding form eats ^C; focus navigation
   via Ctrl+Shift+Right, NEVER clicks into mouse-tracking panes; K4 =
   Ctrl+Shift+W on a NON-last pane keeps the app alive (quit only on the
-  last close), K6 = a click closes a DEAD pane; opencode FIRST RUN seeds
+  last close); opencode FIRST RUN seeds
   ~/.opencoder (skills installer + state dirs) - concurrent first-runs
   RACE it and instances exit(1) silently after "first frame" (repro: new
   HOME x3 pty = 2 dead, warm HOME = 3/3 alive), so the script WARMS UP the
@@ -147,7 +158,13 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
   repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
   XDG autostart for the desktop user, pid-kill restart, ctl smoke).
-  Target 192.168.31.196: user m, DISPLAY=:0, XDG_RUNTIME_DIR=/run/user/1000.
+  Restart candidates come from BOTH `pgrep -f <install path>` AND
+  `pgrep -x terminator-rust`: a panel/desktop-launched instance has a
+  BARE argv[0] (e.g. ~/.local/bin/terminator-rust, a symlink into /opt),
+  so the -f pattern alone missed it and a deploy left the day-old
+  instance running beside the fresh one; /proc/<pid>/exe under
+  /opt/terminator-rust is the only kill gate. Target 192.168.31.196:
+  user m, DISPLAY=:0, XDG_RUNTIME_DIR=/run/user/1000.
 - releases: push an annotated `v*` tag -> .github/workflows/release.yml
   builds linux-x86_64 + macos-aarch64 release tarballs via
   scripts/bin/pack-release.sh (deterministic GNU-tar archive + .sha256
@@ -557,16 +574,26 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   only target ring + preview). zone_for dx/dy are relative to the PANE
   rect, not the window - a drop at 15% of the area over a HALF-width
   pane is rel dx 0.3 = still Center (D8 bit this; needs <=12.5%).
-  e2e-dragdrop.sh covers the gestures (D1/D2 ctrl,
-  D5 bare-drag, D6 cross-tab edge + dwell, D7 cross-tab Center swap,
-  D8 source-tab close) incl. mid-drag
-  overlay pixels (D1 fill mix(bg,accent,0.22)) and state.json tree
-  asserts; chips need >6px movement (egui click/drag disambiguation) so
+  e2e-dragdrop.sh covers the gestures incl. mid-drag overlay pixels
+  (D1 fill mix(bg,accent,0.22)) and state.json tree asserts (its own
+  bullet above lists them); chips need >6px movement (egui click/drag disambiguation) so
   the e2e drags in steps, AND the e2e sleeps ~0.3s between mousedown and
   the first move: egui hit-tests per frame at pointer.latest_pos(), so a
   press coalesced with the first move latches the drag on the WRONG chip
   (or bare chrome -> StartDrag) - that race flaked D3 ~1/9 runs before
   the settle was added.
+
+- TAB MOBILITY (2026-09-24, features/changelog/2026-09-24/
+  cross-window-tab-move-merge-and-migration.md): Ctrl+Shift+M merges every
+  window into window 0, Ctrl+Shift+J moves the active tab to the NEXT
+  window, a chip drag may drop on ANY window's strip (state/screens.rs
+  WinScreens/XTabDrag, ui/xdrag.rs, actions/winops.rs). A window dies via
+  st.windows.remove + retarget_after_remove, NEVER windows::remove_window
+  (it TERMINATES panes). `ctl migrate <pane> --to <sock>` hands a whole tab
+  to ANOTHER PROCESS over SCM_RIGHTS (ipc/handle_migrate/): dup_master
+  EVERY leaf BEFORE the first stop_reader (the reader loop is the only
+  master-fd closer); never signal the child on failure
+  (session_map::detach + re-adopt the dup).
 
 - font stack: ui/fonts.rs installs TWO embedded OFL fonts. PRIMARY
   assets/fonts/MapleMonoNF-CN-subset.ttf (7.4MB, 18780 glyphs, from maple-font
@@ -661,13 +688,12 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   registered BEFORE the chips/buttons (topmost widget wins the click),
   StartDrag on primary press. Settings lives in the pane context menu
   (pane header keeps only the X close button).
-- dead-pane corpses are gone: an exited session's pane auto-closes via
-  actions::close_exited (EXIT_GRACE 250ms after the exit was SEEN) reusing
-  do_close_pane semantics (root+only window quits, secondary removes
-  itself, root-with-sibling respawns a tab). exit 42 is exempt
-  (auto_degrade owns it); spawn-backoff panes (no session yet) are never
-  corpses. The old e2e "click closes dead pane" is UNREACHABLE now
-  (oc-exit K6 deleted, K2/K3 assert the auto-close instead).
+- dead-pane corpses are gone (oc-exit K2/K3 assert the auto-close): an
+  exited session's pane auto-closes via actions::close_exited (EXIT_GRACE
+  250ms after the exit was SEEN) reusing do_close_pane semantics (root+only
+  window quits, secondary removes itself, root-with-sibling respawns a
+  tab). exit 42 is exempt (auto_degrade owns it); spawn-backoff panes (no
+  session yet) are never corpses.
 
 - empty-window restore: state.json `windows:[{tabs:[]}]` (what the quit
   path writes when the last shell exits) must restore as an EMPTY tree
@@ -752,36 +778,6 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   full image instead.
 
 ## Verified end-to-end (final state)
-All suites green (ui-style, mouse-key, windows W1-W6, ipc-oc, cjk,
-oc-exit, remote); Xvfb scripts export TERMINATOR_OPAQUE=1; live-verified
-on deploy target 192.168.31.196 (2 X windows, per-window typing
-isolation, window close keeps the app, opacity 1.0 = mocha bg not
-black, ctl list/capture; remote px differ only via wallpaper blend).
-- rendering: catppuccin + ANSI 256 bg exact px, CJK cmap (Han/kana/
-  hangul) + real Han ink px, always-on chrome row (one tab keeps the
-  bar; ui-style I), pane-title centering (ui-style G), no window-title
-  row (H)
-- windows/lifecycle: Ctrl+Shift+N second OS window, last-pane close
-  removes the window, root last-pane close with sibling alive respawns a
-  tab, Ctrl+Shift+W on non-last pane keeps app alive (K4), dead-pane
-  click closes only it (K6), Ctrl+Shift+Q quits from any window, WM
-  close honored; borderless chrome-drag window move = live-desktop check
-  only (StartDrag needs an EWMH WM - bare Xvfb probes stay 0,0)
-- input: key echo, ^C echo through the egui Copy-fold gate, Ctrl+Shift+E
-  split, SGR press/release/motion + wheel byte-exact (less wheel =
-  arrows x3), cross-pane drag RELEASE to the press-owner pane, drag-
-  select + Ctrl+Shift+C == xclip readback, Shift+drag escape hatch,
-  Shift+PageUp/End scrollback paging + snap-back-on-typing, Ctrl+C
-  interrupts a foreground job (pty signal reset verified)
-- opencode panes: real opencoder Ctrl+D/Ctrl+C exits the idle prompt
-  (status 0), Ctrl+Shift+W closes a live TUI pane
-- control channel: ctl list/capture/send over the live socket (PaneInfo
-  `window` u64 serde-default 0, WIN column after ID - column-count
-  parsers must adapt), TERMINATOR_SOCK in pane env, oc link via /proc fd
-  discovery, submit -> pending -> consume -> receipt by seq, honest
-  --wait, SIGTERM-stale socket reclaim (perms 600 on first bind AND
-  after reclaim)
-- remote zellij: bootstrap create+attach, reconnect, exit-42 degrade;
-  gate = loading cleared + typed marker round-trip + session listed
-  ("ZELLIJ" never renders - chrome-free config)
-- persistence: state.json save/restore across restart
+See [agents/verified-end-to-end.md](agents/verified-end-to-end.md) -
+suite status + the user-visible checks proven live.
+

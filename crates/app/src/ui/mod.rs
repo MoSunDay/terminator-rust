@@ -7,6 +7,7 @@ pub mod pane_header;
 pub mod style;
 pub mod tabs;
 pub mod tabs_widgets;
+pub mod xdrag;
 
 /// Minimum pointer travel (points) from the press origin before a
 /// bare-chrome / lone-pane-header press becomes a WM window-move gesture.

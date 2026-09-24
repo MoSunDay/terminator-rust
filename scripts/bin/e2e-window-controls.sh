@@ -12,8 +12,10 @@
 #       second press restores the pre-maximize size.
 #   R3: double-clicking BARE chrome (between the chips and the fixed
 #       right-hand buttons) toggles maximize / restore the same way.
-#   R4: the minimize button iconifies the window: no longer
-#       --onlyvisible while the app stays alive; windowactivate restores.
+#   R4: the minimize glyph is a dash CENTRED on its cell (pixel probe:
+#       a dash sitting low reads as '_'), and the button iconifies the
+#       window: no longer --onlyvisible while the app stays alive;
+#       windowactivate restores.
 #   R5: Ctrl+Shift+Q quits the app cleanly.
 #   R6: the chrome close X needs a SECOND confirming click: the first
 #       click only arms (app + window stay alive), a click anywhere
@@ -73,6 +75,44 @@ near_target() {
     is_not_maximized || return 1
     local d=$((WIDTH - W_TARGET))
     [ "$d" -le 10 ] && [ "$((0 - d))" -le 10 ]
+}
+
+# min_glyph_check <scrot.png>: the MINIMIZE cell must hold a horizontal
+# dash whose ink centroid sits on the chrome row's centre (the glyph used
+# to be drawn 4px low, which reads as '_'). Theme-agnostic: the band's
+# modal luminance is the background, ink weight = lum - bg - 25 (a hover
+# plate or a hairline stays below the floor), so no palette constants.
+min_glyph_check() {
+    E2E_MCAP="$1" E2E_MCX=$((X + WIDTH - 53)) E2E_MCY=$((Y + CHROME_Y)) \
+    python3 - <<'PY'
+import os, sys
+from collections import Counter
+from PIL import Image
+
+img = Image.open(os.environ["E2E_MCAP"]).convert("RGB")
+cx, cy = int(os.environ["E2E_MCX"]), int(os.environ["E2E_MCY"])
+
+def lum(px):
+    return 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2]
+
+band = [(x, y) for y in range(cy - 12, cy + 13)
+        for x in range(cx - 8, cx + 9)]
+vals = {p: lum(img.getpixel(p)) for p in band}
+bg = Counter(round(v) for v in vals.values()).most_common(1)[0][0]
+ink = {p: v - bg - 25.0 for p, v in vals.items() if v - bg - 25.0 > 0.0}
+tot = sum(ink.values())
+if tot <= 0:
+    print(f"no minimize ink around {cx},{cy} (band bg lum {bg})",
+          file=sys.stderr)
+    sys.exit(1)
+centroid = sum(w * p[1] for p, w in ink.items()) / tot
+xs = [p[0] for p in ink]
+width = max(xs) - min(xs) + 1
+ok = abs(centroid - cy) <= 1.0 and width >= 6
+print(f"min glyph: ink centroid y {centroid:.1f} (cell centre {cy}), "
+      f"width {width}px [{'OK' if ok else 'FAIL'}]")
+sys.exit(0 if ok else 1)
+PY
 }
 
 # launch_app <log>: start the app on the running Xvfb, wait for the
@@ -176,13 +216,18 @@ sleep 0.5
 wait_geo "restored via double-click" is_not_maximized
 echo "R3: double-click toggle ok (${WIDTH}x${HEIGHT})"
 
-step "R4: minimize button iconifies; windowactivate restores"
+step "R4: minimize glyph is a centred dash, then the button iconifies"
+park $((X+WIDTH*60/100)) $((Y+CHROME_Y))    # bare chrome: no hover plate
+sleep 0.5                                   # settle the parked frame
+scrot -o "$ROOT/min-glyph.png"
+min_glyph_check "$ROOT/min-glyph.png" \
+    || fail "minimize glyph is not a centred dash (see $ROOT/min-glyph.png)"
 click_at $((X+WIDTH-53)) $((Y+CHROME_Y))    # minimize
 sleep 0.5
 ids=$(xdotool search --onlyvisible --name '^terminator-rust$' 2>/dev/null || true)
 [ -z "$ids" ] || fail "window still visible after minimize: $ids"
 kill -0 "$APP_PID" 2>/dev/null || fail "app died on minimize"
-echo "R4: minimized (iconic, app alive)"
+echo "R4: glyph centred, minimized (iconic, app alive)"
 activate
 vis=""
 for _ in $(seq 1 40); do

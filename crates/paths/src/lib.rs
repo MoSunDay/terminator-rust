@@ -6,7 +6,7 @@
 //! copies a legacy file forward (best-effort, an existing new file wins)
 //! so upgrades keep their state.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 /// Config root: `$HOME/.terminator-rust`, or a relative
@@ -16,6 +16,29 @@ pub fn config_dir() -> PathBuf {
     match std::env::var_os("HOME") {
         Some(h) if !h.is_empty() => PathBuf::from(h).join(".terminator-rust"),
         _ => PathBuf::from(".terminator-rust"),
+    }
+}
+
+/// Runtime dir: `$XDG_RUNTIME_DIR/terminator-rust` (per-session tmpfs),
+/// falling back to [`config_dir`] when XDG_RUNTIME_DIR is unset/empty
+/// (same fallback shape the control socket always used). Created
+/// best-effort (`log::warn` on failure); the path is returned regardless
+/// so callers can treat a bind failure as the real error.
+pub fn runtime_dir() -> PathBuf {
+    let dir = runtime_dir_from(std::env::var_os("XDG_RUNTIME_DIR"));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log::warn!("runtime dir: create {}: {e}", dir.display());
+    }
+    dir
+}
+
+/// Pure core of [`runtime_dir`]: `xdg/terminator-rust` when `xdg` is set
+/// and non-empty, else the config root. Split out so tests (and callers
+/// that already hold the env value) stay env-free.
+pub fn runtime_dir_from(xdg: Option<OsString>) -> PathBuf {
+    match xdg {
+        Some(v) if !v.is_empty() => PathBuf::from(v).join("terminator-rust"),
+        _ => config_dir(),
     }
 }
 
@@ -168,6 +191,27 @@ mod tests {
         assert!(
             dir == Path::new(".terminator-rust") || dir.ends_with(".terminator-rust"),
             "{dir:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_dir_from_prefers_xdg_then_config_root() {
+        assert_eq!(
+            runtime_dir_from(Some(OsString::from("/run/user/1000"))),
+            PathBuf::from("/run/user/1000/terminator-rust")
+        );
+        assert_eq!(runtime_dir_from(None), config_dir());
+        assert_eq!(runtime_dir_from(Some(OsString::new())), config_dir());
+    }
+
+    #[test]
+    fn runtime_dir_lives_under_terminator_rust() {
+        // The env-reading fn itself: both branches end in the crate dir
+        // (`$XDG_RUNTIME_DIR/terminator-rust` or `~/.terminator-rust`).
+        assert!(
+            runtime_dir().ends_with("terminator-rust"),
+            "{:?}",
+            runtime_dir()
         );
     }
 }

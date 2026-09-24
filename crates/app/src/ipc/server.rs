@@ -6,8 +6,14 @@
 //! context wakeup is needed (a detached `egui::Context` cannot wake the
 //! real UI anyway): render/screen.rs repaints unconditionally every 50 ms,
 //! so `drain` runs at >=20 Hz and the 5 s reply timeout is ample.
+//!
+//! Migration requests carry more than a line: the sender attaches one
+//! SCM_RIGHTS fd per pane leaf to the header message and follows it with
+//! length-prefixed snapshot blocks; [`read_request`] collects all three
+//! parts before the [`Command`] crosses to the UI thread.
 
-use std::io::{BufRead, BufReader, Read, Take, Write};
+use std::io::{Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -19,17 +25,28 @@ use std::time::Duration;
 
 use log::{info, warn};
 
+use super::fd;
+
 /// Longest request line accepted (1 MiB): effectively a write-payload cap.
 const MAX_LINE: usize = 1024 * 1024;
+/// First-chunk read size for the fd-carrying message.
+const RECV_CHUNK: usize = 64 * 1024;
+/// Per-request read timeout (header line + migration payload): a 32 MiB
+/// snapshot still streams through a local socket well inside it.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the listener waits for the UI thread to answer a request.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Accept-poll cadence; the stop flag is checked at the same rate.
 const POLL: Duration = Duration::from_millis(50);
 
-/// One client request plus the channel its answer goes back on.
+/// One client request plus the channel its answer goes back on. Migration
+/// attachments ride along: `fds` (one adopted PTY per depth-first leaf)
+/// and `payload` (the per-leaf snapshot blocks); both empty otherwise.
 pub(crate) struct Command {
     pub req: ipc_proto::Request,
     pub reply: Sender<ipc_proto::Response>,
+    pub fds: Vec<OwnedFd>,
+    pub payload: Vec<u8>,
 }
 
 /// Running control socket: the UI-side inbox plus the listener thread.
@@ -40,17 +57,17 @@ pub struct Ipc {
     thread: Option<JoinHandle<()>>,
 }
 
-/// Socket path: `$XDG_RUNTIME_DIR/terminator-rust/ipc.sock`, falling back
-/// to `~/.terminator-rust/ipc.sock` (a relative `.terminator-rust` when
-/// HOME is unset). The directory is created best-effort (ignored on
-/// failure). No legacy migration: the socket is per-instance state.
+/// Socket path policy: `$TERMINATOR_SOCK` when set (bind exactly there),
+/// else `ipc.sock` under the runtime dir (`$XDG_RUNTIME_DIR/terminator-rust`,
+/// falling back to the config root; created best-effort by
+/// [`paths::runtime_dir`]).
 pub fn socket_path() -> PathBuf {
-    let dir = match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(v) if !v.is_empty() => PathBuf::from(v).join("terminator-rust"),
-        _ => paths::config_dir(),
-    };
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("ipc.sock")
+    if let Some(p) = std::env::var_os(ipc_proto::ENV_SOCKET) {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    paths::runtime_dir().join("ipc.sock")
 }
 
 /// Bind the socket locked to the owner (0600): capture/send over it is
@@ -69,30 +86,61 @@ fn bind_private(path: &Path) -> std::io::Result<UnixListener> {
     }
 }
 
-/// Bind the control socket and start the listener thread. Best-effort:
-/// returns `None` (and logs) when another instance already owns the socket
-/// or anything else fails; the app runs fine without IPC.
-pub fn start() -> Option<Ipc> {
-    let path = socket_path();
-    // Probe: a live listener answers, a dead one leaves a stale file.
-    if UnixStream::connect(&path).is_ok() {
-        warn!("ipc: socket in use, control disabled");
+/// Probe-and-bind at one path: a connect that gets answered means a live
+/// owner (this path is taken), a leftover file is a stale socket from a
+/// SIGTERM'd instance and is reclaimed. The listener is returned in
+/// non-blocking mode for the accept-poll loop.
+fn bind_at(path: &Path) -> Option<UnixListener> {
+    if UnixStream::connect(path).is_ok() {
+        warn!("ipc: {} in use by a live instance", path.display());
         return None;
     }
     if path.exists() {
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path);
     }
-    let listener = match bind_private(&path) {
-        Ok(l) => l,
-        Err(e) => {
-            warn!("ipc: bind {}: {e}, control disabled", path.display());
-            return None;
-        }
-    };
+    let listener = bind_private(path)
+        .map_err(|e| {
+            warn!("ipc: bind {}: {e}", path.display());
+        })
+        .ok()?;
     if let Err(e) = listener.set_nonblocking(true) {
-        warn!("ipc: nonblocking: {e}, control disabled");
+        warn!("ipc: nonblocking: {e}");
         return None;
     }
+    Some(listener)
+}
+
+/// Bind the control socket and start the listener thread. Candidate
+/// paths, in order: an explicit `$TERMINATOR_SOCK` (bind exactly there),
+/// the shared `ipc.sock` under the runtime dir, then a per-instance
+/// `ipc-<pid>.sock` — pane children inherit `TERMINATOR_SOCK`, so a
+/// nested launch must not lose IPC just because the parent owns the
+/// shared name. Best-effort throughout: `None` (and logs) when nothing
+/// binds; the app runs fine without IPC.
+pub fn start() -> Option<Ipc> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = std::env::var_os(ipc_proto::ENV_SOCKET) {
+        if !p.is_empty() {
+            candidates.push(PathBuf::from(p));
+        }
+    }
+    candidates.push(socket_path());
+    candidates.push(paths::runtime_dir().join(format!("ipc-{}.sock", std::process::id())));
+    candidates.dedup();
+    for path in candidates {
+        if let Some(ipc) = start_at(path) {
+            return Some(ipc);
+        }
+    }
+    warn!("ipc: no bindable control socket, control disabled");
+    None
+}
+
+/// Core of [`start`] at one fixed path; split out so tests can pick their
+/// own socket location. `None` when the path is owned by a live instance
+/// or anything else fails on the way to a running listener.
+pub(crate) fn start_at(path: PathBuf) -> Option<Ipc> {
+    let listener = bind_at(&path)?;
     let (tx, rx) = mpsc::channel::<Command>();
     let stop = Arc::new(AtomicBool::new(false));
     // Later-spawned local panes inherit the env (pty.rs passes the parent
@@ -133,16 +181,16 @@ fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>) {
     }
 }
 
-/// Read one capped JSON request line, hand it to the UI thread and write
-/// the response back as one JSON line.
+/// Read one request exchange, hand it to the UI thread and write the
+/// response back as one JSON line.
 fn serve(stream: UnixStream, tx: &Sender<Command>) {
     // Accepted sockets may inherit non-blocking mode; blocking + timeouts
     // is what a request/response exchange wants.
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
     let resp = match read_request(&stream) {
-        Some(req) => forward(req, tx),
+        Some((req, fds, payload)) => forward(req, fds, payload, tx),
         None => ipc_proto::Response::err("bad request"),
     };
     if let Ok(mut line) = serde_json::to_string(&resp) {
@@ -151,25 +199,108 @@ fn serve(stream: UnixStream, tx: &Sender<Command>) {
     }
 }
 
-/// One trimmed request line, parsed; `None` on read error / oversize /
-/// empty / malformed JSON.
-fn read_request(stream: &UnixStream) -> Option<ipc_proto::Request> {
-    let mut line = String::new();
-    // +1 makes an exactly-at-cap line legal and an over-cap one fail below.
-    let capped: Take<&UnixStream> = stream.take((MAX_LINE + 1) as u64);
-    let mut reader = BufReader::new(capped);
-    reader.read_line(&mut line).ok()?;
-    if line.len() > MAX_LINE {
-        return None;
+/// One full request read: the fd-carrying first chunk (SCM_RIGHTS rides
+/// the first message only), the newline-terminated JSON header, and — for
+/// `tab_offer` — `leaf_count(tab.root)` length-prefixed snapshot blocks
+/// following the header line (leftover first-chunk bytes count first).
+///
+/// `None` on read error / timeout / oversize / truncation / bad JSON; any
+/// fds already received are closed by the drop on those paths, and stray
+/// fds on a non-migration request are dropped with a warning.
+fn read_request(stream: &UnixStream) -> Option<(ipc_proto::Request, Vec<OwnedFd>, Vec<u8>)> {
+    let mut first = [0u8; RECV_CHUNK];
+    let (n, fds) =
+        fd::recv_with_fds(stream, &mut first, ipc_proto::migrate::MAX_MIGRATE_PANES).ok()?;
+    let mut data = first[..n].to_vec();
+    let mut pos = 0usize;
+    // Header line: scan for '\n', plain-reading more as needed. Ancillary
+    // data only ever arrives with the first message.
+    let nl = loop {
+        if let Some(i) = data[pos..].iter().position(|&b| b == b'\n') {
+            break pos + i;
+        }
+        if data.len() - pos > MAX_LINE {
+            return None;
+        }
+        let want = data.len() - pos + 1;
+        let mut scan = pos;
+        if !fill_exact(stream, &mut data, &mut scan, want) {
+            return None;
+        }
+    };
+    let line = std::str::from_utf8(&data[pos..nl]).ok()?;
+    pos = nl + 1;
+    let req: ipc_proto::Request = serde_json::from_str(line.trim_end()).ok()?;
+    let leaves = match &req {
+        ipc_proto::Request::TabOffer { tab } => ipc_proto::migrate::leaf_count(&tab.root),
+        _ => {
+            if !fds.is_empty() {
+                warn!(
+                    "ipc: {} fds attached to a non-migration request, dropped",
+                    fds.len()
+                );
+            }
+            return Some((req, Vec::new(), Vec::new()));
+        }
+    };
+    // Snapshot blocks in wire form (4-byte LE length + bytes per leaf),
+    // forwarded verbatim for `migrate::decode_payload`; capped overall so
+    // a bogus length cannot drive a multi-GiB buffer.
+    let payload_start = pos;
+    for _ in 0..leaves {
+        if !fill_exact(stream, &mut data, &mut pos, 4) {
+            return None;
+        }
+        let len =
+            u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+        if pos - payload_start + len > ipc_proto::migrate::MAX_MIGRATE_PAYLOAD {
+            return None;
+        }
+        if !fill_exact(stream, &mut data, &mut pos, len) {
+            return None;
+        }
+        pos += len;
     }
-    serde_json::from_str(line.trim_end()).ok()
+    Some((req, fds, data[payload_start..pos].to_vec()))
+}
+
+/// Plain-read continuation (no fds past the first chunk) until at least
+/// `want` bytes are buffered past `pos`; `false` on EOF, error or timeout.
+/// `EINTR` is retried; chunked reads keep memory bounded for big payloads.
+fn fill_exact(stream: &UnixStream, data: &mut Vec<u8>, pos: &mut usize, want: usize) -> bool {
+    // `Read` is implemented for `&UnixStream`, so a shared reborrow reads.
+    let mut rd = stream;
+    while data.len() - *pos < want {
+        let mut chunk = [0u8; 8192];
+        match rd.read(&mut chunk) {
+            Ok(0) => return false,
+            Ok(k) => data.extend_from_slice(&chunk[..k]),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// Send the request to the UI thread and wait for the answer (the UI
 /// loop drains continuously; see the module doc).
-fn forward(req: ipc_proto::Request, tx: &Sender<Command>) -> ipc_proto::Response {
+fn forward(
+    req: ipc_proto::Request,
+    fds: Vec<OwnedFd>,
+    payload: Vec<u8>,
+    tx: &Sender<Command>,
+) -> ipc_proto::Response {
     let (reply, rx) = mpsc::channel();
-    if tx.send(Command { req, reply }).is_err() {
+    if tx
+        .send(Command {
+            req,
+            reply,
+            fds,
+            payload,
+        })
+        .is_err()
+    {
         return ipc_proto::Response::err("app shutting down");
     }
     match rx.recv_timeout(REPLY_TIMEOUT) {
@@ -181,7 +312,7 @@ fn forward(req: ipc_proto::Request, tx: &Sender<Command>) -> ipc_proto::Response
 /// Service pending requests on the UI thread; called once per frame.
 pub fn drain(ipc: &mut Ipc, data: &mut crate::state::Data) {
     while let Ok(cmd) = ipc.rx.try_recv() {
-        let resp = crate::ipc::handle::execute(cmd.req, data);
+        let resp = crate::ipc::handle::execute(cmd.req, cmd.fds, cmd.payload, data);
         let _ = cmd.reply.send(resp);
     }
 }
@@ -194,5 +325,154 @@ impl Drop for Ipc {
             let _ = t.join();
         }
         let _ = std::fs::remove_file(&self.sock);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::BufRead;
+    use std::os::fd::AsRawFd;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// Unique socket path per test (short: `sun_path` caps at ~104 bytes).
+    fn tmpsock(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "trn-ipc-{}-{}-{tag}.sock",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ))
+    }
+
+    fn pane_leaf() -> ipc_proto::migrate::MigrateNode {
+        ipc_proto::migrate::MigrateNode::Pane {
+            pane: ipc_proto::migrate::MigratePane {
+                manual_title: Some("src".into()),
+                kind: "local".into(),
+                degraded: false,
+                pid: 4242,
+                cols: 80,
+                rows: 24,
+            },
+        }
+    }
+
+    /// Two distinct open fds (dups of /dev/null).
+    fn two_fds() -> Vec<OwnedFd> {
+        let f = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
+        vec![f.try_clone().unwrap(), f]
+    }
+
+    /// Serialize `req` as the header line, no payload.
+    fn line(req: &ipc_proto::Request) -> Vec<u8> {
+        let mut bytes = serde_json::to_string(req).unwrap().into_bytes();
+        bytes.push(b'\n');
+        bytes
+    }
+
+    /// Take one forwarded command and answer it so `serve` unblocks
+    /// promptly (the real UI thread would `drain` it within 50 ms).
+    fn take(ipc: &Ipc) -> Command {
+        ipc.rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("request forwarded to the UI inbox")
+    }
+
+    #[test]
+    fn start_at_reclaims_stale_and_rejects_live_double_bind() {
+        let path = tmpsock("bind");
+        // Stale file from a SIGTERM'd instance: reclaimed on bind.
+        std::fs::write(&path, b"").unwrap();
+        let first = start_at(path.clone()).expect("stale socket reclaimed");
+        assert!(path.exists());
+        // A live owner answers the probe: a second bind must fail.
+        assert!(start_at(path.clone()).is_none(), "double bind refused");
+        // Dropping the first removes its socket file; a rebind works.
+        drop(first);
+        let second = start_at(path.clone()).expect("rebind after drop");
+        drop(second);
+        assert!(!path.exists(), "Drop removes the socket file");
+    }
+
+    #[test]
+    fn tab_offer_roundtrips_fds_and_payload() {
+        let path = tmpsock("offer");
+        let ipc = start_at(path.clone()).expect("start_at binds");
+        let tab = ipc_proto::migrate::MigrateTab {
+            title: "work".into(),
+            focused: None,
+            root: pane_leaf(),
+        };
+        let payload = ipc_proto::migrate::encode_payload(&[Some(vec![7u8, 8, 9])]);
+        let mut msg = line(&ipc_proto::Request::TabOffer { tab });
+        msg.extend_from_slice(&payload);
+        let stream = UnixStream::connect(&path).unwrap();
+        fd::send_with_fds(&stream, &msg, &two_fds()).unwrap();
+
+        let cmd = take(&ipc);
+        match cmd.req {
+            ipc_proto::Request::TabOffer { tab } => assert_eq!(tab.title, "work"),
+            other => panic!("expected tab_offer, got {other:?}"),
+        }
+        assert_eq!(cmd.fds.len(), 2, "both SCM_RIGHTS fds forwarded");
+        assert_eq!(cmd.payload, payload, "snapshot blocks forwarded verbatim");
+        // Distinct open descriptors reached the UI side of the channel.
+        assert_ne!(cmd.fds[0].as_raw_fd(), cmd.fds[1].as_raw_fd());
+
+        let _ = cmd.reply.send(ipc_proto::Response::Migrated { panes: 1 });
+        let mut reply = String::new();
+        let mut reader = std::io::BufReader::new(&stream);
+        reader.read_line(&mut reply).unwrap();
+        assert!(reply.contains("migrated"), "reply line: {reply}");
+    }
+
+    #[test]
+    fn plain_request_carries_no_fds() {
+        let path = tmpsock("plain");
+        let ipc = start_at(path.clone()).expect("start_at binds");
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream.write_all(b"{\"cmd\":\"list\"}\n").unwrap();
+
+        let cmd = take(&ipc);
+        assert!(matches!(cmd.req, ipc_proto::Request::List));
+        assert!(cmd.fds.is_empty());
+        assert!(cmd.payload.is_empty());
+        let _ = cmd.reply.send(ipc_proto::Response::List { panes: vec![] });
+        let mut reply = String::new();
+        let mut reader = std::io::BufReader::new(&stream);
+        reader.read_line(&mut reply).unwrap();
+        assert!(reply.contains("\"list\""), "reply line: {reply}");
+    }
+
+    #[test]
+    fn truncated_tab_offer_does_not_kill_the_listener() {
+        let path = tmpsock("trunc");
+        let ipc = start_at(path.clone()).expect("start_at binds");
+        let tab = ipc_proto::migrate::MigrateTab {
+            title: "t".into(),
+            focused: None,
+            root: ipc_proto::migrate::MigrateNode::Split {
+                axis: "h".into(),
+                ratio: 0.5,
+                first: Box::new(pane_leaf()),
+                second: Box::new(pane_leaf()),
+            },
+        };
+        // Header promises 2 leaves; only 1 snapshot block is sent, then
+        // the client vanishes: serve must error out without panicking.
+        let mut msg = line(&ipc_proto::Request::TabOffer { tab });
+        msg.extend_from_slice(&ipc_proto::migrate::encode_payload(&[Some(vec![1u8])]));
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream.write_all(&msg).unwrap();
+        drop(stream);
+
+        // The listener survives and serves the next client.
+        let mut next = UnixStream::connect(&path).unwrap();
+        next.write_all(b"{\"cmd\":\"list\"}\n").unwrap();
+        let cmd = take(&ipc);
+        assert!(matches!(cmd.req, ipc_proto::Request::List));
+        let _ = cmd.reply.send(ipc_proto::Response::err("test"));
     }
 }

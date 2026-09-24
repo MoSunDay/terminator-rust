@@ -27,6 +27,7 @@ ipc-proto = { workspace = true }
 theme = { workspace = true }
 remote = { workspace = true }
 libghostty-vt = { workspace = true }
+libc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2"
