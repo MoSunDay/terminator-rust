@@ -94,9 +94,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   bare Xvfb has no WM so Maximized/Minimized/BeginResize/StartDrag are all
   EWMH no-ops; R1 edge-drag resize, R2/R3 maximize button + chrome
   double-click toggle, R4 minimize -> iconic + windowactivate restore,
-  S1-S3 tab overflow: chip strip scrolls by wheel while '+"/min/max cells
-  stay pinned at CHROME_RESERVE=153; CI job e2e-window-controls apt adds
-  openbox)
+  S1-S3 tab overflow: chip strip scrolls by wheel while '+"/edge cells
+  stay pinned at CHROME_RESERVE=173; R6 close X double-confirm (single
+  click arms, outside click cancels, second click quits); CI job
+  e2e-window-controls apt adds openbox)
 - drag-and-drop e2e: `scripts/bin/e2e-dragdrop.sh` (Xvfb + xdotool +
   scrot/PIL + state.json tree asserts; D1/D2 = Ctrl+drag pane header to
   sibling edge/center with mid-drag overlay pixel checks, D3 = chip
@@ -426,9 +427,15 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   takes the scaled step. e2e-ui-style phase J (font_size 20 preset,
   relaunch) asserts hairline ~Y+55, header run >=28, chip ink >=8px.
 PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
-  buttons (fixed rects, rightmost; ViewportCommand::Minimized(true)/
-  Maximized(toggle) via ui.ctx().send_viewport_cmd - inside a viewport pass
-  that targets the CURRENT window, root pass = ROOT); double-click bare
+  + CLOSE buttons, rightmost = X (fixed rects; ViewportCommand::Minimized(true)
+  and tabs_widgets::send_toggle_enlarge - Maximized(toggle) everywhere EXCEPT
+  macOS where "maximize" means borderless FULLSCREEN (ViewportCommand::
+  Fullscreen, window_enlarged reads viewport().fullscreen there); inside a
+  viewport pass that targets the CURRENT window, root pass = ROOT); the close
+  X is DOUBLE-CONFIRM (2026-09-24): click 1 latches WindowUi.close_confirm
+  (egui time, CLOSE_CONFIRM_SECS=5, pure confirm_armed), click 2 sends ROOT
+  Close (same path as Ctrl+Shift+Q), any outside click or timeout disarms;
+  min glyph is a CENTERED dash; double-click bare
   chrome toggles maximize (chrome_drag is Sense::click_and_drag - egui
   click/double_click flags REQUIRE senses_click, pure-drag never fires
   them; a double-click's first press may StartDrag - harmless). Window
@@ -483,8 +490,8 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   so scrolled-out chips are unclickable for free). WindowUi.tab_scroll +
   tab_scroll_tab: wheel over the strip scrolls 48px/line (up=left),
   switching tabs auto-follows via ensure_visible once per switch (manual
-  scrolling wins between switches). CHROME_RESERVE=153 pins the trailing
-  '+/split' group + 4 edge cells right of the strip (trailing_buttons went
+  scrolling wins between switches). CHROME_RESERVE=173 pins the trailing
+  '+/split' group + 5 edge cells right of the strip (trailing_buttons went
   fixed-rect, ids chrome_newtab/chrome_splitv/chrome_splith).
 - clicking a tab chip to switch did NOT set *dirty (pre-existing): the
   switch lived only in memory, state.json kept the old active_tab - fixed
@@ -505,7 +512,7 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   a third time under the chip and the pane header); zoom/inspector cells
   FOLLOW the chips (tabs.rs GROUP_W/GROUP_PARK: group_left = last chip
   right + 8, vertically centered, PARKED left of the fixed edge cells on
-  overflow so '+' center stays W-137; CHROME_RESERVE=153 remains the
+  overflow so '+' center stays W-157; CHROME_RESERVE=173 remains the
   strip bound) and check H asserts title-text ABSENCE in the bare chrome
   zone; rename
   editors (pane + tab) cancel on outside click via `i.pointer.any_click()

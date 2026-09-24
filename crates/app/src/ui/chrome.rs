@@ -49,8 +49,8 @@ pub struct Metrics {
     pub group_pad: f32,
     /// Trailing (+/split) group width: 3 icon cells with gutters.
     pub group_w: f32,
-    /// Chrome width reserved right of the chips (base 153): one chip
-    /// gap + the trailing group + one gap + 4 edge cells.
+    /// Chrome width reserved right of the chips (base 173): one chip
+    /// gap + the trailing group + one gap + 5 edge cells.
     pub reserve: f32,
     /// Chip-strip wheel step per wheel line (base 48).
     pub wheel_step: f32,
@@ -98,8 +98,8 @@ pub fn metrics(font_size: f32) -> Metrics {
         dead_font: 13.0 * s,
     };
     // Chrome reserved right of the chips: one chip gap + the trailing
-    // group + one gap + 4 edge cells (153 at the default font size).
-    m.reserve = 5.0 * m.s + 4.0 * m.icon + 3.0 * m.icon_gap + m.group_pad + m.group_pad + m.group_w;
+    // group + one gap + 5 edge cells (173 at the default font size).
+    m.reserve = 5.0 * m.s + 5.0 * m.icon + 4.0 * m.icon_gap + m.group_pad + m.group_pad + m.group_w;
     m
 }
 
@@ -112,7 +112,7 @@ mod tests {
         let m = metrics(DEFAULT_FONT_SIZE);
         assert_eq!(m.s, 1.0);
         assert_eq!(m.chip_h, 28.0);
-        assert_eq!(m.reserve, 153.0);
+        assert_eq!(m.reserve, 173.0);
         assert_eq!(m.group_w, 56.0);
         assert_eq!(m.icon, 16.0);
         assert_eq!(m.header_h, 24.0);

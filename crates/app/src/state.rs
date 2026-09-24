@@ -249,6 +249,10 @@ pub struct WindowUi {
     /// Active tab when the scroll was last auto-followed (keep the active
     /// chip visible on tab switches, but never fight manual scrolling).
     pub tab_scroll_tab: usize,
+    /// Chrome close-X confirmation latch: egui time of the FIRST click
+    /// on the window close cell. A second click while still fresh quits
+    /// the whole app; an outside click or the timeout clears it.
+    pub close_confirm: Option<f64>,
 }
 
 /// Transient app-global UI state; never persisted.
@@ -287,6 +291,7 @@ pub fn window_ui() -> WindowUi {
         ime_last_pane: None,
         tab_scroll: 0.0,
         tab_scroll_tab: 0,
+        close_confirm: None,
     }
 }
 

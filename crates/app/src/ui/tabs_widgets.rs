@@ -3,8 +3,8 @@
 //! tabs.rs to keep both files inside the size budget.
 
 use egui::{
-    pos2, vec2, Align2, Color32, CornerRadius, FontId, Id, Painter, Pos2, Rect, Sense, Stroke,
-    StrokeKind, Ui,
+    pos2, vec2, Align2, Color32, Context, CornerRadius, FontId, Id, Painter, Pos2, Rect, Sense,
+    Stroke, StrokeKind, Ui,
 };
 use layout_tree::Axis;
 use remote::PaneKind;
@@ -211,16 +211,54 @@ pub fn trailing_buttons(
     resp.on_hover_text("Split top / bottom (Ctrl+Shift+O)");
 }
 
+/// How long the first click on the chrome close cell stays armed
+/// waiting for the confirming second click.
+pub const CLOSE_CONFIRM_SECS: f64 = 5.0;
+
+/// Pure armed-check: a latched confirm timestamp is still active while
+/// it has not aged out.
+pub fn confirm_armed(armed: Option<f64>, now: f64) -> bool {
+    armed.is_some_and(|t| (now - t).max(0.0) <= CLOSE_CONFIRM_SECS)
+}
+
+/// Whether the CURRENT viewport is in its enlarged state: maximized on
+/// Linux/Windows, borderless FULLSCREEN on macOS (a "maximized" macOS
+/// window only zooms inside the screen furniture - the close/max/min
+/// row lives in the fullscreen space there).
+pub fn window_enlarged(ctx: &Context) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        ctx.input(|i| i.viewport().fullscreen.unwrap_or(false))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        ctx.input(|i| i.viewport().maximized == Some(true))
+    }
+}
+
+/// Toggle the enlarged state: ViewportCommand::Fullscreen on macOS,
+/// Maximized elsewhere. Sent to the CURRENT viewport (immediate pass).
+pub fn send_toggle_enlarge(ctx: &Context) {
+    #[cfg(target_os = "macos")]
+    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!window_enlarged(ctx)));
+    #[cfg(not(target_os = "macos"))]
+    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!window_enlarged(ctx)));
+}
+
 /// Right-edge anchor cells, pinned to the row end: window controls
-/// (maximize/restore, minimize) outermost, then the inspector and zoom
-/// cells at the old title-row place. `interact()` on fixed rects: the
-/// layout cursor is untouched.
+/// (close, maximize/restore, minimize) outermost, then the inspector
+/// and zoom cells at the old title-row place. `interact()` on fixed
+/// rects: the layout cursor is untouched.
 pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     let pal = colors::palette_of(&st.theme_name);
     let band = ui.min_rect();
     let iy = (band.top() + band.bottom()) / 2.0 - m.icon / 2.0;
-    let max_rect = Rect::from_min_size(
+    let close_rect = Rect::from_min_size(
         pos2(row_right - 5.0 * m.s - m.icon, iy),
+        vec2(m.icon, m.icon),
+    );
+    let max_rect = Rect::from_min_size(
+        pos2(close_rect.left() - m.icon_gap - m.icon, close_rect.top()),
         vec2(m.icon, m.icon),
     );
     let min_rect = Rect::from_min_size(
@@ -289,7 +327,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     }
     insp.on_hover_text("Settings (theme, font, glass, splits, hosts)");
 
-    // Minimize: bottom bar glyph. The command goes to the CURRENT
+    // Minimize: centered dash glyph. The command goes to the CURRENT
     // viewport (send_viewport_cmd resolves inside the immediate pass).
     let min_col = |hovered: bool| {
         to_c32(if hovered {
@@ -323,8 +361,8 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     min.on_hover_text("Minimize");
 
     // Maximize / restore: single square when normal, two offset squares
-    // when maximized.
-    let maximized = ui.input(|i| i.viewport().maximized == Some(true));
+    // when enlarged.
+    let enlarged = window_enlarged(ui.ctx());
     let max = ui.interact(max_rect, Id::new("chrome_max"), Sense::CLICK);
     hover_fill(
         ui,
@@ -336,7 +374,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     );
     let stroke = Stroke::new(1.4 * m.s, min_col(max.hovered()));
     let c = max_rect.center();
-    if maximized {
+    if enlarged {
         // Restore: back pane offset up-right, front pane down-left.
         let back = Rect::from_center_size(
             pos2(c.x + 3.0 * m.s, c.y - 3.0 * m.s),
@@ -353,8 +391,100 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
         painter.rect_stroke(r, 2.0, stroke, StrokeKind::Middle);
     }
     if max.clicked() {
-        ui.ctx()
-            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        send_toggle_enlarge(ui.ctx());
     }
-    max.on_hover_text(if maximized { "Restore" } else { "Maximize" });
+    max.on_hover_text(if cfg!(target_os = "macos") {
+        if enlarged {
+            "Exit Fullscreen"
+        } else {
+            "Fullscreen"
+        }
+    } else if enlarged {
+        "Restore"
+    } else {
+        "Maximize"
+    });
+
+    // Close (ALL windows): the first click ARMS, a second click while
+    // fresh confirms and quits the whole app via the ROOT close path (the
+    // same one Ctrl+Shift+Q takes; close_requested persists state). Any
+    // click outside the cell disarms.
+    let now = ui.input(|i| i.time);
+    if st
+        .win()
+        .is_some_and(|w| !confirm_armed(w.ui.close_confirm, now))
+    {
+        if let Some(w) = st.win_mut() {
+            w.ui.close_confirm = None;
+        }
+    }
+    let armed = st
+        .win()
+        .is_some_and(|w| confirm_armed(w.ui.close_confirm, now));
+    let close = ui.interact(close_rect, Id::new("chrome_close"), Sense::CLICK);
+    if armed {
+        ui.painter().rect_filled(
+            close_rect,
+            CornerRadius::same(tokens::R_MD),
+            to_c32(colors::chrome_hover(&pal)),
+        );
+    } else {
+        hover_fill(
+            ui,
+            close_rect,
+            Id::new("chrome_close_h"),
+            close.hovered(),
+            &pal,
+            tokens::R_MD,
+        );
+    }
+    let close_col = if armed || close.hovered() {
+        to_c32(pal.normal[1])
+    } else {
+        dim_text(&pal)
+    };
+    close_glyph(&painter, close_rect.shrink(2.0), false, &pal, close_col);
+    if close.clicked() {
+        if armed {
+            ui.ctx()
+                .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
+        } else if let Some(w) = st.win_mut() {
+            w.ui.close_confirm = Some(now);
+        }
+    } else if armed && ui.input(|i| i.pointer.any_click()) {
+        if let Some(w) = st.win_mut() {
+            w.ui.close_confirm = None;
+        }
+    }
+    close.on_hover_text(if armed {
+        "Click again to close ALL windows"
+    } else {
+        "Close all windows"
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn confirm_armed_requires_a_latch() {
+        assert!(!confirm_armed(None, 10.0));
+    }
+
+    #[test]
+    fn confirm_armed_while_fresh() {
+        assert!(confirm_armed(Some(10.0), 10.0));
+        assert!(confirm_armed(Some(10.0), 14.9));
+        assert!(confirm_armed(Some(10.0), 10.0 + CLOSE_CONFIRM_SECS));
+    }
+
+    #[test]
+    fn confirm_armed_expires() {
+        assert!(!confirm_armed(
+            Some(10.0),
+            10.0 + CLOSE_CONFIRM_SECS + 0.001
+        ));
+        assert!(!confirm_armed(Some(10.0), 60.0));
+    }
 }

@@ -57,9 +57,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
     // all pane keys (egui 0.36 Sense::click* constructors are focusable).
     let drag = ui.interact(row, Id::new("chrome_drag"), Sense::CLICK | Sense::DRAG);
     if drag.double_clicked() {
-        let maximized = ui.input(|i| i.viewport().maximized == Some(true));
-        ui.ctx()
-            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        tabs_widgets::send_toggle_enlarge(ui.ctx());
     } else if !chip_reorder {
         // Window move only after a REAL drag (see ui::arm_window_drag):
         // micro-drift clicks must stay plain clicks so the WM keeps
