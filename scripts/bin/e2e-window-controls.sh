@@ -17,9 +17,14 @@
 #       window: no longer --onlyvisible while the app stays alive;
 #       windowactivate restores.
 #   R5: Ctrl+Shift+Q quits the app cleanly.
-#   R6: the chrome close X needs a SECOND confirming click: the first
-#       click only arms (app + window stay alive), a click anywhere
-#       else disarms, and a fresh second click quits the whole app.
+#   R6: the chrome close X opens a centered CONFIRM DIALOG (one click,
+#       app + window stay alive). Legs: the popup is one solid centered
+#       frame brighter than the dimmed backdrop (scrot diff); keys typed
+#       while it is up never reach the pane (ctl capture, with a
+#       pre-dialog negative control); Esc, a second click on the X cell
+#       (the modal backdrop owns it) and the Cancel button dismiss it
+#       without quitting; the Quit button quits every window (ROOT
+#       Close, like Ctrl+Shift+Q).
 #   S1: at scroll 0 (wheel-up normalised) the chip slot at
 #       (chip-right - 40px, safely left of the per-chip close button)
 #       holds an EARLY tab, not the last one.
@@ -37,7 +42,7 @@
 # Chrome geometry contract under test (single ~36px row): the EDGE
 # CELLS (close/max/min/insp/zoom) stay PINNED at the far right - 16px
 # wide / 4px apart / rightmost 5px from the edge, close center at W-13
-# (double-confirm quit, see R6), maximize W-33, minimize W-53,
+# (opens the quit-confirm dialog, see R6), maximize W-33, minimize W-53,
 # inspector W-73, zoom W-93. The trailing group ('+', split-v,
 # split-h) no longer pins: it FOLLOWS the chips (8px right of the last
 # chip) and only PARKS flush left of the edge cells when the chips
@@ -53,6 +58,7 @@ cd "$(dirname "$0")/../.."
 
 ROOT=$(mktemp -d /tmp/term-e2e-wc-XXXXXX)
 APP=target/debug/terminator-rust
+CTL=target/debug/terminator-ctl
 DISPLAY_N=""                  # probed by e2e_start_xvfb
 XVFB_PID=""
 OPENBOX_PID=""
@@ -111,6 +117,75 @@ width = max(xs) - min(xs) + 1
 ok = abs(centroid - cy) <= 1.0 and width >= 6
 print(f"min glyph: ink centroid y {centroid:.1f} (cell centre {cy}), "
       f"width {width}px [{'OK' if ok else 'FAIL'}]")
+sys.exit(0 if ok else 1)
+PY
+}
+
+# dialog_probe <base.png> <new.png> <present|gone>: the quit-confirm
+# dialog's pixel signature, from two scrots of the same window rect. Only
+# BRIGHTENINGS count (new - base clamped at 0, channel-wise MAX, > 6): the
+# modal backdrop merely DARKENS everything below it, so a pixel that got
+# brighter can only be a dialog pixel - the popup fill (chrome_bg) IS
+# brighter than the dimmed pane bg it covers. `present` asserts one
+# centred popup: mask count band, width >= the dialog's own declared
+# min content width (close_dialog set_min_width(330*m.s)), height band,
+# centre within 30% of the window half-size, and - because the modal's
+# width is NOT content-driven (the right-to-left button row right-aligns
+# into the available width, which on the first frame is egui's 600px
+# default_area_size; measured 600x118 at font 15) - that the mask FILLS
+# its bbox with fill >= 90%: solid one-piece frame, so a second bright
+# blob (hover plate) or a scattered region fails where a width band
+# cannot. Writes the frame's absolute "right bottom" to $ROOT/r6-box.txt
+# (the Quit anchor: right-60, bottom-26 = 12px inner margin + half of the
+# 96x28 button, both measured); `gone` asserts the brightening collapsed
+# (dismissed). Prints the measured numbers either way.
+dialog_probe() {
+    X="$X" Y="$Y" WIDTH="$WIDTH" HEIGHT="$HEIGHT" \
+    E2E_DBASE="$1" E2E_DNEW="$2" E2E_DMODE="$3" \
+    E2E_DBOX="$ROOT/r6-box.txt" python3 - <<'PY'
+import os, sys
+from PIL import Image, ImageChops
+
+X, Y = int(os.environ["X"]), int(os.environ["Y"])
+W, H = int(os.environ["WIDTH"]), int(os.environ["HEIGHT"])
+mode = os.environ["E2E_DMODE"]
+
+def win(path):
+    return Image.open(path).convert("RGB").crop((X, Y, X + W, Y + H))
+
+d = ImageChops.subtract(win(os.environ["E2E_DNEW"]), win(os.environ["E2E_DBASE"]))
+r, g, b = d.split()
+mx = ImageChops.lighter(ImageChops.lighter(r, g), b)   # channel-wise MAX
+mask = mx.point(lambda v: 255 if v > 6 else 0)
+count = mask.histogram()[255]
+box = mask.getbbox()
+area = W * H
+
+if mode == "gone":
+    ok = count < 300
+    print(f"dialog dismissed: {count}px still brighter (limit 300), "
+          f"residual bbox {box} [{'OK' if ok else 'FAIL'}]")
+    sys.exit(0 if ok else 1)
+
+if box is None:
+    print("dialog absent: no pixel brightened inside the window",
+          file=sys.stderr)
+    sys.exit(1)
+left, top, right, bottom = box          # right/bottom are exclusive
+bw, bh = right - left, bottom - top
+cx, cy = left + bw / 2.0, top + bh / 2.0
+density = count / float(bw * bh)
+ok = (5000 <= count <= area * 0.4 and bw >= 330 and bw <= 0.75 * W
+      and 80 <= bh <= 240 and density >= 0.90
+      and abs(cx - W / 2.0) <= 0.30 * W / 2.0
+      and abs(cy - H / 2.0) <= 0.30 * H / 2.0)
+print(f"dialog: {count}px brighter ({100.0 * count / area:.1f}% of the "
+      f"window), bbox {bw}x{bh} solid {100.0 * density:.1f}%, centre "
+      f"{cx:.0f},{cy:.0f} vs window centre {W / 2:.0f},{H / 2:.0f} "
+      f"[{'OK' if ok else 'FAIL'}]")
+if ok:
+    with open(os.environ["E2E_DBOX"], "w") as f:
+        f.write("%d %d\n" % (X + right, Y + bottom))
 sys.exit(0 if ok else 1)
 PY
 }
@@ -248,21 +323,127 @@ APP_PID=""
 WID=""
 sleep 0.5
 
-step "R6: chrome close X needs a second confirming click"
+step "R6: chrome close X opens a centered confirm dialog"
 launch_app app1b.log
-click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # close: first click only ARMS
+XCELL_X=$((X+WIDTH-13))                 # chrome close X cell centre
+XCELL_Y=$((Y+CHROME_Y))
+NEUTRAL_X=$((X+30))                     # pane corner: far outside the popup,
+NEUTRAL_Y=$((Y+HEIGHT-30))              # hover-free in every scrot
+list=$("$CTL" --socket "$SOCK" list --json 2>/dev/null) \
+    || fail "terminator-ctl list failed on the running app"
+pane_id=$(printf '%s' "$list" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["id"])' \
+        2>/dev/null || true)
+case "$pane_id" in
+    ''|*[!0-9]*) fail "ctl list did not name a numeric pane id ('$pane_id')" ;;
+esac
+
+# Negative control: with NO dialog up the very same typing DOES reach the
+# pane, so the leak assert further down is about the dialog's modality and
+# not about a broken typing/capture path.
+activate
+xdotool type --delay 40 'echo PRE_DIALOG'
+xdotool key Return
+ok=""
+for _ in $(seq 1 24); do
+    if "$CTL" --socket "$SOCK" capture "$pane_id" --lines 40 2>/dev/null \
+        | grep -q PRE_DIALOG; then ok=1; break; fi
+    sleep 0.25
+done
+[ -n "$ok" ] || fail "negative control: typed keys never reached the pane"
+
+park "$NEUTRAL_X" "$NEUTRAL_Y"
+sleep 0.4
+scrot -o "$ROOT/r6-base.png"            # baseline: no dialog, no hover delta
+
+click_at "$XCELL_X" "$XCELL_Y"          # ONE click on the close X
 sleep 0.6
-kill -0 "$APP_PID" 2>/dev/null || fail "app died on the arming close click"
+kill -0 "$APP_PID" 2>/dev/null || fail "app died on the first close click"
 ids=$(xdotool search --name '^terminator-rust$' 2>/dev/null || true)
-[ -n "$ids" ] || fail "window vanished on the arming close click"
-click_at $((X+WIDTH*60/100)) $((Y+CHROME_Y))   # bare chrome click disarms
+[ -n "$ids" ] || fail "window vanished on the first close click"
+
+park "$NEUTRAL_X" "$NEUTRAL_Y"          # drop the X cell's hover plate
+sleep 0.4
+scrot -o "$ROOT/r6-open.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-open.png" present \
+    || fail "one close click did not open a centered confirm dialog"
+
+step "R6: keys typed while the dialog is up never reach the pane"
+activate
+xdotool type --delay 40 'echo DIALOG_LEAK'
+xdotool key Return
+park "$NEUTRAL_X" "$NEUTRAL_Y"
+sleep 0.4
+scrot -o "$ROOT/r6-typed.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-typed.png" present \
+    || fail "typing closed/moved the dialog (it must stay modal)"
+
+step "R6: Esc dismisses the dialog, the typed marker never arrived"
+activate
+xdotool key --clearmodifiers Escape
 sleep 0.6
-kill -0 "$APP_PID" 2>/dev/null || fail "app died after the cancelling click"
-click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # re-arm
-sleep 0.3
-click_at $((X+WIDTH-13)) $((Y+CHROME_Y))    # confirming click quits all
-wait_pid_gone "$APP_PID" 40 || fail "app survived the confirmed close click"
-echo "R6: one close click arms, the second quits"
+park "$NEUTRAL_X" "$NEUTRAL_Y"
+sleep 0.4
+scrot -o "$ROOT/r6-esc.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-esc.png" gone \
+    || fail "Esc did not dismiss the confirm dialog"
+kill -0 "$APP_PID" 2>/dev/null || fail "app died on the Esc dismissal"
+cap=$("$CTL" --socket "$SOCK" capture "$pane_id" --lines 40 2>/dev/null) \
+    || fail "ctl capture failed after the dialog closed"
+case "$cap" in
+    *DIALOG_LEAK*)
+        printf '%s\n' "$cap" | tail -5
+        fail "keys typed behind the dialog leaked into the pane" ;;
+esac
+printf '%s' "$cap" | grep -q PRE_DIALOG \
+    || { printf '%s\n' "$cap" | tail -5; fail "pane capture lost PRE_DIALOG"; }
+
+step "R6: a second click on the close X only dismisses the dialog"
+click_at "$XCELL_X" "$XCELL_Y"          # re-open (Esc dismissed it above)
+park "$NEUTRAL_X" "$NEUTRAL_Y"
+sleep 0.4
+scrot -o "$ROOT/r6-reopen.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-reopen.png" present \
+    || fail "the close X did not re-open the dialog"
+click_at "$XCELL_X" "$XCELL_Y"          # the modal backdrop owns this click
+park "$NEUTRAL_X" "$NEUTRAL_Y"          # drop the X cell's hover plate
+sleep 0.5
+scrot -o "$ROOT/r6-backdrop.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-backdrop.png" gone \
+    || fail "a click on the X cell did not just dismiss the dialog"
+kill -0 "$APP_PID" 2>/dev/null || fail "app died on the backdrop dismissal"
+
+step "R6: the Cancel button dismisses without quitting"
+click_at "$XCELL_X" "$XCELL_Y"          # re-open for the Cancel leg
+park "$NEUTRAL_X" "$NEUTRAL_Y"
+sleep 0.4
+scrot -o "$ROOT/r6-cancel-open.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-cancel-open.png" present \
+    || fail "the close X did not re-open the dialog for the Cancel leg"
+read -r DBOX_R DBOX_B <"$ROOT/r6-box.txt" || fail "no dialog bbox recorded"
+CANCEL_X=$((DBOX_R-60-96-6))            # left of Quit: 96px button + 6 spacing
+CANCEL_Y=$((DBOX_B-26))
+echo "dialog frame right/bottom ${DBOX_R},${DBOX_B}; Cancel centre ${CANCEL_X},${CANCEL_Y}"
+click_at "$CANCEL_X" "$CANCEL_Y"
+park "$NEUTRAL_X" "$NEUTRAL_Y"
+sleep 0.5
+scrot -o "$ROOT/r6-cancel.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-cancel.png" gone \
+    || fail "the Cancel button did not dismiss the dialog"
+kill -0 "$APP_PID" 2>/dev/null || fail "app died on the Cancel dismissal"
+
+step "R6: the dialog's Quit button quits the whole app"
+click_at "$XCELL_X" "$XCELL_Y"          # re-open for the confirm leg
+park "$NEUTRAL_X" "$NEUTRAL_Y"
+sleep 0.4
+scrot -o "$ROOT/r6-confirm.png"
+dialog_probe "$ROOT/r6-base.png" "$ROOT/r6-confirm.png" present \
+    || fail "the close X did not re-open the dialog for the confirm leg"
+read -r DBOX_R DBOX_B <"$ROOT/r6-box.txt" || fail "no dialog bbox recorded"
+echo "dialog frame right/bottom ${DBOX_R},${DBOX_B}; Quit button centre $((DBOX_R-60)),$((DBOX_B-26))"
+click_at $((DBOX_R-60)) $((DBOX_B-26))  # Quit (96x28, flush right)
+wait_pid_gone "$APP_PID" 40 || fail "app survived the dialog's Quit button"
+echo "R6: one close click opens the dialog, Esc + backdrop + Cancel dismiss it, Quit quits"
 APP_PID=""
 WID=""
 sleep 0.5

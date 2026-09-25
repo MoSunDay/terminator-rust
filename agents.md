@@ -57,114 +57,29 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   exports), ctl only pulls libc on macOS; scripts/bin/zig falls back
   dist-packages -> PATH zig -> python3 -m ziglang; fetch-vendor.sh sed
   is BSD-safe (tmp+mv)
-- headless UI smoke: Xvfb :NN + xdotool (type into window works; needs
-  `xdotool windowfocus` - no WM focus otherwise)
-- remote e2e: `cargo test -p remote --test zellij_e2e -- --ignored`
-  (needs local sshd key auth + zellij; cleanup deletes ONLY the test's
-  own session via `zellij delete-session <name> --force` - the
-  net-drop rule below spells out why never delete-all-sessions)
-- net-drop e2e (REAL network interruption + session recovery):
-  `cargo test -p remote --test net_drop_e2e -- --ignored` +
-  `cargo test -p app reconnect_net -- --ignored` (the latter drives the
-  full frame loop pump_all/close_exited/reconnect::pump/ensure_sessions
-  against a live attach: close_exited spares the pane, pending badge
-  shows, backoff(1)=1s respawn, marker survives). HARD RULE: the test
-  process itself runs INSIDE an sshd session - NEVER stop/restart sshd
-  or kill the listener; interrupt via kill -9 of the per-connection
-  sshd child (pair ports with `ss -tnp`) or an iptables REJECT window on
-  `-i lo --dport 22` tagged with a comment (idempotent delete; NEVER
-  assert while the rule is inserted - a panic strands it). REJECT
-  tcp-reset fails ssh in ~0.1s (ConnectTimeout never hangs); server RST
-  yields a natural exit 255 both shapes reattach with state intact.
-- control-channel e2e: `scripts/bin/e2e-ipc-oc.sh` (Xvfb + fake opencoder
-  holding a fixture store open in a named pane; covers list/capture/send,
-  oc link/submit/status/--wait, stale-socket reclaim after SIGTERM)
-- mouse/key e2e: `scripts/bin/e2e-mouse-key.sh` (Xvfb + xdotool over the
-  live socket: bare Ctrl+C ^C echo, cross-pane drag SGR press/motion/
-  RELEASE landing in the press-owner pane, Shift+PageUp/End scrollback
-  paging, Ctrl+C actually interrupting a foreground job)
-- multi-window e2e: `scripts/bin/e2e-windows.sh` (Xvfb: Ctrl+Shift+N
-  spawns a real second X window, cross-window typing isolation via ctl
-  capture, last-pane close removes the window, re-spawn, quit-from-
-  secondary kills the app, W6 root last-pane close with a sibling alive
-  respawns a fresh root tab, W7/W8/W9 Ctrl+Shift+J move + single-window
-  split + Ctrl+Shift+M merge, W10 = chip drag onto the OTHER window's
-  strip: source window dies, pane keeps its pid and lands ACTIVE in the
-  root). W10's pixel gates are THEME-AGNOSTIC (DEFAULT = kanagawa-wave):
-  chip_edges = FIRST wide non-bare-chrome run (chips left-aligned, the
-  trailing chrome merges into a LONGER run), strip_diff = strip band vs a
-  baseline scrot (never e2e-lib's dracula fill scan). CI runs it (zig via
-  PyPI + fetch-vendor.sh; fmt/clippy hard gates) + e2e-dragdrop.sh
-  (scrot + python3-pil). Rare viewport-churn flake: egui-wgpu
-  staging-buffer / Dropped-frame validation errors (~1/30, upstream).
-- window-chrome e2e: `scripts/bin/e2e-window-controls.sh` (Xvfb + OPENBOX -
-  bare Xvfb has no WM so Maximized/Minimized/BeginResize/StartDrag are all
-  EWMH no-ops; R1 edge-drag resize, R2/R3 maximize button + chrome
-  double-click toggle, R4 = minimize glyph scrot/PIL probe (dash ink
-  centroid ON the row centre, theme-agnostic lum - bg weight: a lowered
-  dash reads '_'; ui/tabs_widgets.rs edge_cells draws the dash at
-  min_rect.center(), not y+4) THEN iconic + windowactivate restore,
-  S1-S3 tab overflow: chip strip scrolls by wheel while '+"/edge cells
-  stay pinned at CHROME_RESERVE=173; R6 close X double-confirm (single
-  click arms, outside click cancels, second click quits); CI job
-  e2e-window-controls apt adds openbox)
-- drag-and-drop e2e: `scripts/bin/e2e-dragdrop.sh` (Xvfb + xdotool +
-  scrot/PIL + state.json tree asserts; D1/D2 = Ctrl+drag pane header to
-  sibling edge/center with mid-drag overlay pixel checks, D3 = chip
-  reorder persisted, D5 = plain header drag, D6/D7/D8 = cross-tab pane
-  migration via chip dwell (edge/Center-swap/source-tab-close), D4 = alive
-  + quit).
-- empty-window restore e2e: `scripts/bin/e2e-empty-restore.sh`
-  (Xvfb + xdotool; E1 = `windows:[{tabs:[]}]` restores a live tab,
-  E2 = exit auto-closes + app quits persisting empty tabs, E3 = the
-  loop relaunches live; wired into ci.yml as e2e-empty-restore).
-- IME e2e: `scripts/bin/e2e-ime.sh` (REAL XIM chain: Xvfb + dbus
-  session bus (private fork fallback) + ibus-daemon --xim + engine
-  libpinyin + LANG=zh_CN.UTF-8; M1 composing 'hanzi' never reaches the
-  pty, M2 preedit ink purple-hue-detected vs a baseline scrot, M3 space
-  commits 汉字 + bare Shift_L toggles libpinyin EN for ASCII, M4 quit;
-  CI job e2e-ime apt: ibus ibus-libpinyin dbus x11-utils locales +
-  locale-gen zh_CN.UTF-8 - XIM locale negotiation needs it).
-- opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
-  /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
-  binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy
-  ~/.opencoder/config.json needed - onboarding form eats ^C; focus navigation
-  via Ctrl+Shift+Right, NEVER clicks into mouse-tracking panes; K4 =
-  Ctrl+Shift+W on a NON-last pane keeps the app alive (quit only on the
-  last close); opencode FIRST RUN seeds
-  ~/.opencoder (skills installer + state dirs) - concurrent first-runs
-  RACE it and instances exit(1) silently after "first frame" (repro: new
-  HOME x3 pty = 2 dead, warm HOME = 3/3 alive), so the script WARMS UP the
-  scratch HOME with one throwaway pty run before launching the app)
-- cjk font e2e: `scripts/bin/e2e-cjk.sh` (fontTools cmap coverage of BOTH
-  embedded subsets + a 2:1 advance probe on the Maple one; Xvfb live app: ctl
-  send `echo 汉字测试` capture round-trip + scrot/PIL connected-ink
-  assertions - real Han ink ~11-13x12-13px with interior strokes; ASCII
-  <=8x12, wide filter 8.5..22 x 10.5..22, tofu square is hollow inside)
-- ui style e2e: `scripts/bin/e2e-ui-style.sh` (Xvfb + scrot/PIL pixel
-  assertions: pane bg/theme blend via transparency, gutter two-tone
-  (chrome_bg field + 2px rounded grab handle, hover step mix 0.22 only
-  under the pointer), chrome top-bar fill, active-chip underline (rounded
-  caps, inset past the pill corners) + fill; expectations are COMPUTED
-  in-script from dracula constants via a mix() helper - token retunes
-  touch only colors.rs/tokens.rs, geometry changes touch the script;
-  presets a dracula Split state.json (pane bg/transparency now live in
-  settings); checks I1/I2 assert the chip row STAYS with a single tab:
-  chip fill at (X+50,Y+7 - PROBE ABOVE THE INK: the 15pt "style [2]"
-  label ends ~X+89 and the close X starts ~X+96, the label/close gap is
-  too tight to sample; the old X+50,Y+15 only passed by landing on the
-  label's space char), underline band Y+30..Y+31, pane header tint
-  pushed down to Y+44..Y+64, content from ~Y+66)
+- e2e suites: the per-script coverage list + how to run each one moved to
+  [agents/e2e-suites.md](agents/e2e-suites.md); user-visible checks that
+  were verified live stay in
+  [agents/verified-end-to-end.md](agents/verified-end-to-end.md).
 - deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
   repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
-  XDG autostart for the desktop user, pid-kill restart, ctl smoke).
-  Restart candidates come from BOTH `pgrep -f <install path>` AND
-  `pgrep -x terminator-rust`: a panel/desktop-launched instance has a
-  BARE argv[0] (e.g. ~/.local/bin/terminator-rust, a symlink into /opt),
-  so the -f pattern alone missed it and a deploy left the day-old
-  instance running beside the fresh one; /proc/<pid>/exe under
-  /opt/terminator-rust is the only kill gate. Target 192.168.31.196:
-  user m, DISPLAY=:0, XDG_RUNTIME_DIR=/run/user/1000.
+  XDG autostart for the desktop user, pid-kill restart, ctl smoke,
+  `--keep-running` = install only: stage 5 prints `DEPLOY-KEEP:<pids>` and
+  exits BEFORE any kill and before the stale-socket `rm`, stage 6 then
+  smokes the STILL-RUNNING (old) build and says so - used when the user
+  has live work in the target's window, so the fix goes live only at that
+  app's next launch. Restart candidates come from BOTH
+  `pgrep -f <install path>` AND `pgrep -x terminator-rust`: a
+  panel/desktop-launched instance has a BARE argv[0]
+  (e.g. ~/.local/bin/terminator-rust, a symlink into /opt), so the -f
+  pattern alone missed it and a deploy left the day-old instance running
+  beside the fresh one; /proc/<pid>/exe under /opt/terminator-rust is the
+  only kill gate (a repack replaces the live build's dir in place, so
+  pids_of strips a trailing ` (deleted)` from the readlink). To verify a
+  kept-running deploy without touching that window, launch the new
+  `current/bin/terminator-rust` under a PRIVATE `HOME` +
+  `XDG_RUNTIME_DIR` on a scratch Xvfb display, never on the user's :0.
+  Target 192.168.31.196: user m, DISPLAY=:0, XDG_RUNTIME_DIR=/run/user/1000.
 - releases: push an annotated `v*` tag -> .github/workflows/release.yml
   builds linux-x86_64 + macos-aarch64 release tarballs via
   scripts/bin/pack-release.sh (deterministic GNU-tar archive + .sha256
@@ -401,9 +316,25 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   none, Ime events never fire there. egui-winit allows IME iff
   PlatformOutput.ime is Some EVERY frame (per viewport, nobody
   validates it - no TextEdit needed); app/input/ime.rs writes it
-  (purpose Terminal) anchored at grid::cursor_rect; rename editors own
-  IME via the egui_wants_keyboard_input early return, which also
-  clears the pane preedit. Ime::Commit delivers RAW UTF-8 bytes
+  (purpose Terminal) anchored at grid::cursor_rect; a rename editor's own
+  TextEdit output wins because ime::sync bails on "an IME output already
+  exists" (ctx.output(|o| o.ime.is_some()) - NOT on
+  egui_wants_keyboard_input: an editor publishes nothing on the frame it
+  gains focus from a stale state and on the Enter frame, and publishing
+  None -> Some there would re-enable IME and rebuild the IC), while
+  input/keyboard.rs still clears the pane preedit (WindowUi.ime = None)
+  from its text-field early return. NEVER focus a rename editor with
+  Response::request_focus(): it raises Memory::interrupt_ime, egui-winit
+  turns that into set_ime_allowed(false)+(true), and winit X11 implements
+  the pair as remove_context+create_context - the recreated XIC is never
+  XSetICFocus-ed again (winit focuses it only from a window FocusIn), so
+  every following key BYPASSES the input method and lands raw latin:
+  double-click a chip, type pinyin, get 'hanzi' - and the pane's first key
+  after the editor closing too (e2e-ime M4/M5 gate both). Use
+  ui::focus_rename_editor instead - egui's Tab-navigation path
+  (surrender_focus + move_focus(FocusDirection::Next), the editor being
+  the frame's only focus-interested widget) hands the keyboard over with
+  no interrupt, so the IC survives. Ime::Commit delivers RAW UTF-8 bytes
   (vtask::write) - never the key encoder (CJK lands Unidentified+utf8)
   nor bracketed paste (commit is typed input); Preedit with empty text
   = composition ended. Pane preedit STYLE is the shared one (2026-09-22
@@ -449,9 +380,17 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   macOS where "maximize" means borderless FULLSCREEN (ViewportCommand::
   Fullscreen, window_enlarged reads viewport().fullscreen there); inside a
   viewport pass that targets the CURRENT window, root pass = ROOT); the close
-  X is DOUBLE-CONFIRM (2026-09-24): click 1 latches WindowUi.close_confirm
-  (egui time, CLOSE_CONFIRM_SECS=5, pure confirm_armed), click 2 sends ROOT
-  Close (same path as Ctrl+Shift+Q), any outside click or timeout disarms;
+  X opens a CONFIRM MODAL (2026-09-25): one click sets WindowUi.close_dialog
+  -> ui/close_dialog.rs egui::Modal (Id "close_dialog" + win_id, backdrop
+  black alpha 96) "Quit terminator-rust?" + Quit/Cancel; Quit sends ROOT
+  Close (Ctrl+Shift+Q's path - quits EVERY window), Cancel / backdrop click
+  (a re-click on X lands on it) / Esc dismiss. While set, screen.rs's `modal`
+  gate suppresses pointer/divider/pane_interact and keyboard.rs early-returns
+  (no key/paste/clipboard leak). Min AND max content width are pinned to
+  330*m (+ 2x12 frame margin): a min-width alone left it 600 wide because
+  the right-to-left button row stretches to the Area's first-frame
+  available width (egui's Spacing::default_area_size 600x400); R6 measures
+  it as one solid 356x138 box at font 15 (area band + solidity + centre);
   min glyph is a CENTERED dash; double-click bare
   chrome toggles maximize (chrome_drag is Sense::click_and_drag - egui
   click/double_click flags REQUIRE senses_click, pure-drag never fires

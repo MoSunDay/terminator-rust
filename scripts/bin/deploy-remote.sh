@@ -42,6 +42,8 @@ One-click deploy of terminator-rust to a remote host.
 
 Options:
   --no-build        skip cargo build + dist/ repack (artifacts must exist)
+  --keep-running    do not stop a running instance: its windows stay untouched,
+                    the new build goes live when that app next launches
   --host HOST       target host            (default: 192.168.31.196)
   --user USER       desktop/app user       (default: m)
   --root ROOTUSER   ssh user for /opt ops  (default: root)
@@ -54,9 +56,12 @@ HOST=192.168.31.196
 DEPLOY_USER=m
 ROOT_USER=root
 DO_BUILD=1
+KEEP_RUNNING=0      # --keep-running: leave the live instance (and windows) alone
+KEPT=0              # set by stage_restart when it left an instance running
 while [ $# -gt 0 ]; do
     case "$1" in
         --no-build) DO_BUILD=0 ;;
+        --keep-running) KEEP_RUNNING=1 ;;
         --host|--user|--root)
             [ $# -ge 2 ] || fail "$1 needs a value"
             case "$1" in
@@ -190,8 +195,9 @@ stage_restart() {
     # kept only when the running image lives under $root (never kill a
     # foreign process; the ssh/zsh wrapper carrying this script text
     # resolves elsewhere and is dropped).
-    run_user "$OPT_ROOT" "$RUNTIME_DIR" <<'REMOTE' || fail "stopping the old instance failed"
-root=$1; rt=$2
+    local stop_out kept_pids
+    if ! stop_out=$(run_user "$OPT_ROOT" "$RUNTIME_DIR" "$KEEP_RUNNING" <<'REMOTE'
+root=$1; rt=$2; keep=${3:-0}
 pids_of() {
     local cand p
     cand=$( (
@@ -210,10 +216,21 @@ pids_of() {
             [ -n "$exe" ] && break
             sleep 0.25
         done
+        # a repack replaces the live build's dir in place (rm -rf + extract),
+        # so a running process already reads back as ".../terminator-rust
+        # (deleted)" - strip that suffix or the exe gate silently misses a
+        # live instance and the old app survives the deploy.
+        exe=${exe% (deleted)}
         case "$exe" in "$root"/*) echo "$p" ;; esac
     done
 }
 old=$(pids_of)
+if [ -n "$old" ] && [ "$keep" = "1" ]; then
+    # --keep-running: leave the live instance (and its windows) alone; do
+    # NOT remove the control socket below or the running app loses IPC.
+    echo "DEPLOY-KEEP:$old"
+    exit 0
+fi
 if [ -n "$old" ]; then
     for p in $old; do echo "stopping pid $p"; kill "$p" 2>/dev/null || true; done
     for _ in $(seq 1 40); do
@@ -229,6 +246,16 @@ fi
 # start anyway, so drop it now.
 rm -f "$rt/terminator-rust/ipc.sock"
 REMOTE
+    ); then
+        fail "stopping the old instance failed"
+    fi
+    printf '%s\n' "$stop_out"
+    kept_pids=$(printf '%s\n' "$stop_out" | sed -n 's/^DEPLOY-KEEP:\(.*\)$/\1/p')
+    if [ -n "$kept_pids" ]; then
+        echo "keeping running instance(s) $kept_pids - windows untouched"
+        KEPT=1
+        return
+    fi
     run_user "$OPT_ROOT" "$DESKTOP_DISPLAY" "$RUNTIME_DIR" "$LOG_FILE" <<'REMOTE' \
         || fail "app launch failed"
 root=$1; disp=$2; rt=$3; log=$4
@@ -314,6 +341,9 @@ REMOTE
     ) || fail "terminator-ctl capture failed"
     echo "--- capture pane $pane_id ---"
     printf '%s\n' "$cap"
+    if [ "$KEPT" -eq 1 ]; then
+        echo "note: smoke ran against the previously-running instance; the new build goes live at its next launch"
+    fi
     echo "PASS: $HOST live via $OPT_ROOT/current ($DIRNAME), autostart installed, list+capture OK"
 }
 

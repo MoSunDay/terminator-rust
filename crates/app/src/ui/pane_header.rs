@@ -195,11 +195,14 @@ pub fn show(
             Some((_, b)) => b,
             None => return,
         };
-        let resp = ui.put(
+        let edit_id = Id::new("pane_rename_edit").with(pane);
+        crate::ui::focus_rename_editor(ui.ctx(), edit_id);
+        ui.put(
             title_rect,
-            TextEdit::singleline(buf).desired_width(title_rect.width()),
+            TextEdit::singleline(buf)
+                .id(edit_id)
+                .desired_width(title_rect.width()),
         );
-        resp.request_focus();
         // egui TextEdit keeps focus on Escape, so react to the keys
         // directly instead of waiting for lost_focus.
         let confirm = ui.input(|i| i.key_pressed(Key::Enter));

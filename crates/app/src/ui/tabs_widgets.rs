@@ -211,16 +211,6 @@ pub fn trailing_buttons(
     resp.on_hover_text("Split top / bottom (Ctrl+Shift+O)");
 }
 
-/// How long the first click on the chrome close cell stays armed
-/// waiting for the confirming second click.
-pub const CLOSE_CONFIRM_SECS: f64 = 5.0;
-
-/// Pure armed-check: a latched confirm timestamp is still active while
-/// it has not aged out.
-pub fn confirm_armed(armed: Option<f64>, now: f64) -> bool {
-    armed.is_some_and(|t| (now - t).max(0.0) <= CLOSE_CONFIRM_SECS)
-}
-
 /// Whether the CURRENT viewport is in its enlarged state: maximized on
 /// Linux/Windows, borderless FULLSCREEN on macOS (a "maximized" macOS
 /// window only zooms inside the screen furniture - the close/max/min
@@ -403,24 +393,14 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
         "Maximize"
     });
 
-    // Close (ALL windows): the first click ARMS, a second click while
-    // fresh confirms and quits the whole app via the ROOT close path (the
-    // same one Ctrl+Shift+Q takes; close_requested persists state). Any
-    // click outside the cell disarms.
-    let now = ui.input(|i| i.time);
-    if st
-        .win()
-        .is_some_and(|w| !confirm_armed(w.ui.close_confirm, now))
-    {
-        if let Some(w) = st.win_mut() {
-            w.ui.close_confirm = None;
-        }
-    }
-    let armed = st
-        .win()
-        .is_some_and(|w| confirm_armed(w.ui.close_confirm, now));
+    // Close (ALL windows): ONE click opens the confirmation modal
+    // (ui::close_dialog); the quit itself goes out from the modal's Quit
+    // button via the same ROOT close path Ctrl+Shift+Q takes. No latch
+    // here - the modal owns the second step, and while it is up it is the
+    // top layer, so a second press on this cell never reaches it.
+    let dialog_open = st.win().is_some_and(|w| w.ui.close_dialog);
     let close = ui.interact(close_rect, Id::new("chrome_close"), Sense::CLICK);
-    if armed {
+    if dialog_open {
         ui.painter().rect_filled(
             close_rect,
             CornerRadius::same(tokens::R_MD),
@@ -436,53 +416,20 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
             tokens::R_MD,
         );
     }
-    let close_col = if armed || close.hovered() {
+    let close_col = if dialog_open || close.hovered() {
         to_c32(pal.normal[1])
     } else {
         dim_text(&pal)
     };
     close_glyph(&painter, close_rect.shrink(2.0), false, &pal, close_col);
     if close.clicked() {
-        if armed {
-            ui.ctx()
-                .send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Close);
-        } else if let Some(w) = st.win_mut() {
-            w.ui.close_confirm = Some(now);
-        }
-    } else if armed && ui.input(|i| i.pointer.any_click()) {
         if let Some(w) = st.win_mut() {
-            w.ui.close_confirm = None;
+            w.ui.close_dialog = true;
         }
     }
-    close.on_hover_text(if armed {
-        "Click again to close ALL windows"
+    close.on_hover_text(if dialog_open {
+        "Close all windows - waiting for confirmation"
     } else {
         "Close all windows"
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn confirm_armed_requires_a_latch() {
-        assert!(!confirm_armed(None, 10.0));
-    }
-
-    #[test]
-    fn confirm_armed_while_fresh() {
-        assert!(confirm_armed(Some(10.0), 10.0));
-        assert!(confirm_armed(Some(10.0), 14.9));
-        assert!(confirm_armed(Some(10.0), 10.0 + CLOSE_CONFIRM_SECS));
-    }
-
-    #[test]
-    fn confirm_armed_expires() {
-        assert!(!confirm_armed(
-            Some(10.0),
-            10.0 + CLOSE_CONFIRM_SECS + 0.001
-        ));
-        assert!(!confirm_armed(Some(10.0), 60.0));
-    }
 }

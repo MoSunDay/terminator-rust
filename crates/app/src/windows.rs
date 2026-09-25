@@ -190,6 +190,8 @@ pub fn render_secondaries(ctx: &egui::Context, d: &mut Data) {
             // when the pass above removed the window mid-frame.
             if d.st.windows.get(i).map(|w| w.id) == Some(id) {
                 ui::inspector::show(ui.ctx(), d, i);
+                // Registered AFTER the inspector so the modal sits on top.
+                ui::close_dialog::show(ui.ctx(), d, i);
             }
         });
         let gone = d.st.windows.get(i).map(|w| w.id) != Some(id);

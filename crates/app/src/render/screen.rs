@@ -107,6 +107,10 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         dirty,
         ..
     } = d;
+    // The window-close dialog is open: its backdrop blocks egui WIDGET
+    // interaction (top modal layer) but NOT the raw event routing and the
+    // pure-rect divider/edge probes below, so those are gated explicitly.
+    let modal = st.win().is_some_and(|w| w.ui.close_dialog);
     // A Ctrl+drag pane move owns the pointer: dividers and raw pointer
     // routing stand down while the drop target is being picked.
     let pane_drag = st.win().and_then(|w| w.ui.pane_drag);
@@ -115,7 +119,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let edge = ui
         .input(|i| i.pointer.interact_pos())
         .and_then(|p| resize::dir_at(area, p));
-    let dragging = if pane_drag.is_some() || edge.is_some() {
+    let dragging = if pane_drag.is_some() || edge.is_some() || modal {
         false
     } else {
         mouse::divider_interaction(ui, st, area, dirty)
@@ -144,9 +148,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let fill_alpha = colors::pane_bg_alpha(st.settings.transparency, st.settings.opacity);
 
     // Raw pointer routing (reporting / selection / wheel) over pane content
-    // rects; suppressed while a divider drag, a pane drag or a border
-    // resize owns the pointer.
-    if !dragging && pane_drag.is_none() && edge.is_none() {
+    // rects; suppressed while a divider drag, a pane drag, a border
+    // resize or the close dialog owns the pointer.
+    if !dragging && pane_drag.is_none() && edge.is_none() && !modal {
         let content_rects: Vec<(PaneId, Rect)> = rects
             .iter()
             .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, m.header_h))))
@@ -263,7 +267,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 .get(&pane)
                 .map(vt_pane::mouse::is_mouse_tracking)
                 .unwrap_or(false);
-        if !dragging {
+        // `pane_interact` / context menu are pure rect widgets, not gated
+        // by the modal layer - suppress them by hand while it is up.
+        if !dragging && !modal {
             let resp = mouse::pane_interact(ui, content, pane, st, dirty);
             if dead && resp.clicked() {
                 actions::do_close_pane(st, sess, uist, tab, pane, dirty);

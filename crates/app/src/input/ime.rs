@@ -61,11 +61,20 @@ fn pane_alive(pane: PaneId, d: &Data) -> bool {
 
 /// Sync this window's IME state into the platform output. Call at the END
 /// of the window render pass, after screen() refreshed `ime_cursor` /
-/// `ime_pane`. While a TextEdit owns the keyboard (rename editors) its
-/// own IME output must stand: return without touching `o.ime`.
+/// `ime_pane`. While a TextEdit owns the keyboard (rename editors) its own
+/// IME output must stand: return without touching `o.ime`.
+///
+/// The test is "did anyone publish an IME output", NOT "is a text field
+/// focused": the rename editors publish nothing on the frame they gain
+/// focus from a stale state and on the Enter frame that surrenders focus,
+/// and publishing None there makes egui-winit disable+re-enable IME. On
+/// winit X11 that destroys+recreates the XIM input context, which is never
+/// re-focused, so the next keystroke bypasses the input method - the pane's
+/// first key after a rename lands as raw latin. Keeping the pane anchor
+/// alive across those single frames never interrupts anything.
 pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
-    if ctx.egui_wants_keyboard_input() {
-        return; // a text field owns IME this frame
+    if ctx.output(|o| o.ime.is_some()) {
+        return; // a focused rename editor owns IME this frame
     }
     let Some(w) = d.st.windows.get(idx) else {
         return;
@@ -76,7 +85,7 @@ pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
     let changed = pane != w.ui.ime_last_pane;
     let out = platform_ime_output(false, alive, cursor, changed, spot_at_baseline());
     // Assign unconditionally: Some enables IME at the pane cursor, None
-    // turns it off (no editor owns it this frame).
+    // turns it off (no pane to type into).
     ctx.output_mut(|o| o.ime = out);
     if let Some(w) = d.st.windows.get_mut(idx) {
         w.ui.ime_last_pane = pane;
