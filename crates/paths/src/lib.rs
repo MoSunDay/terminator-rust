@@ -206,12 +206,12 @@ mod tests {
 
     #[test]
     fn runtime_dir_lives_under_terminator_rust() {
-        // The env-reading fn itself: both branches end in the crate dir
-        // (`$XDG_RUNTIME_DIR/terminator-rust` or `~/.terminator-rust`).
-        assert!(
-            runtime_dir().ends_with("terminator-rust"),
-            "{:?}",
-            runtime_dir()
-        );
+        // Both branches end in the crate dir: `terminator-rust` under
+        // $XDG_RUNTIME_DIR, `.terminator-rust` (the config root) without.
+        // Env-free on purpose - asserting the ambient `runtime_dir()`
+        // failed whenever XDG_RUNTIME_DIR was unset, because
+        // Path::ends_with compares whole components.
+        assert!(runtime_dir_from(Some(OsString::from("/run/u/9"))).ends_with("terminator-rust"));
+        assert!(runtime_dir_from(None).ends_with(".terminator-rust"));
     }
 }

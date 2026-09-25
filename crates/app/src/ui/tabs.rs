@@ -210,12 +210,14 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 let Some((anchor, buf)) = wui.tab_edit.as_mut() else {
                     continue;
                 };
+                let edit_id = Id::new("tab_rename_edit").with(*anchor);
+                super::focus_rename_editor(ui.ctx(), edit_id);
                 let resp = ui.add(
                     TextEdit::singleline(buf)
+                        .id(edit_id)
                         .desired_width(110.0 * m.s)
                         .hint_text("tab title"),
                 );
-                resp.request_focus();
                 let confirm = ui.input(|inp| inp.key_pressed(Key::Enter));
                 // Same trap as the pane rename editor: a click anywhere
                 // outside the field must close it.
