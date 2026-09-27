@@ -1,5 +1,5 @@
 //! Remote session registry: a JSON file of known remote targets so a dead
-//! pane can be reconnected to the same zellij session with state intact.
+//! pane can be reconnected to the same named remote session with state intact.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use anyhow::Context;
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-/// A user-chosen remote destination plus the zellij session to attach to.
+/// A user-chosen remote destination plus the named session to attach to.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RemoteTarget {
     /// User-chosen display label (free form, never sent to a shell).
@@ -19,7 +19,7 @@ pub struct RemoteTarget {
     pub user: Option<String>,
     /// SSH port; `None` means ssh default (22).
     pub port: Option<u16>,
-    /// Zellij session name on the remote host (constrained to [a-z0-9-]).
+    /// Session name on the remote host (constrained to [a-z0-9-]).
     pub session_name: String,
 }
 
@@ -83,7 +83,7 @@ fn tmp_sibling(path: &Path) -> PathBuf {
     path.with_file_name(format!("{name}.{}.tmp", std::process::id()))
 }
 
-/// Identity of a target: same host + user + port + zellij session means
+/// Identity of a target: same host + user + port + session means
 /// the same remote destination.
 fn same_identity(a: &RemoteTarget, b: &RemoteTarget) -> bool {
     a.host == b.host && a.user == b.user && a.port == b.port && a.session_name == b.session_name
@@ -97,7 +97,7 @@ pub fn upsert_target(list: &mut Vec<RemoteTarget>, t: &RemoteTarget) {
     }
 }
 
-/// Find a remembered target by host and zellij session name.
+/// Find a remembered target by host and session name.
 pub fn find_target<'a>(
     list: &'a [RemoteTarget],
     host: &str,
@@ -107,22 +107,30 @@ pub fn find_target<'a>(
         .find(|t| t.host == host && t.session_name == session)
 }
 
-/// Turn a free-form label into a valid zellij session name: ASCII
-/// lowercase, digits and `-` separators only (zellij rejects anything
-/// else). Falls back to `term-rust` when nothing usable remains.
+/// Turn a free-form label into a session name: ASCII lowercase, digits
+/// and `-` separators only. Falls back to `term-rust` when empty.
 pub fn suggest_session_name(label: &str) -> String {
     let mut out = String::with_capacity(label.len());
     let mut pending_sep = false;
     for ch in label.chars() {
         if ch.is_ascii_alphanumeric() {
             if pending_sep && !out.is_empty() {
+                if out.len() == 80 {
+                    break;
+                }
                 out.push('-');
             }
             pending_sep = false;
+            if out.len() == 80 {
+                break;
+            }
             out.push(ch.to_ascii_lowercase());
         } else {
             pending_sep = true;
         }
+    }
+    if out.ends_with('-') {
+        out.pop();
     }
     if out.is_empty() {
         "term-rust".to_string()
@@ -276,5 +284,6 @@ mod tests {
         assert_eq!(suggest_session_name(""), "term-rust");
         assert_eq!(suggest_session_name("!!!"), "term-rust");
         assert_eq!(suggest_session_name("____"), "term-rust");
+        assert_eq!(suggest_session_name(&"a".repeat(100)).len(), 80);
     }
 }

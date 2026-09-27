@@ -1,4 +1,4 @@
-Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
+Commit: 5c8147f6068dcb1bfb21990043a3d5990b32dd20
 
 # agents.md - repo memory for terminator-rust
 
@@ -9,17 +9,22 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - layout-tree: tab/pane tree, splits, focus, `layout_tab` geometry
 - vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`; open_pty = posix_openpt+O_CLOEXEC pair, pre-fork argv/env/PATH tables (child branch is async-signal-safe only)
 - theme: palettes + xterm 256 cube + `blend_background`
-- remote: ssh -tt + zellij bootstrap (exit 42 = no zellij -> degrade);
-  conn-drop exits (255/-1 = remote::is_disconnect) auto-REATTACH the same
-  zellij session: app actions/reconnect.rs pump (1/2/4/5s backoff, a 30s
+- remote: ssh -tt attaches through remote `terminator-session` when present;
+  exit 42 = no keeper -> plain ssh. conn-drop exits
+  (255/-1 = remote::is_disconnect) auto-REATTACH the named session:
+  app actions/reconnect.rs pump (1/2/4/5s backoff, a 30s
   healthy run or manual respawn resets; reconnect_n survives terminate so
   quick fails grow the delay), ssh argv carries ConnectTimeout=10
-- ipc-proto: serde wire types for the UDS control socket (Request/Response)
+- terminator-session: remote binary with one detached PTY owner per named
+  session, private Unix socket, bounded output replay, multi-client attach,
+  and `list` columns SESSION/STATE/CWD/TITLE; shell exit removes the socket
+- ipc-proto: serde wire types for the UDS control socket (Request/Response),
+  including pane-scoped `Notice` and `Noticed`
 - paths: config root $HOME/.terminator-rust (state.json / sessions.json /
   oc-links.json + ipc.sock fallback); paths::migrate_legacy copies a legacy
   ~/.config/terminator-rust/<file> forward on first use (existing new file
   wins, best-effort) - do NOT re-hardcode the XDG resolution per crate
-- ctl: `terminator-ctl` CLI: list/capture/send + `oc` link/submit/status/
+- ctl: `terminator-ctl` CLI: list/capture/send/notice + `oc` link/submit/status/
   sessions; /proc discovery of the pane's opencoder process
 - oc-store: direct rusqlite access to opencoder per-workdir stores
   (schema guard v18, insert/pending/receipts; `oc-store-fixture` dev bin)
@@ -27,6 +32,8 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   {windows: Vec<WindowState{id,tree,WindowUi}>, active=rendering idx,
   focus=user window}; state at ~/.terminator-rust/state.json
   (PWindow[] + legacy tabs mirror); UDS ipc in src/ipc/;
+  `UiState.notices` keeps transient pane IDs; tab rendering aggregates them,
+  focused windows acknowledge their active tab and discard closed panes;
   actions::close_exited auto-closes EXITED panes 250ms (EXIT_GRACE)
   after the exit was seen - exit 42 stays for auto_degrade, remote
   connection-drop exits stay for reconnect::pump (pane shows a
@@ -127,10 +134,6 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - EVERY crate linking ghostty (even transitively) needs direct
   `libghostty-vt-sys = { workspace = true }` for pkg-config feature
   unification, else vendored-zig build kicks in.
-- zellij >=0.39 config.kdl: theme colors must be one-per-line (KDL v1
-  needs `;` between same-line siblings) AND all 16 ANSI slots required
-  (black/white/bright_*); we derive them from the 9-slot palette
-  (bright_*=base, black=bg, white=fg).
 - ghostty vt resize takes 4 args (cols, rows, cell_w_px, cell_h_px);
   key::Encoder options via set_options_from_terminal (no Result).
 - egui Key letters are `Key::A..Z`; ghostty key::Key letters are plain
@@ -139,8 +142,8 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   KeyEvent utf8 is set (probe: ALT+B utf8=None -> []; utf8="b" -> ESC b);
   ctrl codes encode fine without text. egui-winit on X11 delivers Key AND
   Text for Alt+letter - drop the Text duplicate (alt_keyed_chars).
-- Programs (zellij) stall on "Loading Zellij / Querying terminal emulator"
-  until DA1/DA2/DA3 + XTWINOPS size + color-scheme queries are answered:
+- Programs may stall while querying the terminal emulator until DA1/DA2/DA3
+  + XTWINOPS size + color-scheme queries are answered:
   vt-pane/src/effects.rs installs the callbacks; resize keeps cell_px live.
 - ghostty mouse: `set_options_from_terminal` AND the `.size` setopt BOTH
   reset the encoder's `last_cell` (per-cell motion dedup) -> refresh
@@ -723,4 +726,3 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
 ## Verified end-to-end (final state)
 See [agents/verified-end-to-end.md](agents/verified-end-to-end.md) -
 suite status + the user-visible checks proven live.
-

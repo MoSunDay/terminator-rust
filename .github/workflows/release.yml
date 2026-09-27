@@ -101,7 +101,7 @@ jobs:
             echo '## Artifacts'
             echo
             echo 'Linux x86_64 and macOS aarch64 tarballs with'
-            echo '`bin/terminator-rust` + `bin/terminator-ctl`; verify against the'
+            echo '`bin/terminator-rust` + `bin/terminator-ctl` + `bin/terminator-session`; verify against the'
             echo 'attached `.sha256` sidecars.'
             echo
             echo '## Checksums'

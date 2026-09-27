@@ -1,5 +1,5 @@
 //! Automatic reconnection of remote panes whose ssh died with a
-//! connection-failure exit (network drop): the zellij session survives
+//! connection-failure exit (network drop): the remote session survives
 //! on the host, so the pane is KEPT (never corpse-closed) and reattached
 //! through the idempotent bootstrap with a short backoff until the
 //! network is back - recovery is then immediate.
@@ -73,7 +73,7 @@ pub fn pump(st: &AppState, sess: &mut SessionMap) {
         );
     }
     // Due retries: dropping the dead session is enough, ensure_sessions
-    // respawns it (fresh `zellij attach --create`, same session).
+    // respawns it (fresh attach to the same named session).
     let due: Vec<PaneId> = sess
         .reconnect_at
         .iter()

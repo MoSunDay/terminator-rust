@@ -13,12 +13,11 @@ Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
 
 - headless UI smoke：Xvfb + xdotool 基础存活/输入烟雾（无 WM 时必须
   `xdotool windowfocus` 才能把按键送进窗口）
-- remote e2e（`cargo test -p remote --test zellij_e2e -- --ignored`）：
-  本机 sshd key + zellij 的远端会话；收尾只删本测试自己的 session，
-  绝不 delete-all-sessions
-- net-drop e2e：真断网后的自动重连全链路（退避重生、pending badge、
-  marker 存活）；铁律是测试自身跑在 sshd 会话里 —— 不许停 sshd，只能
-  kill -9 单条连接的子进程或用带注释的 iptables REJECT 窗口
+- remote keeper：`cargo test -p remote --test keeper_selection` 验证远端命令
+  只调用 `terminator-session`；`cargo test -p terminator-session --test reconnect`
+  用私有 HOME 验证断开、重连、并发附着及 shell 状态存活。
+- 真断网后的 SSH 全链路测试尚未在当前 keeper 实现上重建；验证时须隔离
+  测试连接，不能停止共享 sshd 或触碰已有会话。
 - control-channel e2e（`e2e-ipc-oc.sh`）：list/capture/send +
   oc link/submit/status/--wait + SIGTERM 后陈旧 socket 回收
 - mouse/key e2e（`e2e-mouse-key.sh`）：裸 Ctrl+C 的 ^C 回显、跨 pane 拖拽
@@ -42,27 +41,13 @@ Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
 - ui style e2e（`e2e-ui-style.sh`）：scrot/PIL 像素门（pane 底色/主题混合、
   gutter 双色、chrome 顶栏、tab 下划线 + I1/I2 单 tab 仍显芯片行）
 
-## 明细（English，从 agents.md 原样搬出）
+## 明细
 
 - headless UI smoke: Xvfb :NN + xdotool (type into window works; needs
   `xdotool windowfocus` - no WM focus otherwise)
-- remote e2e: `cargo test -p remote --test zellij_e2e -- --ignored`
-  (needs local sshd key auth + zellij; cleanup deletes ONLY the test's
-  own session via `zellij delete-session <name> --force` - the
-  net-drop rule below spells out why never delete-all-sessions)
-- net-drop e2e (REAL network interruption + session recovery):
-  `cargo test -p remote --test net_drop_e2e -- --ignored` +
-  `cargo test -p app reconnect_net -- --ignored` (the latter drives the
-  full frame loop pump_all/close_exited/reconnect::pump/ensure_sessions
-  against a live attach: close_exited spares the pane, pending badge
-  shows, backoff(1)=1s respawn, marker survives). HARD RULE: the test
-  process itself runs INSIDE an sshd session - NEVER stop/restart sshd
-  or kill the listener; interrupt via kill -9 of the per-connection
-  sshd child (pair ports with `ss -tnp`) or an iptables REJECT window on
-  `-i lo --dport 22` tagged with a comment (idempotent delete; NEVER
-  assert while the rule is inserted - a panic strands it). REJECT
-  tcp-reset fails ssh in ~0.1s (ConnectTimeout never hangs); server RST
-  yields a natural exit 255 both shapes reattach with state intact.
+- remote keeper: `cargo test -p remote --test keeper_selection` and
+  `cargo test -p terminator-session --test reconnect` use private fixtures;
+  no shared SSH connection or existing process is changed.
 - control-channel e2e: `scripts/bin/e2e-ipc-oc.sh` (Xvfb + fake opencoder
   holding a fixture store open in a named pane; covers list/capture/send,
   oc link/submit/status/--wait, stale-socket reclaim after SIGTERM)

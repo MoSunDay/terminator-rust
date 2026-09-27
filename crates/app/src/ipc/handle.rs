@@ -19,6 +19,13 @@ use crate::state::{AppState, Data};
 pub fn execute(req: Request, fds: Vec<OwnedFd>, payload: Vec<u8>, data: &mut Data) -> Response {
     match req {
         Request::List => list(&data.st, &mut data.sess),
+        Request::Notice { pane } => match resolve(&data.st, &pane) {
+            Ok(id) => {
+                data.ui.notices.insert(id);
+                Response::Noticed
+            }
+            Err(resp) => resp,
+        },
         Request::Capture { pane, lines } => match resolve(&data.st, &pane) {
             Ok(id) => match data.sess.map.get_mut(&id) {
                 Some(sess) => capture(sess, lines),
@@ -220,6 +227,33 @@ mod tests {
         let blank = frame(&["", "  ", ""]);
         assert_eq!(frame_text(&blank, 10), "\n\n");
         assert_eq!(frame_text(&blank, 1), "");
+    }
+
+    #[test]
+    fn notice_marks_existing_pane_once_and_rejects_unknown_pane() {
+        let mut d = data(fresh_state(), vec![]);
+        for _ in 0..2 {
+            assert_eq!(
+                exec(
+                    Request::Notice {
+                        pane: PaneSelector::Id(1)
+                    },
+                    &mut d
+                ),
+                Response::Noticed
+            );
+        }
+        assert_eq!(d.ui.notices.len(), 1);
+        assert!(d.ui.notices.contains(&1));
+        assert!(matches!(
+            exec(
+                Request::Notice {
+                    pane: PaneSelector::Id(999)
+                },
+                &mut d
+            ),
+            Response::Error { .. }
+        ));
     }
 
     #[test]

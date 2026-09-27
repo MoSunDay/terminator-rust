@@ -8,7 +8,7 @@ use layout_tree::{
     sorted_pane_ids, Axis, DropZone, PaneId,
 };
 use log::warn;
-use remote::{PaneKind, EXIT_NO_ZELLIJ};
+use remote::{PaneKind, EXIT_NO_KEEPER};
 
 use crate::session_map::{self, SessionMap};
 use crate::state::{
@@ -49,6 +49,7 @@ pub(crate) fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
             &st.theme_name,
             session_map::START_COLS,
             session_map::START_ROWS,
+            id,
         ) {
             Ok(s) => session_map::note_spawned(sess, id, s),
             Err(e) => {
@@ -260,6 +261,7 @@ pub fn do_respawn(st: &mut AppState, sess: &mut SessionMap, pane: PaneId, dirty:
             &st.theme_name,
             session_map::START_COLS,
             session_map::START_ROWS,
+            pane,
         ) {
             Ok(s) => session_map::note_spawned(sess, pane, s),
             Err(e) => {
@@ -272,12 +274,12 @@ pub fn do_respawn(st: &mut AppState, sess: &mut SessionMap, pane: PaneId, dirty:
     *dirty = true;
 }
 
-/// Auto-degrade remote panes that exited with the "no zellij" marker.
+/// Auto-degrade remote panes that exited with the "no keeper" marker.
 pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) {
     let ids: Vec<PaneId> = sess
         .map
         .iter()
-        .filter(|(_, s)| s.exit == Some(EXIT_NO_ZELLIJ))
+        .filter(|(_, s)| s.exit == Some(EXIT_NO_KEEPER))
         .map(|(id, _)| *id)
         .collect();
     for id in ids {
@@ -300,6 +302,7 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
                 &st.theme_name,
                 session_map::START_COLS,
                 session_map::START_ROWS,
+                id,
             ) {
                 session_map::note_spawned(sess, id, s);
             }
@@ -319,7 +322,7 @@ fn exit_ripe(st: &AppState, sess: &SessionMap, id: &PaneId, now: Instant) -> boo
         // alive, auto_degrade owns the exit-42 marker of a non-degraded
         // remote pane, reconnect::pump owns remote connection-drop exits
         Some(s) => s.exit.is_some_and(|e| {
-            (e != EXIT_NO_ZELLIJ || !pane_degradable(st, id)) && !pane_disconnected(st, id, e)
+            (e != EXIT_NO_KEEPER || !pane_degradable(st, id)) && !pane_disconnected(st, id, e)
         }),
         // spawn-backoff candidate, not a corpse
         None => false,
@@ -590,7 +593,6 @@ mod close_tab_tests {
 #[cfg(test)]
 mod move_pane_tests;
 #[cfg(test)]
-mod reconnect_net_tests;
 #[cfg(test)]
 mod close_exited_tests {
     use super::*;
@@ -698,7 +700,7 @@ mod close_exited_tests {
         if let Some(m) = st.panes.get_mut(&1) {
             m.kind = remote_kind();
         }
-        ripen(&mut sess, 1, EXIT_NO_ZELLIJ);
+        ripen(&mut sess, 1, EXIT_NO_KEEPER);
         close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
         assert!(st.panes.contains_key(&1), "degrade path owns exit 42");
         assert!(sess.map.contains_key(&1));
@@ -710,7 +712,7 @@ mod close_exited_tests {
     fn local_exit42_closes_like_any_dead_shell() {
         let (mut st, mut sess, mut ui) = split_state();
         let mut dirty = false;
-        ripen(&mut sess, 1, EXIT_NO_ZELLIJ);
+        ripen(&mut sess, 1, EXIT_NO_KEEPER);
         close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
         assert!(
             !st.panes.contains_key(&1),
@@ -728,7 +730,7 @@ mod close_exited_tests {
             m.kind = remote_kind();
             m.degraded = true;
         }
-        ripen(&mut sess, 1, EXIT_NO_ZELLIJ);
+        ripen(&mut sess, 1, EXIT_NO_KEEPER);
         close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
         assert!(!st.panes.contains_key(&1), "already degraded, no hand-off");
         assert!(!sess.map.contains_key(&1));

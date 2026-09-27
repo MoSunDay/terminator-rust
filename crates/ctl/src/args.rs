@@ -12,6 +12,8 @@ commands:
   list [--json]                              list panes
   capture <pane> [--lines N] [--json]        show a pane's visible screen
   send <pane> --text <text> [--bracketed]    type text into a pane
+  notice [<pane>]                           mark its tab for attention; no
+                                             pane uses $TERMINATOR_PANE_ID
   instances [--json] [--all]                 list running instances (control
                                              sockets in the runtime dir;
                                              --all keeps dead ones)
@@ -45,6 +47,9 @@ pub enum Cli {
         pane: PaneSelector,
         text: String,
         bracketed: bool,
+    },
+    Notice {
+        pane: Option<PaneSelector>,
     },
     /// `instances`: roster of terminator-rust control sockets in the
     /// runtime dir, probed for liveness (dead ones only with `all`).
@@ -83,12 +88,23 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
         "list" => parse_list(rest)?,
         "capture" => parse_capture(rest)?,
         "send" => parse_send(rest)?,
+        "notice" => parse_notice(rest)?,
         "instances" => crate::args_extra::parse_instances(rest)?,
         "migrate" => crate::args_extra::parse_migrate(rest)?,
         "oc" => Cli::Oc(rest.to_vec()),
         other => return Err(format!("unknown subcommand '{other}'")),
     };
     Ok(Parsed { socket, cmd })
+}
+
+fn parse_notice(rest: &[String]) -> Result<Cli, String> {
+    match rest {
+        [] => Ok(Cli::Notice { pane: None }),
+        [pane] if !pane.starts_with('-') => Ok(Cli::Notice {
+            pane: Some(parse_pane(pane)),
+        }),
+        _ => Err("notice accepts at most one <pane> argument".to_string()),
+    }
 }
 
 pub fn usage() -> &'static str {
@@ -209,6 +225,21 @@ mod tests {
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| (*x).to_string()).collect()
+    }
+
+    #[test]
+    fn notice_defaults_to_child_pane_and_accepts_explicit_target() {
+        assert_eq!(
+            parse(&s(&["notice"])).unwrap().cmd,
+            Cli::Notice { pane: None }
+        );
+        assert_eq!(
+            parse(&s(&["notice", "42"])).unwrap().cmd,
+            Cli::Notice {
+                pane: Some(PaneSelector::Id(42))
+            }
+        );
+        assert!(parse(&s(&["notice", "1", "2"])).is_err());
     }
 
     #[test]
