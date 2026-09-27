@@ -773,3 +773,26 @@ fn pty_declares_truecolor_and_honors_explicit_override() {
         assert_eq!(row_text(&frame, 0), override_value.unwrap_or("truecolor"));
     }
 }
+
+#[test]
+fn pty_does_not_inherit_parent_no_color() {
+    for override_value in [None, Some("1")] {
+        let mut opts = SessionOpts::command(
+            40,
+            4,
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "printf '%s' \"${NO_COLOR-unset}\"".into(),
+            ],
+        );
+        if let Some(value) = override_value {
+            opts.env.push(format!("NO_COLOR={value}"));
+        }
+        let mut sess = task::spawn_session(&opts).expect("session");
+        wait_output(&mut sess, 2000);
+        task::pump(&mut sess).expect("pump");
+        let frame = task::frame(&mut sess).expect("frame");
+        assert_eq!(row_text(&frame, 0), override_value.unwrap_or("unset"));
+    }
+}
