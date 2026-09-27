@@ -1,3 +1,5 @@
+Commit: 4224d64e16b9e6f7da6c6bdb8352d65fabc1e3c5
+
 # Attention notices: one transport — OSC 9 to the pane's own tty
 
 `terminator-ctl notice` takes NO arguments and never talks to the app
