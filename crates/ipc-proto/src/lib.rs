@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 /// Env var carrying the control socket path to pane children.
 pub const ENV_SOCKET: &str = "TERMINATOR_SOCK";
+/// Pane identity inherited by local child processes and agent hooks.
+pub const ENV_PANE_ID: &str = "TERMINATOR_PANE_ID";
+/// Absolute path to the sibling control binary, when installed.
+pub const ENV_CTL: &str = "TERMINATOR_CTL";
 /// Default connect/read timeout for clients, in seconds.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 
@@ -75,6 +79,9 @@ pub struct CaptureOut {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     List,
+    Notice {
+        pane: PaneSelector,
+    },
     Capture {
         pane: PaneSelector,
         #[serde(default = "default_lines")]
@@ -111,6 +118,8 @@ fn default_lines() -> u32 {
 pub enum Response {
     #[serde(rename = "list")]
     List { panes: Vec<PaneInfo> },
+    #[serde(rename = "noticed")]
+    Noticed,
     #[serde(rename = "capture")]
     Capture(CaptureOut),
     #[serde(rename = "written")]
@@ -138,6 +147,17 @@ mod tests {
 
     #[test]
     fn request_roundtrip() {
+        let notice: Request = serde_json::from_str(r#"{"cmd":"notice","pane":7}"#).unwrap();
+        assert_eq!(
+            notice,
+            Request::Notice {
+                pane: PaneSelector::Id(7)
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&Response::Noticed).unwrap(),
+            r#"{"ok":"noticed"}"#
+        );
         let req: Request = serde_json::from_str(r#"{"cmd":"capture","pane":"agent1"}"#).unwrap();
         assert_eq!(
             req,

@@ -9,7 +9,7 @@
 #   terminator-rust-<version>-<triple>.tar.gz          deterministic archive
 #   terminator-rust-<version>-<triple>.tar.gz.sha256   sidecar checksum
 #
-# Contents: bin/terminator-rust + bin/terminator-ctl, README.md,
+# Contents: bin/terminator-rust + bin/terminator-ctl + bin/terminator-session, README.md,
 # LICENSE-* when present, hicolor icon tree (Linux) or the .icns bundle
 # (macOS). The archive is deterministic (sorted names, epoch mtime,
 # zeroed owner, gzip -n) so identical inputs pack byte-identically -
@@ -46,7 +46,7 @@ DIRNAME="terminator-rust-$VERSION-$TRIPLE"
 STAGE="$DIST/$DIRNAME"
 TGZ="$DIST/$DIRNAME.tar.gz"
 
-for f in target/release/terminator-rust target/release/terminator-ctl README.md; do
+for f in target/release/terminator-rust target/release/terminator-ctl target/release/terminator-session README.md; do
     [ -f "$f" ] || fail "$f missing (run cargo build --release first)"
 done
 
@@ -54,6 +54,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/bin"
 install -m 0755 target/release/terminator-rust "$STAGE/bin/terminator-rust"
 install -m 0755 target/release/terminator-ctl "$STAGE/bin/terminator-ctl"
+install -m 0755 target/release/terminator-session "$STAGE/bin/terminator-session"
 install -m 0644 README.md "$STAGE/README.md"
 for f in LICENSE-MIT LICENSE-APACHE; do
     [ -f "$f" ] && install -m 0644 "$f" "$STAGE/$f"

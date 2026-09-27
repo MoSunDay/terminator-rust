@@ -11,5 +11,5 @@ fn main() {
         port: None,
         session_name: session.into(),
     };
-    println!("{}", bootstrap_command(&t, remote::DEFAULT_PALETTE_HEX));
+    println!("{}", bootstrap_command(&t));
 }

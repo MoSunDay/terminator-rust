@@ -10,7 +10,7 @@ fn main() -> anyhow::Result<()> {
         port: None,
         session_name: session,
     };
-    let plan = remote::remote_plan(&target, remote::DEFAULT_PALETTE_HEX, true);
+    let plan = remote::remote_plan(&target, true);
     println!("argv: {:?}", plan.argv);
     let opts = vt_pane::SessionOpts::command(100, 28, plan.argv);
     let mut sess = vt_pane::task::spawn_session(&opts)?;

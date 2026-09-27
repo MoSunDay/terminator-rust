@@ -110,7 +110,9 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     // inspector between render passes act on the focused window.
     if ui.ctx().input(|i| i.viewport().focused == Some(true)) {
         d.st.focus = idx;
+        crate::attention::acknowledge_active(&d.st, &mut d.ui, idx);
     }
+    crate::attention::discard_closed(&d.st, &mut d.ui);
     // A press inside a window the WM hasn't focused (yet) activates it
     // explicitly: chrome/title-bar clicks can be eaten by WM focus
     // policy or a pending move-grab, but a programmatic activation

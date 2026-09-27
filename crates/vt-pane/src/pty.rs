@@ -65,6 +65,11 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
         if key == "TERM" || key == "TERM_PROGRAM" || key == "LANG" || key == "LC_ALL" {
             continue;
         }
+        // A nested terminator instance may inherit an older pane identity.
+        // Keep exactly the explicit value for every overridden key.
+        if overridden(extra_env, &key) {
+            continue;
+        }
         let joined = format!("{}={}", key, v.to_string_lossy());
         if let Ok(c) = CString::new(joined) {
             env.push(c);
@@ -142,6 +147,12 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
             })
         }
     }
+}
+
+fn overridden(extra_env: &[String], key: &str) -> bool {
+    extra_env
+        .iter()
+        .any(|entry| entry.split_once('=').is_some_and(|(name, _)| name == key))
 }
 
 /// Duplicate an fd (`F_DUPFD_CLOEXEC`, portable across the supported
@@ -365,4 +376,17 @@ fn resolve_on_path(prog: &CString, env: &[CString]) -> Option<CString> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::overridden;
+
+    #[test]
+    fn explicit_pane_identity_excludes_inherited_identity() {
+        let extra = vec!["TERMINATOR_PANE_ID=42".to_string(), "FOO=x=y".to_string()];
+        assert!(overridden(&extra, "TERMINATOR_PANE_ID"));
+        assert!(overridden(&extra, "FOO"));
+        assert!(!overridden(&extra, "TERMINATOR_PANE"));
+    }
 }

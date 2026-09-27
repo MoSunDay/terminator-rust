@@ -10,6 +10,7 @@ members = [
     "crates/ctl",
     "crates/oc-store",
     "crates/paths",
+    "crates/terminator-session",
 ]
 
 [workspace.package]

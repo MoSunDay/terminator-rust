@@ -18,7 +18,7 @@ mod uds;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use ipc_proto::{Request, Response, DEFAULT_TIMEOUT_SECS};
+use ipc_proto::{PaneSelector, Request, Response, DEFAULT_TIMEOUT_SECS, ENV_PANE_ID};
 
 use crate::args::Cli;
 
@@ -94,6 +94,21 @@ fn dispatch(cli: Cli, socket: Option<&str>) -> Result<()> {
                 other => return Err(unexpected(&other)),
             };
             println!("wrote {bytes} bytes");
+        }
+        Cli::Notice { pane } => {
+            let pane = match pane {
+                Some(pane) => pane,
+                None => PaneSelector::Id(
+                    std::env::var(ENV_PANE_ID)
+                        .map_err(|_| anyhow!("notice requires <pane> or ${ENV_PANE_ID}"))?
+                        .parse()
+                        .map_err(|_| anyhow!("invalid ${ENV_PANE_ID}"))?,
+                ),
+            };
+            match uds::request_flagged(socket, &Request::Notice { pane }, timeout)? {
+                Response::Noticed => {}
+                other => return Err(unexpected(&other)),
+            }
         }
         Cli::Instances { json, all } => {
             let mut rows = Vec::new();

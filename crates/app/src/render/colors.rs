@@ -2,8 +2,7 @@
 
 use egui::Color32;
 use theme::{
-    blend_background, builtin_by_name, is_dark as theme_is_dark, rgb_to_hex, Palette, Rgb,
-    BUILTIN_NAMES,
+    blend_background, builtin_by_name, is_dark as theme_is_dark, Palette, Rgb, BUILTIN_NAMES,
 };
 use vt_pane::term::Color as VtColor;
 use vt_pane::CellData;
@@ -120,21 +119,6 @@ pub fn palette_of(name: &str) -> Palette {
 /// True when the named theme's background is dark (feeds OSC color-scheme answers).
 pub fn is_dark(name: &str) -> bool {
     theme_is_dark(&palette_of(name))
-}
-
-/// Nine hex slots for remote bootstrap: fg, bg, red..cyan, orange.
-pub fn palette_hex(p: &Palette) -> [String; 9] {
-    [
-        rgb_to_hex(p.foreground),
-        rgb_to_hex(p.background),
-        rgb_to_hex(p.normal[0]),
-        rgb_to_hex(p.normal[1]),
-        rgb_to_hex(p.normal[2]),
-        rgb_to_hex(p.normal[3]),
-        rgb_to_hex(p.normal[4]),
-        rgb_to_hex(p.normal[5]),
-        rgb_to_hex(p.bright[0]),
-    ]
 }
 
 /// Effective pane background: global color override over theme bg.
@@ -281,18 +265,6 @@ mod tests {
             palette_of("no-such-theme").name,
             palette_of(BUILTIN_NAMES[0]).name
         );
-    }
-
-    #[test]
-    fn palette_hex_has_nine_slots() {
-        let p = palette_of("tokyo-night");
-        let hex = palette_hex(&p);
-        assert_eq!(hex.len(), 9);
-        for h in &hex {
-            assert!(h.starts_with('#') && h.len() == 7, "bad hex {h}");
-        }
-        assert_eq!(hex[0], rgb_to_hex(p.foreground));
-        assert_eq!(hex[2], rgb_to_hex(p.normal[0]));
     }
 
     #[test]

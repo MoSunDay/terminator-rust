@@ -3,12 +3,11 @@
 //! Builders return plain `SpawnPlan` values; the pane/PTY layer turns
 //! them into a spawned child. Nothing here performs I/O.
 
-use crate::bootstrap::{bootstrap_command, ssh_argv, DEFAULT_PALETTE_HEX};
+use crate::bootstrap::{bootstrap_command, ssh_argv};
 use crate::registry::RemoteTarget;
 
-/// Remote exit code meaning "zellij is not installed on that host" (see
-/// [`crate::bootstrap::EXIT_NO_ZELLIJ_SHELL`]).
-pub const EXIT_NO_ZELLIJ: i32 = 42;
+/// Remote exit code meaning `terminator-session` is unavailable.
+pub const EXIT_NO_KEEPER: i32 = 42;
 
 /// ssh's own failure exit code: connection refused/unreachable/reset,
 /// keepalive timeout, broken pipe. The connection died - the session on
@@ -27,7 +26,7 @@ pub fn is_disconnect(code: i32) -> bool {
 pub enum PaneKind {
     /// A local interactive shell.
     Local,
-    /// An ssh session to a remote zellij (or plain shell after degrade).
+    /// An ssh session to a remote keeper (or plain shell after degrade).
     Remote(RemoteTarget),
 }
 
@@ -46,9 +45,9 @@ pub enum PaneStatus {
     Running,
     /// Child exited with the given code.
     Exited(i32),
-    /// Remote reported "no zellij installed" (exit 42): caller should
-    /// degrade to a plain ssh shell.
-    NoZellij,
+    /// Remote reported "no session keeper installed" (exit 42): caller should
+    /// degrade to a plain SSH shell.
+    NoKeeper,
     /// Connection dropped (exit 255 or a negative poll/read failure):
     /// produced by `interpret_exit` for connection-failure exits, the
     /// pane is kept and reattached.
@@ -69,13 +68,12 @@ pub fn local_plan() -> SpawnPlan {
 
 /// Remote pane spawn plan.
 ///
-/// When `preflight_ok` is true zellij is assumed present and the argv
-/// carries the idempotent bootstrap command (attach --create the
-/// remembered session). Otherwise the argv is a plain `ssh -tt` shell and
-/// the bootstrap is skipped entirely, degrading gracefully.
-pub fn remote_plan(target: &RemoteTarget, palette_hex: [&str; 9], preflight_ok: bool) -> SpawnPlan {
+/// When `preflight_ok` is true, the argv carries the idempotent bootstrap
+/// command: attach through terminator-session. Otherwise the argv is
+/// a plain `ssh -tt` shell.
+pub fn remote_plan(target: &RemoteTarget, preflight_ok: bool) -> SpawnPlan {
     let remote_cmd = if preflight_ok {
-        Some(bootstrap_command(target, palette_hex))
+        Some(bootstrap_command(target))
     } else {
         None
     };
@@ -89,24 +87,20 @@ pub fn remote_plan(target: &RemoteTarget, palette_hex: [&str; 9], preflight_ok: 
     }
 }
 
-/// Reconnect to a remembered session: same idempotent bootstrap, so the
-/// zellij session (and its state) is reattached or recreated.
+/// Reconnect to a remembered session through the same idempotent bootstrap.
 pub fn reconnect_argv(target: &RemoteTarget) -> Vec<String> {
-    ssh_argv(
-        target,
-        Some(&bootstrap_command(target, DEFAULT_PALETTE_HEX)),
-    )
+    ssh_argv(target, Some(&bootstrap_command(target)))
 }
 
 /// Map an observed wait-status exit code to a [`PaneStatus`].
 ///
 /// `None` (still running) maps to [`PaneStatus::Running`]; `Some(42)` is
-/// the remote "no zellij" marker; 255/-1 means the connection dropped
+/// the remote "no keeper" marker; 255/-1 means the connection dropped
 /// (now [`PaneStatus::Disconnected`]); anything else is a plain exit.
 pub fn interpret_exit(code: Option<i32>) -> PaneStatus {
     match code {
         None => PaneStatus::Running,
-        Some(EXIT_NO_ZELLIJ) => PaneStatus::NoZellij,
+        Some(EXIT_NO_KEEPER) => PaneStatus::NoKeeper,
         Some(code) if is_disconnect(code) => PaneStatus::Disconnected,
         Some(other) => PaneStatus::Exited(other),
     }
@@ -126,10 +120,6 @@ mod tests {
         }
     }
 
-    fn palette() -> [&'static str; 9] {
-        DEFAULT_PALETTE_HEX
-    }
-
     #[test]
     fn local_plan_runs_login_shell_interactive() {
         let plan = local_plan();
@@ -146,7 +136,7 @@ mod tests {
 
     #[test]
     fn remote_plan_with_preflight_carries_bootstrap() {
-        let plan = remote_plan(&target(), palette(), true);
+        let plan = remote_plan(&target(), true);
         assert_eq!(plan.argv.first().map(String::as_str), Some("ssh"));
         assert_eq!(
             plan.env,
@@ -157,8 +147,8 @@ mod tests {
             ]
         );
         let last = plan.argv.last().expect("remote cmd argv");
-        assert!(last.starts_with("command -v zellij"));
-        assert!(last.contains("attach --create 'work'"));
+        assert!(last.starts_with("command -v terminator-session"));
+        assert!(last.contains("terminator-session attach 'work' --title 'Work'"));
         assert!(last.contains("exit 42"));
         // user@host is present with the port.
         assert!(plan.argv.contains(&"alice@box.example.net".to_string()));
@@ -167,7 +157,7 @@ mod tests {
 
     #[test]
     fn remote_plan_without_preflight_is_plain_ssh() {
-        let plan = remote_plan(&target(), palette(), false);
+        let plan = remote_plan(&target(), false);
         assert_eq!(plan.argv.first().map(String::as_str), Some("ssh"));
         let last = plan.argv.last().expect("last argv");
         assert_eq!(last, "alice@box.example.net", "no remote command expected");
@@ -177,7 +167,7 @@ mod tests {
 
     #[test]
     fn remote_plan_env_entries_are_kv() {
-        for entry in remote_plan(&target(), palette(), true).env {
+        for entry in remote_plan(&target(), true).env {
             assert_eq!(entry.match_indices('=').count(), 1, "entry {entry}");
             assert!(!entry.starts_with('=') && !entry.ends_with('='));
         }
@@ -188,15 +178,15 @@ mod tests {
         let argv = reconnect_argv(&target());
         assert_eq!(argv.first().map(String::as_str), Some("ssh"));
         let last = argv.last().expect("reconnect cmd");
-        assert!(last.contains("attach --create 'work'"));
+        assert!(last.contains("terminator-session attach 'work' --title 'Work'"));
         assert!(last.contains("exit 42"));
-        assert_eq!(last, &bootstrap_command(&target(), DEFAULT_PALETTE_HEX));
+        assert_eq!(last, &bootstrap_command(&target()));
     }
 
     #[test]
     fn interpret_exit_maps_codes() {
         assert_eq!(interpret_exit(None), PaneStatus::Running);
-        assert_eq!(interpret_exit(Some(EXIT_NO_ZELLIJ)), PaneStatus::NoZellij);
+        assert_eq!(interpret_exit(Some(EXIT_NO_KEEPER)), PaneStatus::NoKeeper);
         assert_eq!(interpret_exit(Some(0)), PaneStatus::Exited(0));
         assert_eq!(interpret_exit(Some(1)), PaneStatus::Exited(1));
         assert_eq!(interpret_exit(Some(130)), PaneStatus::Exited(130));

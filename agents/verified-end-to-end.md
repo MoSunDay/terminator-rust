@@ -6,8 +6,8 @@ Live-checked capabilities of the current build. Maintenance: keep
 this list to what was actually verified - suite names/ids move here
 only when the matching script exists and passed.
 
-All suites green (ui-style, mouse-key, windows W1-W10, window-controls
-R1-R6/S1-S5, ipc-oc, cjk, oc-exit, ime M1-M7, migrate M1-M5, remote);
+All current UI suites green (ui-style, mouse-key, windows W1-W10, window-controls
+R1-R6/S1-S5, ipc-oc, cjk, oc-exit, ime M1-M7, migrate M1-M5);
 per-script coverage in [agents/e2e-suites.md](e2e-suites.md); Xvfb
 scripts export TERMINATOR_OPAQUE=1; live-verified
 on deploy target 192.168.31.196 (2 X windows, per-window typing
@@ -43,9 +43,9 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   column-count parsers adapt), TERMINATOR_SOCK in pane env, oc link via
   /proc fd discovery, submit -> pending -> consume -> receipt by seq,
   honest --wait, SIGTERM-stale socket reclaim (perms 600 on bind/reclaim)
-- remote zellij: bootstrap create+attach, reconnect, exit-42 degrade;
-  gate = loading cleared + typed marker round-trip + session listed
-  ("ZELLIJ" never renders - chrome-free config)
+- remote keeper: isolated tests verify named attach, retained shell state,
+  concurrent clients, listing, exit-42 degrade and no Zellij invocation.
+  Current keeper-based SSH interruption has not been live verified.
 - persistence: state.json save/restore across restart
 
 See [agents.md](../agents.md) for the crate map and the

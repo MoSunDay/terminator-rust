@@ -39,7 +39,7 @@ for dir in $PATH; do
 done
 IFS=$OLDIFS
 
-if python3 -m ziglang --version >/dev/null 2>&1; then
+if python3 -m ziglang version >/dev/null 2>&1; then
   exec python3 -m ziglang "$@"
 fi
 

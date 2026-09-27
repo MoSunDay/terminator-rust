@@ -1,7 +1,7 @@
 //! pane-id -> Session management plus thin vt_pane wrappers.
 //!
 //! Spawning maps `PaneMeta` kinds to remote spawn plans (local shell,
-//! ssh+zellij bootstrap, degraded plain ssh) and owns the live `Session`
+//! ssh+remote keeper bootstrap, degraded plain ssh) and owns live `Session`
 //! objects. No egui types here.
 
 use std::collections::HashMap;
@@ -124,12 +124,20 @@ pub fn note_spawned(sess: &mut SessionMap, id: PaneId, s: Session) {
     sess.spawned_at.insert(id, Instant::now());
 }
 
-fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool) -> SessionOpts {
+fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool, pane: PaneId) -> SessionOpts {
+    let mut env = plan.env.clone();
+    env.push(format!("{}={pane}", ipc_proto::ENV_PANE_ID));
+    if let Ok(path) = std::env::current_exe() {
+        let ctl = path.with_file_name("terminator-ctl");
+        if ctl.is_file() {
+            env.push(format!("{}={}", ipc_proto::ENV_CTL, ctl.display()));
+        }
+    }
     SessionOpts {
         cols,
         rows,
         argv: plan.argv.clone(),
-        env: plan.env.clone(),
+        env,
         scrollback_lines: 10_000,
         dark,
     }
@@ -137,22 +145,25 @@ fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool) -> SessionOpts {
 
 /// Spawn a session for a pane per its kind.
 ///
-/// Local panes run the login shell. Remote panes run the zellij bootstrap
-/// with the current theme palette; degraded panes (host without zellij or
-/// after a degraded respawn) get a plain `ssh -tt` shell.
-pub fn spawn_meta(meta: &PaneMeta, theme_name: &str, cols: u16, rows: u16) -> Result<Session> {
+/// Local panes run the login shell. Remote panes use terminator-session;
+/// degraded panes (host without it) get a plain `ssh -tt` shell.
+pub fn spawn_meta(
+    meta: &PaneMeta,
+    theme_name: &str,
+    cols: u16,
+    rows: u16,
+    pane: PaneId,
+) -> Result<Session> {
     let dark = colors::is_dark(theme_name);
     match &meta.kind {
-        PaneKind::Local => vtask::spawn_session(&opts(&local_plan(), cols, rows, dark)),
+        PaneKind::Local => vtask::spawn_session(&opts(&local_plan(), cols, rows, dark, pane)),
         PaneKind::Remote(target) => {
             if meta.degraded {
-                let plan = remote_plan(target, remote::DEFAULT_PALETTE_HEX, false);
-                vtask::spawn_session(&opts(&plan, cols, rows, dark))
+                let plan = remote_plan(target, false);
+                vtask::spawn_session(&opts(&plan, cols, rows, dark, pane))
             } else {
-                let owned = colors::palette_hex(&colors::palette_of(theme_name));
-                let hex: [&str; 9] = std::array::from_fn(|i| owned[i].as_str());
-                let plan = remote_plan(target, hex, true);
-                vtask::spawn_session(&opts(&plan, cols, rows, dark))
+                let plan = remote_plan(target, true);
+                vtask::spawn_session(&opts(&plan, cols, rows, dark, pane))
             }
         }
     }
@@ -265,6 +276,15 @@ mod tests {
             manual_title: None,
             degraded: false,
         };
-        assert!(spawn_meta(&meta, "dracula", 10, 5).is_ok());
+        assert!(spawn_meta(&meta, "dracula", 10, 5, 1).is_ok());
+    }
+
+    #[test]
+    fn local_pane_exports_its_notice_identity() {
+        let opts = opts(&local_plan(), 80, 24, true, 42);
+        assert!(opts
+            .env
+            .iter()
+            .any(|entry| entry == "TERMINATOR_PANE_ID=42"));
     }
 }

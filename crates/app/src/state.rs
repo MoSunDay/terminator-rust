@@ -4,7 +4,7 @@
 //! so everything stays unit-testable headlessly. Session-touching
 //! orchestrations live in `actions`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use layout_tree::{new_tree, split_pane, Axis, LayoutTree, PaneId};
 use remote::{PaneKind, RemoteTarget};
@@ -25,7 +25,7 @@ pub const DEFAULT_FONT_SIZE: f32 = 15.0;
 pub struct PaneMeta {
     pub kind: PaneKind,
     pub manual_title: Option<String>,
-    /// Remote pane fell back to a plain ssh shell (no zellij on the host).
+    /// Remote pane fell back to a plain ssh shell (no keeper on the host).
     pub degraded: bool,
 }
 
@@ -260,6 +260,8 @@ pub struct WindowUi {
 
 /// Transient app-global UI state; never persisted.
 pub struct UiState {
+    /// Panes that have signalled attention since their tab was last active.
+    pub notices: BTreeSet<PaneId>,
     pub form: RemoteForm,
     /// Last theme name the egui style was derived from (style::sync memo).
     pub styled_theme: Option<String>,
@@ -310,6 +312,7 @@ pub fn window_ui() -> WindowUi {
 
 pub fn ui_state() -> UiState {
     UiState {
+        notices: BTreeSet::new(),
         form: RemoteForm::default(),
         styled_theme: None,
         styled_font: 0.0,

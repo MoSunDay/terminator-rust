@@ -2,6 +2,7 @@
 
 mod actions;
 mod app_icon;
+mod attention;
 mod input;
 mod ipc;
 mod persist;

@@ -4,13 +4,13 @@ use egui::{pos2, vec2, Align2, CornerRadius, FontId, Id, Key, Rect, Sense, TextE
 use layout_tree::Tab;
 use theme::Palette;
 
-use crate::actions;
 use crate::actions::winops;
 use crate::render::colors::{self, to_c32};
 use crate::render::tokens;
 use crate::state::{self, AppState, Data, WindowState};
 use crate::ui::chrome::{self, Metrics};
 use crate::ui::{tabs_widgets, xdrag};
+use crate::{actions, attention};
 
 /// How long a pane-drag must hover another tab's chip before the active
 /// tab switches there (browser tab-drag dwell).
@@ -115,7 +115,14 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 FontId::proportional(m.chip_font),
                 egui::Color32::PLACEHOLDER,
             );
-            (m.chip_pad_x * 2.0 + galley.size().x + m.close_w).max(m.chip_min_w)
+            let badge_w = if d.st.win().is_some_and(|w| w.tree.active_tab != i)
+                && attention::tab_has_notice(tab, &d.ui.notices)
+            {
+                18.0 * m.s
+            } else {
+                0.0
+            };
+            (m.chip_pad_x * 2.0 + galley.size().x + m.close_w + badge_w).max(m.chip_min_w)
         };
         spans.push((flow, flow + w));
         flow += w + m.chip_gap;
@@ -254,7 +261,13 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 FontId::proportional(m.chip_font),
                 egui::Color32::PLACEHOLDER,
             );
-            let w = (m.chip_pad_x * 2.0 + galley.size().x + m.close_w).max(m.chip_min_w);
+            let badged = !selected
+                && st
+                    .win()
+                    .and_then(|win| win.tree.tabs.get(i))
+                    .is_some_and(|tab| attention::tab_has_notice(tab, &uist.notices));
+            let badge_w = if badged { 18.0 * m.s } else { 0.0 };
+            let w = (m.chip_pad_x * 2.0 + galley.size().x + m.close_w + badge_w).max(m.chip_min_w);
             if tab_drag.is_some_and(|td| td.anchor == anchor) {
                 // The dragged chip's slot stays an empty gap: the other
                 // chips shift around it live while the ghost follows the
@@ -342,10 +355,17 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 galley.size(),
                 Rect::from_min_max(
                     pos2(vrect.left() + m.chip_pad_x, vrect.top()),
-                    pos2(vrect.right() - m.close_w, vrect.bottom()),
+                    pos2(vrect.right() - m.close_w - badge_w, vrect.bottom()),
                 ),
             );
             painter.galley(galley_rect.min, galley, text_col);
+            if badged {
+                painter.circle_filled(
+                    pos2(vrect.right() - m.close_w - badge_w * 0.5, vrect.center().y),
+                    5.0 * m.s,
+                    egui::Color32::from_rgb(70, 150, 255),
+                );
+            }
 
             // Close affordance: right-hand strip, revealed on hover/active.
             let close_rect = Rect::from_center_size(
