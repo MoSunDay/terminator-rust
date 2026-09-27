@@ -398,7 +398,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     // button via the same ROOT close path Ctrl+Shift+Q takes. No latch
     // here - the modal owns the second step, and while it is up it is the
     // top layer, so a second press on this cell never reaches it.
-    let dialog_open = st.win().is_some_and(|w| w.ui.close_dialog);
+    let dialog_open = st.win().is_some_and(|w| w.ui.close_dialog.is_some());
     let close = ui.interact(close_rect, Id::new("chrome_close"), Sense::CLICK);
     if dialog_open {
         ui.painter().rect_filled(
@@ -424,7 +424,7 @@ pub fn edge_cells(ui: &mut Ui, row_right: f32, st: &mut AppState, m: &Metrics) {
     close_glyph(&painter, close_rect.shrink(2.0), false, &pal, close_col);
     if close.clicked() {
         if let Some(w) = st.win_mut() {
-            w.ui.close_dialog = true;
+            w.ui.close_dialog = Some(crate::state::CloseDialog::Quit);
         }
     }
     close.on_hover_text(if dialog_open {

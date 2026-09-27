@@ -27,6 +27,9 @@ Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
 - window-chrome e2e（`e2e-window-controls.sh`）：需要 OPENBOX 的边角
   resize / 最大化 / 最小化 / tab 溢出滚动 / 关闭 X 弹确认框（R6：Esc、
   再点一次 X、Cancel 取消，Quit 退出全部窗口）
+- tab-close e2e（`e2e-tab-close.sh`）：Xvfb + openbox 下实际点击 tab X、
+  中键、确认与取消；覆盖多 pane tab、次级窗口、最后一个 tab，以及终端
+  标题栏 X 的直接关闭，并核对持久化 tab 与存活 pane 数量。
 - drag-and-drop e2e（`e2e-dragdrop.sh`）：tab 排序、Ctrl+拖 pane 头部
   5 区投放（含拖拽中 overlay 像素断言）、跨 tab chip-dwell 迁移
 - empty-window restore e2e（`e2e-empty-restore.sh`）：`windows:[{tabs:[]}]`
@@ -81,7 +84,11 @@ Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
   Quit/Cancel confirm modal (one click; the scrot diff must show ONE solid
   centered frame, keys stay out of the pane, Esc / a re-click on X /
   Cancel dismiss, Quit quits); CI job
-  e2e-window-controls apt adds openbox)
+  e2e-window-controls apt adds openbox, scrot and python3-pil)
+- tab-close e2e: `scripts/bin/e2e-tab-close.sh` (private HOME + Xvfb +
+  openbox; click-driven tab X / middle-click confirm, Escape cancellation,
+  multi-pane session termination, direct pane-header X, secondary-window
+  isolation and last-tab quit; CI runs it after e2e-window-controls).
 - drag-and-drop e2e: `scripts/bin/e2e-dragdrop.sh` (Xvfb + xdotool +
   scrot/PIL + state.json tree asserts; D1/D2 = Ctrl+drag pane header to
   sibling edge/center with mid-drag overlay pixel checks, D3 = chip

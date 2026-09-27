@@ -130,13 +130,16 @@ jobs:
           chmod +x scripts/bin/zig
           scripts/fetch-vendor.sh
 
-      - name: Install Xvfb + xdotool + openbox
+      - name: Install Xvfb + xdotool + openbox + screenshot tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool openbox
+          sudo apt-get install -y --no-install-recommends xvfb xdotool openbox scrot python3-pil
 
       - name: Window-controls e2e (R1-R5, S1-S4)
         run: scripts/bin/e2e-window-controls.sh
+
+      - name: Tab-close confirmation e2e
+        run: scripts/bin/e2e-tab-close.sh
 
   e2e-dragdrop:
     runs-on: ubuntu-24.04

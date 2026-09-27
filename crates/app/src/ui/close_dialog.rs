@@ -1,9 +1,8 @@
-//! Window-close confirmation dialog: the chrome close X opens a centered
-//! modal instead of quitting at the first click. Quit goes out as the
-//! ROOT viewport Close, the same path Ctrl+Shift+Q takes.
+//! Confirmation for the chrome window and tab close buttons.
 
+use crate::actions;
 use crate::render::colors;
-use crate::state::Data;
+use crate::state::{self, CloseDialog, Data};
 use crate::ui::chrome;
 
 pub const TITLE: &str = "Quit terminator-rust?";
@@ -26,8 +25,14 @@ pub(crate) fn request_quit(ctx: &egui::Context) {
 /// Clear the per-window flag (the window can be gone by now).
 fn clear(d: &mut Data, idx: usize) {
     if let Some(w) = d.st.windows.get_mut(idx) {
-        w.ui.close_dialog = false;
+        w.ui.close_dialog = None;
     }
+}
+
+fn tab_index(tree: &layout_tree::LayoutTree, anchor: layout_tree::PaneId) -> Option<usize> {
+    tree.tabs
+        .iter()
+        .position(|t| state::tab_anchor(t) == anchor)
 }
 
 /// Show the pending confirmation for window `idx` (no-op if its flag is
@@ -37,13 +42,35 @@ pub fn show(ctx: &egui::Context, d: &mut Data, idx: usize) {
     let Some(win_id) = d.st.windows.get(idx).map(|w| w.id) else {
         return;
     };
-    if !d.st.windows.get(idx).is_some_and(|w| w.ui.close_dialog) {
+    let Some(target) = d.st.windows.get(idx).and_then(|w| w.ui.close_dialog) else {
         return;
-    }
+    };
+    let tab = match target {
+        CloseDialog::Quit => None,
+        CloseDialog::Tab(anchor) => {
+            let Some(tab) = tab_index(&d.st.windows[idx].tree, anchor) else {
+                clear(d, idx);
+                return;
+            };
+            Some(tab)
+        }
+    };
     let m = chrome::metrics(d.st.settings.font_size);
     let pal = colors::palette_of(&d.st.theme_name);
     // Read before the closure: the content cannot borrow `d`.
     let n = d.st.windows.len();
+    let (title, hint, action) = match tab {
+        Some(tab) => {
+            let pane_count = layout_tree::pane_count(&d.st.windows[idx].tree.tabs[tab].root);
+            let hint = if pane_count == 1 {
+                "Closes this tab and ends its terminal.".to_string()
+            } else {
+                format!("Closes this tab and ends its {pane_count} terminals.")
+            };
+            ("Close tab?", hint, "Close tab")
+        }
+        None => (TITLE, quit_hint(n), "Quit"),
+    };
     let resp = egui::Modal::new(egui::Id::new("close_dialog").with(win_id))
         // egui 0.36 has no `Context::style()`: the frame is built from the
         // style of the active theme (the app pins Theme::Dark in
@@ -60,11 +87,9 @@ pub fn show(ctx: &egui::Context, d: &mut Data, idx: usize) {
             // Quit/Cancel anchors the e2e derives from the frame bbox.
             ui.set_min_width(330.0 * m.s);
             ui.set_max_width(330.0 * m.s);
-            ui.label(egui::RichText::new(TITLE).strong());
+            ui.label(egui::RichText::new(title).strong());
             ui.add_space(4.0 * m.s);
-            ui.label(
-                egui::RichText::new(quit_hint(n)).color(colors::to_c32(colors::title_text(&pal))),
-            );
+            ui.label(egui::RichText::new(hint).color(colors::to_c32(colors::title_text(&pal))));
             ui.add_space(10.0 * m.s);
             let mut quit = false;
             let mut cancel = false;
@@ -73,7 +98,7 @@ pub fn show(ctx: &egui::Context, d: &mut Data, idx: usize) {
                 let q = ui.add_sized(
                     egui::vec2(96.0 * m.s, 28.0 * m.s),
                     egui::Button::new(
-                        egui::RichText::new("Quit").color(colors::to_c32(pal.normal[1])),
+                        egui::RichText::new(action).color(colors::to_c32(pal.normal[1])),
                     )
                     // Non-focusable (app-wide rule): a focusable widget
                     // would hand egui's Tab focus around and swallow the
@@ -89,10 +114,15 @@ pub fn show(ctx: &egui::Context, d: &mut Data, idx: usize) {
             });
             (quit, cancel)
         });
-    let (quit, cancel) = resp.inner;
-    if quit {
+    let (confirmed, cancel) = resp.inner;
+    if confirmed {
         clear(d, idx);
-        request_quit(ctx);
+        if let Some(tab) = tab {
+            d.st.active = idx;
+            actions::do_close_tab(&mut d.st, &mut d.sess, &mut d.ui, tab, &mut d.dirty);
+        } else {
+            request_quit(ctx);
+        }
     } else if cancel || resp.should_close() {
         // Backdrop click + Esc (egui consumes the Esc only for the
         // topmost modal, so nothing else reacts to it).
@@ -112,5 +142,16 @@ mod tests {
     #[test]
     fn quit_hint_counts_windows() {
         assert_eq!(quit_hint(3), "Closes all 3 windows and ends their panes.");
+    }
+
+    #[test]
+    fn pending_tab_follows_reorder_and_vanishes_with_its_tab() {
+        let mut tree = layout_tree::new_tree("first");
+        let target = layout_tree::new_tab(&mut tree, "target");
+        let anchor = state::tab_anchor(&tree.tabs[target]);
+        assert!(layout_tree::move_tab(&mut tree, target, 0));
+        assert_eq!(tab_index(&tree, anchor), Some(0));
+        layout_tree::close_tab(&mut tree, 0);
+        assert_eq!(tab_index(&tree, anchor), None);
     }
 }

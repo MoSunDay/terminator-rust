@@ -5,12 +5,12 @@ use layout_tree::Tab;
 use theme::Palette;
 
 use crate::actions::winops;
+use crate::attention;
 use crate::render::colors::{self, to_c32};
 use crate::render::tokens;
-use crate::state::{self, AppState, Data, WindowState};
+use crate::state::{self, AppState, CloseDialog, Data, WindowState};
 use crate::ui::chrome::{self, Metrics};
 use crate::ui::{tabs_widgets, xdrag};
-use crate::{actions, attention};
 
 /// How long a pane-drag must hover another tab's chip before the active
 /// tab switches there (browser tab-drag dwell).
@@ -190,7 +190,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
             dirty,
             ..
         } = d;
-        let mut close_tab: Option<usize> = None;
+        let mut close_tab: Option<layout_tree::PaneId> = None;
         let count = st.win().map(|w| w.tree.tabs.len()).unwrap_or(0);
         let chrome_base = to_c32(colors::chrome_bg(pal));
         let chrome_hover = to_c32(colors::chrome_hover(pal));
@@ -382,7 +382,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 tabs_widgets::close_glyph(&painter, close_rect, close_resp.hovered(), pal, xcol);
             }
             if close_resp.clicked() {
-                close_tab = Some(i);
+                close_tab = Some(anchor);
             } else if resp.clicked() && !selected {
                 if let Some(w) = st.win_mut() {
                     w.tree.active_tab = i;
@@ -397,11 +397,13 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 }
             }
             if resp.middle_clicked() {
-                close_tab = Some(i);
+                close_tab = Some(anchor);
             }
         }
-        if let Some(i) = close_tab {
-            actions::do_close_tab(st, sess, uist, i, dirty);
+        if let Some(anchor) = close_tab {
+            if let Some(w) = st.win_mut() {
+                w.ui.close_dialog = Some(CloseDialog::Tab(anchor));
+            }
         }
 
         // Restore the clip before the pinned chrome widgets: they live

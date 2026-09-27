@@ -113,7 +113,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // The window-close dialog is open: its backdrop blocks egui WIDGET
     // interaction (top modal layer) but NOT the raw event routing and the
     // pure-rect divider/edge probes below, so those are gated explicitly.
-    let modal = st.win().is_some_and(|w| w.ui.close_dialog);
+    let modal = st.win().is_some_and(|w| w.ui.close_dialog.is_some());
     // A Ctrl+drag pane move owns the pointer: dividers and raw pointer
     // routing stand down while the drop target is being picked.
     let pane_drag = st.win().and_then(|w| w.ui.pane_drag);

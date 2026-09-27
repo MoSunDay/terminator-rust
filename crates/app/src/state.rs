@@ -252,10 +252,15 @@ pub struct WindowUi {
     /// Active tab when the scroll was last auto-followed (keep the active
     /// chip visible on tab switches, but never fight manual scrolling).
     pub tab_scroll_tab: usize,
-    /// Window-close confirmation dialog open for this window (the chrome
-    /// close X was clicked once). Cleared by Cancel/backdrop/Esc inside
-    /// the dialog, by the confirmed Quit, or when the window goes away.
-    pub close_dialog: bool,
+    /// Pending chrome close confirmation, scoped to this OS window.
+    pub close_dialog: Option<CloseDialog>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseDialog {
+    Quit,
+    /// Lowest pane id identifies the tab across index changes.
+    Tab(PaneId),
 }
 
 /// Transient app-global UI state; never persisted.
@@ -306,7 +311,7 @@ pub fn window_ui() -> WindowUi {
         ime_last_pane: None,
         tab_scroll: 0.0,
         tab_scroll_tab: 0,
-        close_dialog: false,
+        close_dialog: None,
     }
 }
 
