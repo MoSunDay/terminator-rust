@@ -76,7 +76,7 @@ pub struct Frame {
     pub cols: u16,
     pub rows: u16,
     pub cursor: FrameCursor,
-    /// Default colors when a cell has no explicit override.
+    /// Effective defaults, including OSC overrides, for cells without explicit colors.
     pub default_fg: Color,
     pub default_bg: Color,
     pub cursor_color: Option<Color>,
