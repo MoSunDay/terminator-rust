@@ -1,4 +1,4 @@
-Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
+Commit: 4224d64e16b9e6f7da6c6bdb8352d65fabc1e3c5
 
 # e2e 套件覆盖索引 / e2e suites - coverage index
 

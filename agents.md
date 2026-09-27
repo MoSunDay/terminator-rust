@@ -1,4 +1,4 @@
-Commit: e4b23d756b53dbf71970da47f8a64e0db3bf27b0
+Commit: 4224d64e16b9e6f7da6c6bdb8352d65fabc1e3c5
 
 # agents.md - repo memory for terminator-rust
 
@@ -776,6 +776,11 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   documented key `~/.ssh/id_ed25519_github` did NOT exist here; the push
   succeeded anyway through ssh's default identity/agent (warning only), so a
   missing key file is not a blocker.
+- git identity: this checkout ships NO user.name/user.email — a plain
+  `git commit` dies with 作者身份未知; set it REPO-LOCAL, never
+  --global: `git config user.name MoSunDay` and
+  `git config user.email "MoSunDay@users.noreply.github.com"` so new
+  commits match the rewrite-precedent identity.
 - remote main may ALREADY carry local-looking commits (another agent pushes
   from elsewhere): before squashing for push, check
   `git log HEAD..origin/main`; squash ONLY the unpushed remainder with
