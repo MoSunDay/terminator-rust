@@ -736,15 +736,27 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   full image instead.
 
 ## Git push (2026-09-27)
-- origin is SSH: `git@github.com:MoSunDay/terminator-rust.git`, key
-  `~/.ssh/id_ed25519_github` (identity MoSunDay; `ssh -T git@github.com` probes
-  it). Switched from HTTPS with `git remote set-url` - do not flip back.
+- origin is SSH: `git@github.com:MoSunDay/terminator-rust.git` (set with
+  `git remote set-url`). HTTPS keeps creeping BACK (found flipped again
+  2026-09-27) - check `git remote -v` before pushing and restore SSH. The
+  documented key `~/.ssh/id_ed25519_github` did NOT exist here; the push
+  succeeded anyway through ssh's default identity/agent (warning only), so a
+  missing key file is not a blocker.
 - remote main may ALREADY carry local-looking commits (another agent pushes
   from elsewhere): before squashing for push, check
   `git log HEAD..origin/main`; squash ONLY the unpushed remainder with
   `git reset --soft origin/main` (diff stat = the diff), NEVER reset to an
-  older base or force-push. Re-created commits keep the same tree - assert
+  older base. Re-created commits keep the same tree - assert
   `git rev-parse <old>^{tree}` equality before discarding the originals.
+- authorship rewrite (2026-09-27, user request): filter-branch
+  `--env-filter` set author+committer to MoSunDay on the day's commits
+  (dates/messages kept), then `push --force-with-lease` after a FRESH fetch
+  (lease guards the other-agent race; force-push is legitimate ONLY with
+  that guard, never for squashing to an older base). Commits already
+  carrying the target identity keep their SHA (identical objects), only
+  the heyang.amos ones + descendants rewrote (old HEAD 415d0c9 -> 3dbeb89);
+  clones holding the old history must `git fetch && git reset --hard
+  origin/main`.
 
 ## Verified end-to-end (final state)
 See [agents/verified-end-to-end.md](agents/verified-end-to-end.md) -
