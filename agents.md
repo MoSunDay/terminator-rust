@@ -155,6 +155,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   button 4/5 press-only per line; alt-screen -> arrows x3; else
   viewport scroll x3; Shift = local-selection escape hatch even while
   tracking. WHEEL_STEP_LINES=3; X11 wheel = Line +/-1 per notch.
+  app/input/pointer.rs converts Line/Page/Point deltas into terminal rows
+  and carries fractional rows per pane before emitting 3-row notches;
+  Point uses cell height, Page uses 24 rows. Small touchpad events thus
+  accumulate instead of each triggering a full notch.
 - egui-winit folds Copy/Cut/Paste using its INTERNAL modifiers, but ctx
   i.modifiers is the POST-batch aggregate; a fast ctrl+c whose ctrl-down
   marks land in an earlier frame than the folded Event::Copy looks

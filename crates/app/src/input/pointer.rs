@@ -69,13 +69,24 @@ fn button_at(bit: u8) -> Option<PointerButton> {
     })
 }
 
-/// Wheel vertical delta in lines (up = positive); 0 for horizontal-only.
-fn wheel_lines(unit: egui::MouseWheelUnit, delta: egui::Vec2, cell_h: f32) -> f32 {
-    match unit {
-        egui::MouseWheelUnit::Line => delta.y,
-        egui::MouseWheelUnit::Page => delta.y * 24.0,
-        egui::MouseWheelUnit::Point => delta.y / cell_h.max(1.0),
-    }
+/// Convert input to wheel notches. A notch scrolls three terminal rows,
+/// matching Codex's transcript wheel. Fractional travel accumulates so
+/// small touchpad events do not each become a full notch.
+fn wheel_notches(
+    unit: egui::MouseWheelUnit,
+    delta: egui::Vec2,
+    cell_h: f32,
+    pending_rows: f32,
+) -> (f32, f32) {
+    let rows_per_notch = vmouse::WHEEL_STEP_LINES as f32;
+    let rows = pending_rows
+        + match unit {
+            egui::MouseWheelUnit::Line => delta.y * rows_per_notch,
+            egui::MouseWheelUnit::Page => delta.y * 24.0,
+            egui::MouseWheelUnit::Point => delta.y / cell_h.max(1.0),
+        };
+    let notches = (rows / rows_per_notch).trunc();
+    (notches, rows - notches * rows_per_notch)
 }
 
 /// Pane whose content rect contains `pos` (headers/dividers excluded).
@@ -322,10 +333,6 @@ pub fn handle(
                 let Some(pane) = target else {
                     continue;
                 };
-                let lines = wheel_lines(unit, delta, cell_h);
-                if lines == 0.0 {
-                    continue;
-                }
                 let Some((_, rect)) = rects.iter().find(|(p, _)| *p == pane) else {
                     if wui.pointer_pane == Some(pane) {
                         wui.pointer_pane = None;
@@ -337,9 +344,18 @@ pub fn handle(
                 let Some(pos) = hover else {
                     continue;
                 };
+                if wui.wheel_pane != Some(pane) {
+                    wui.wheel_rows = 0.0;
+                    wui.wheel_pane = Some(pane);
+                }
+                let (notches, remainder) = wheel_notches(unit, delta, cell_h, wui.wheel_rows);
+                wui.wheel_rows = remainder;
+                if notches == 0.0 {
+                    continue;
+                }
                 if let Some(s) = sess.map.get_mut(&pane) {
                     if s.exit.is_none() {
-                        on_wheel(s, *rect, pos, ppp, lines, &modifiers, any_down);
+                        on_wheel(s, *rect, pos, ppp, notches, &modifiers, any_down);
                     }
                 }
             }
@@ -355,6 +371,35 @@ mod tests {
     use crate::state::fresh_state;
     use egui::{Modifiers, Pos2, RawInput};
     use vt_pane::{task as vtask, SessionOpts};
+
+    #[test]
+    fn wheel_units_match_three_rows_per_notch() {
+        use egui::MouseWheelUnit::{Line, Page, Point};
+        assert_eq!(
+            wheel_notches(Line, egui::vec2(0.0, 1.0), 16.0, 0.0),
+            (1.0, 0.0)
+        );
+        let (step, carry) = wheel_notches(Line, egui::vec2(0.0, 0.5), 16.0, 0.0);
+        assert_eq!((step, carry), (0.0, 1.5));
+        assert_eq!(
+            wheel_notches(Line, egui::vec2(0.0, 0.5), 16.0, carry),
+            (1.0, 0.0)
+        );
+        assert_eq!(
+            wheel_notches(Page, egui::vec2(0.0, 1.0), 16.0, 0.0),
+            (8.0, 0.0)
+        );
+        let (step, carry) = wheel_notches(Point, egui::vec2(0.0, 16.0), 16.0, 0.0);
+        assert_eq!((step, carry), (0.0, 1.0));
+        assert_eq!(
+            wheel_notches(Point, egui::vec2(0.0, 32.0), 16.0, carry),
+            (1.0, 0.0)
+        );
+        assert_eq!(
+            wheel_notches(Point, egui::vec2(0.0, -48.0), 16.0, 0.0),
+            (-1.0, 0.0)
+        );
+    }
 
     #[test]
     fn button_bit_round_trip() {

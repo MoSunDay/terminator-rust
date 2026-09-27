@@ -214,6 +214,9 @@ pub struct WindowUi {
     pub pointer_buttons: u8,
     /// Bit index of the most recent press still held (motion reports it).
     pub pointer_last: Option<u8>,
+    /// Unconsumed wheel travel in terminal rows, scoped to one pane.
+    pub wheel_rows: f32,
+    pub wheel_pane: Option<PaneId>,
     /// In-flight app-driven edge resize (transient, never persisted).
     pub edge: Option<crate::input::resize::Gesture>,
     /// Window-move gesture latch: StartDrag fires once per drag gesture
@@ -290,6 +293,8 @@ pub fn window_ui() -> WindowUi {
         pointer_pane: None,
         pointer_buttons: 0,
         pointer_last: None,
+        wheel_rows: 0.0,
+        wheel_pane: None,
         edge: None,
         mods_frame_end: egui::Modifiers::NONE,
         inspector: false,
