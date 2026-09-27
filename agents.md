@@ -1,4 +1,4 @@
-Commit: f93bcaf27b467032a76ce7bfb87f0cecc581701b
+Commit: e4b23d756b53dbf71970da47f8a64e0db3bf27b0
 
 # agents.md - repo memory for terminator-rust
 
@@ -734,6 +734,17 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   `import -window WID` screenshots a 32-bit ARGB window as ALL BLACK -
   screenshot `import -window root` and read the window's pixels from the
   full image instead.
+
+## Git push (2026-09-27)
+- origin is SSH: `git@github.com:MoSunDay/terminator-rust.git`, key
+  `~/.ssh/id_ed25519_github` (identity MoSunDay; `ssh -T git@github.com` probes
+  it). Switched from HTTPS with `git remote set-url` - do not flip back.
+- remote main may ALREADY carry local-looking commits (another agent pushes
+  from elsewhere): before squashing for push, check
+  `git log HEAD..origin/main`; squash ONLY the unpushed remainder with
+  `git reset --soft origin/main` (diff stat = the diff), NEVER reset to an
+  older base or force-push. Re-created commits keep the same tree - assert
+  `git rev-parse <old>^{tree}` equality before discarding the originals.
 
 ## Verified end-to-end (final state)
 See [agents/verified-end-to-end.md](agents/verified-end-to-end.md) -
