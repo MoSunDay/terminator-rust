@@ -70,6 +70,7 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
             || key == "LANG"
             || key == "LC_ALL"
             || key == "COLORTERM"
+            || key == "NO_COLOR"
         {
             continue;
         }
