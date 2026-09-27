@@ -12,6 +12,15 @@ pub fn tab_has_notice(tab: &Tab, notices: &BTreeSet<PaneId>) -> bool {
         .any(|id| notices.contains(id))
 }
 
+pub fn tab_needs_badge(
+    tab: &Tab,
+    notices: &BTreeSet<PaneId>,
+    selected: bool,
+    window_focused: bool,
+) -> bool {
+    tab_has_notice(tab, notices) && !(selected && window_focused)
+}
+
 /// Visiting an active tab acknowledges every pane notice in that tab.
 pub fn acknowledge_active(st: &AppState, ui: &mut UiState, window: usize) {
     let Some(tab) = st
@@ -69,5 +78,15 @@ mod tests {
         st.panes.remove(&split);
         discard_closed(&st, &mut ui);
         assert!(ui.notices.is_empty());
+    }
+
+    #[test]
+    fn selected_tab_in_background_window_keeps_its_badge() {
+        let st = fresh_state();
+        let mut notices = BTreeSet::new();
+        notices.insert(1);
+        let tab = &st.windows[0].tree.tabs[0];
+        assert!(!tab_needs_badge(tab, &notices, true, true));
+        assert!(tab_needs_badge(tab, &notices, true, false));
     }
 }
