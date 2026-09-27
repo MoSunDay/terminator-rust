@@ -1,4 +1,4 @@
-Commit: dfac4c0272e337805f3954d3f431ad8473c052c9
+Commit: f93bcaf27b467032a76ce7bfb87f0cecc581701b
 
 # agents.md - repo memory for terminator-rust
 
@@ -738,5 +738,7 @@ suite status + the user-visible checks proven live.
   default fg/bg/cursor and the 256-color palette BEFORE pumping PTY output,
   and again after ensure_sessions. OSC 10/11 return no response when defaults
   are unset, which makes Codex omit composer shading. Never replace application
-  OSC overrides while syncing themes. Local PTYs and keeper shells declare
-  COLORTERM=truecolor; render/ink.rs applies the parsed italic flag via epaint.
+  OSC overrides while syncing themes. Grid and IME ink use the frame's
+  effective foreground/background; CSI ? 996 n reads the effective background.
+  Local PTYs and keeper shells declare COLORTERM=truecolor; render/ink.rs
+  applies the parsed italic flag via epaint.

@@ -99,7 +99,8 @@ mod tests {
         .expect("dark default");
         term.vt_write(b"\x1b[?996n");
         term.vt_write(b"\x1b]11;#f0f0f0\x07\x1b[?996n");
+        term.vt_write(b"\x1b]111\x07\x1b[?996n");
         let response = output.lock().unwrap().clone();
-        assert_eq!(response, b"\x1b[?997;1n\x1b[?997;2n");
+        assert_eq!(response, b"\x1b[?997;1n\x1b[?997;2n\x1b[?997;1n");
     }
 }
