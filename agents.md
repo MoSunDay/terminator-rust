@@ -394,10 +394,15 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   macOS where "maximize" means borderless FULLSCREEN (ViewportCommand::
   Fullscreen, window_enlarged reads viewport().fullscreen there); inside a
   viewport pass that targets the CURRENT window, root pass = ROOT); the close
-  X opens a CONFIRM MODAL (2026-09-25): one click sets WindowUi.close_dialog
-  -> ui/close_dialog.rs egui::Modal (Id "close_dialog" + win_id, backdrop
-  black alpha 96) "Quit terminator-rust?" + Quit/Cancel; Quit sends ROOT
-  Close (Ctrl+Shift+Q's path - quits EVERY window), Cancel / backdrop click
+  X opens a CONFIRM MODAL (2026-09-25): one click sets
+  WindowUi.close_dialog = Some(CloseDialog::Quit) -> ui/close_dialog.rs
+  egui::Modal (Id "close_dialog" + win_id, backdrop black alpha 96)
+  "Quit terminator-rust?" + Quit/Cancel; Quit sends ROOT Close
+  (Ctrl+Shift+Q's path - quits EVERY window). Tab-chip X and middle click
+  set CloseDialog::Tab(anchor pane id) and use the same modal; confirming
+  resolves the anchor in that window and closes only that tab, while a
+  missing anchor dismisses the request. Pane-header X still closes its
+  pane immediately. Cancel / backdrop click
   (a re-click on X lands on it) / Esc dismiss. While set, screen.rs's `modal`
   gate suppresses pointer/divider/pane_interact and keyboard.rs early-returns
   (no key/paste/clipboard leak). Min AND max content width are pinned to

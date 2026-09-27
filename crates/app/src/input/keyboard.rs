@@ -144,7 +144,7 @@ pub fn handle(
         }
         return; // a text field has focus; let it keep the keys
     }
-    if st.win().is_some_and(|w| w.ui.close_dialog) {
+    if st.win().is_some_and(|w| w.ui.close_dialog.is_some()) {
         // The window-close dialog is modal for pane input: no key, paste
         // or clipboard chord may reach the child underneath it. The dialog
         // itself dismisses on Esc inside its own pass (later in the frame),
