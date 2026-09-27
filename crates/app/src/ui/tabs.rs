@@ -45,6 +45,9 @@ fn chip_label(tab: &Tab) -> String {
 
 fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
     let row = ui.max_rect();
+    let window_focused = ui
+        .ctx()
+        .input(|input| input.viewport().focused == Some(true));
     // Borderless window: dragging the bare chrome (not a chip or button)
     // moves the window - this IS the title-bar replacement. Registered
     // first so widgets added later (and thus on top) keep their clicks;
@@ -115,13 +118,13 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 FontId::proportional(m.chip_font),
                 egui::Color32::PLACEHOLDER,
             );
-            let badge_w = if d.st.win().is_some_and(|w| w.tree.active_tab != i)
-                && attention::tab_has_notice(tab, &d.ui.notices)
-            {
-                18.0 * m.s
-            } else {
-                0.0
-            };
+            let selected = d.st.win().is_some_and(|w| w.tree.active_tab == i);
+            let badge_w =
+                if attention::tab_needs_badge(tab, &d.ui.notices, selected, window_focused) {
+                    18.0 * m.s
+                } else {
+                    0.0
+                };
             (m.chip_pad_x * 2.0 + galley.size().x + m.close_w + badge_w).max(m.chip_min_w)
         };
         spans.push((flow, flow + w));
@@ -261,11 +264,12 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 FontId::proportional(m.chip_font),
                 egui::Color32::PLACEHOLDER,
             );
-            let badged = !selected
-                && st
-                    .win()
-                    .and_then(|win| win.tree.tabs.get(i))
-                    .is_some_and(|tab| attention::tab_has_notice(tab, &uist.notices));
+            let badged = st
+                .win()
+                .and_then(|win| win.tree.tabs.get(i))
+                .is_some_and(|tab| {
+                    attention::tab_needs_badge(tab, &uist.notices, selected, window_focused)
+                });
             let badge_w = if badged { 18.0 * m.s } else { 0.0 };
             let w = (m.chip_pad_x * 2.0 + galley.size().x + m.close_w + badge_w).max(m.chip_min_w);
             if tab_drag.is_some_and(|td| td.anchor == anchor) {
