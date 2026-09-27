@@ -51,6 +51,21 @@ fn flush_output(conn: &mut Attached) -> io::Result<()> {
     Ok(())
 }
 
+/// The single PTY-output fan-out: append `bytes` to the replay history
+/// (so a later reattach re-fires whatever they encoded) and to every
+/// attached client's pending output. Returns the indexes of clients
+/// whose buffer overflowed and must be dropped.
+fn broadcast(history: &mut VecDeque<u8>, active: &mut [Attached], bytes: &[u8]) -> Vec<usize> {
+    protocol::push_history(history, bytes);
+    let mut gone = Vec::new();
+    for (i, conn) in active.iter_mut().enumerate() {
+        if !pending_output(conn, bytes) {
+            gone.push(i);
+        }
+    }
+    gone
+}
+
 fn take_commands(
     input: &mut Vec<u8>,
     master: &std::fs::File,
@@ -88,17 +103,25 @@ fn take_commands(
     Ok(())
 }
 
+/// What accept() did with the fresh connection.
+enum Accepted {
+    /// Handled and closed (query, unknown or truncated command).
+    Handled,
+    /// New client pushed onto `active` (replay already queued).
+    Attached,
+}
+
 fn accept(
     listener: &UnixListener,
     summary: &Summary,
     history: &VecDeque<u8>,
     active: &mut Vec<Attached>,
-) -> Result<bool> {
+) -> Result<Accepted> {
     let (mut stream, _) = listener.accept()?;
     stream.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
     let mut command = [0u8; 1];
     if stream.read_exact(&mut command).is_err() {
-        return Ok(false);
+        return Ok(Accepted::Handled);
     }
     match command[0] {
         protocol::QUERY => {
@@ -111,7 +134,7 @@ fn accept(
             info.title = info.title.replace(['\n', '\r'], " ");
             serde_json::to_writer(&mut stream, &info)?;
             stream.write_all(b"\n")?;
-            Ok(false)
+            Ok(Accepted::Handled)
         }
         protocol::ATTACH => {
             stream.set_read_timeout(None)?;
@@ -122,9 +145,9 @@ fn accept(
                 output: history.iter().copied().collect(),
                 output_at: 0,
             });
-            Ok(true)
+            Ok(Accepted::Attached)
         }
-        _ => Ok(false),
+        _ => Ok(Accepted::Handled),
     }
 }
 
@@ -172,7 +195,7 @@ pub fn serve(name: &str, title: &str, cwd: &str) -> Result<()> {
         UnixListener::bind(&socket).with_context(|| format!("bind {}", socket.display()))?;
     let _guard = SocketGuard(socket);
     listener.set_nonblocking(true)?;
-    let mut shell = crate::pty::spawn(cwd)?;
+    let mut shell = crate::pty::spawn(cwd, name)?;
     let summary = Summary {
         name: name.into(),
         title: title.into(),
@@ -213,12 +236,12 @@ pub fn serve(name: &str, title: &str, cwd: &str) -> Result<()> {
             }
             continue;
         }
-        if fds[0].revents & libc::POLLIN != 0
-            && matches!(accept(&listener, &summary, &history, &mut active), Ok(true))
-        {
-            if let Some(last) = active.last_mut() {
-                if !drain_client(last, &shell.master, &mut pending) {
-                    active.pop();
+        if fds[0].revents & libc::POLLIN != 0 {
+            if let Ok(Accepted::Attached) = accept(&listener, &summary, &history, &mut active) {
+                if let Some(last) = active.last_mut() {
+                    if !drain_client(last, &shell.master, &mut pending) {
+                        active.pop();
+                    }
                 }
             }
         }
@@ -230,14 +253,7 @@ pub fn serve(name: &str, title: &str, cwd: &str) -> Result<()> {
             let mut buf = [0u8; 8192];
             match shell.master.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => {
-                    protocol::push_history(&mut history, &buf[..n]);
-                    for (i, conn) in active.iter_mut().enumerate() {
-                        if !pending_output(conn, &buf[..n]) {
-                            gone.push(i);
-                        }
-                    }
-                }
+                Ok(n) => gone.extend(broadcast(&mut history, &mut active, &buf[..n])),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => break,
                 Err(e) => return Err(e.into()),

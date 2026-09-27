@@ -17,8 +17,21 @@ pub const ENV_SOCKET: &str = "TERMINATOR_SOCK";
 pub const ENV_PANE_ID: &str = "TERMINATOR_PANE_ID";
 /// Absolute path to the sibling control binary, when installed.
 pub const ENV_CTL: &str = "TERMINATOR_CTL";
+/// Name of the terminator-session keeper a shell lives in, exported by
+/// the remote keeper into its shell so in-shell hooks can find their
+/// session and run `terminator-session notice` with no configuration.
+pub const ENV_SESSION: &str = "TERMINATOR_SESSION";
 /// Default connect/read timeout for clients, in seconds.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
+
+/// The attention-bubble payload a session keeper injects into its PTY
+/// fan-out on `notice`: a standard OSC 9 desktop-notification sequence
+/// (`ESC ] 9 ; body BEL`). Attached terminals parse it in their VT
+/// engine and fire the badge; it rides the attach stream, so it needs
+/// no extra network assumptions beyond the existing connection.
+pub fn notice_osc() -> Vec<u8> {
+    b"\x1b]9;terminator-rust notice\x07".to_vec()
+}
 
 /// Address a pane either by unique manual title or by pane id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +157,13 @@ impl Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notice_osc_bytes_are_pinned() {
+        // ESC ] 9 ; terminator-rust notice BEL - byte-exact: the VT engine,
+        // replay history and e2e gates all match on these bytes.
+        assert_eq!(notice_osc(), b"\x1b]9;terminator-rust notice\x07".to_vec());
+    }
 
     #[test]
     fn request_roundtrip() {

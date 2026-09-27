@@ -44,6 +44,7 @@ fn send(child: &mut Child, line: &str) {
         .expect("send line");
 }
 
+/// Wait until `needle` appears in the child's stdout.
 fn until(child: &mut Child, needle: &str) {
     let stdout = child.stdout.as_mut().expect("stdout");
     let end = Instant::now() + Duration::from_secs(8);
@@ -108,6 +109,13 @@ fn detached_shell_reattaches_and_two_clients_can_share_it() {
     let mut first = attach(&home);
     send(&mut first, "export KEEP_MARK=alive\nprintf 'READY\\n'\n");
     until(&mut first, "READY");
+    // The keeper's shell exports TERMINATOR_SESSION: a child can tell a
+    // keeper session apart from a plain shell.
+    send(
+        &mut first,
+        &format!("printf 'ENV:%s\\n' \"${}\"\n", ipc_proto::ENV_SESSION),
+    );
+    until(&mut first, &format!("ENV:{NAME}"));
 
     let mut second = attach(&home);
     until(&mut second, "READY"); // history replay

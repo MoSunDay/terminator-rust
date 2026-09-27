@@ -12,8 +12,10 @@ commands:
   list [--json]                              list panes
   capture <pane> [--lines N] [--json]        show a pane's visible screen
   send <pane> --text <text> [--bracketed]    type text into a pane
-  notice [<pane>]                           mark its tab for attention; no
-                                             pane uses $TERMINATOR_PANE_ID
+  notice                                    request an attention bubble for
+                                             this pane by emitting an OSC 9
+                                             desktop notification to the
+                                             terminal
   instances [--json] [--all]                 list running instances (control
                                              sockets in the runtime dir;
                                              --all keeps dead ones)
@@ -48,9 +50,11 @@ pub enum Cli {
         text: String,
         bracketed: bool,
     },
-    Notice {
-        pane: Option<PaneSelector>,
-    },
+    /// `notice`: request an attention bubble for this pane by emitting an
+    /// OSC 9 desktop notification to the terminal (written to /dev/tty,
+    /// stdout when no tty opens). No arguments, no pane: it is a hook
+    /// meant to run INSIDE the pane.
+    Notice,
     /// `instances`: roster of terminator-rust control sockets in the
     /// runtime dir, probed for liveness (dead ones only with `all`).
     Instances {
@@ -99,11 +103,8 @@ pub fn parse(args: &[String]) -> Result<Parsed, String> {
 
 fn parse_notice(rest: &[String]) -> Result<Cli, String> {
     match rest {
-        [] => Ok(Cli::Notice { pane: None }),
-        [pane] if !pane.starts_with('-') => Ok(Cli::Notice {
-            pane: Some(parse_pane(pane)),
-        }),
-        _ => Err("notice accepts at most one <pane> argument".to_string()),
+        [] => Ok(Cli::Notice),
+        _ => Err("notice takes no arguments".to_string()),
     }
 }
 
@@ -228,18 +229,14 @@ mod tests {
     }
 
     #[test]
-    fn notice_defaults_to_child_pane_and_accepts_explicit_target() {
-        assert_eq!(
-            parse(&s(&["notice"])).unwrap().cmd,
-            Cli::Notice { pane: None }
-        );
-        assert_eq!(
-            parse(&s(&["notice", "42"])).unwrap().cmd,
-            Cli::Notice {
-                pane: Some(PaneSelector::Id(42))
-            }
-        );
-        assert!(parse(&s(&["notice", "1", "2"])).is_err());
+    fn notice_takes_no_arguments() {
+        assert_eq!(parse(&s(&["notice"])).unwrap().cmd, Cli::Notice);
+        // Any argument is a usage error: `notice` is a hook run INSIDE a
+        // pane and needs no addressing at all.
+        let err = parse(&s(&["notice", "42"])).unwrap_err();
+        assert!(err.contains("notice takes no arguments"), "{err}");
+        assert!(parse(&s(&["notice", "agent1"])).is_err());
+        assert!(parse(&s(&["notice", "--json"])).is_err());
     }
 
     #[test]

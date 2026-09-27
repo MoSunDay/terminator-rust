@@ -4,6 +4,7 @@
 //! size, color scheme) before drawing anything; without responses they
 //! stall on their loading screen.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -18,6 +19,11 @@ use libghostty_vt::Terminal;
 /// Shared current cell pixel size, kept in sync by `task::resize`.
 pub type CellPx = Arc<Mutex<(u32, u32)>>;
 
+/// Shared "desktop notification seen" flag: any OSC 9 / OSC 777 desktop
+/// notification parsed from the PTY stream sets it; the UI drains it once
+/// per frame via `task::take_notice` to raise the pane's attention badge.
+pub type NoticeFlag = Arc<AtomicBool>;
+
 /// Nominal cell size until the UI reports real geometry.
 const NOMINAL_CELL_PX: (u32, u32) = (8, 16);
 
@@ -31,7 +37,13 @@ fn dark_background(color: RgbColor) -> bool {
 ///
 /// `dark` is the fallback until a background is installed; color-scheme
 /// queries subsequently reflect the terminal's effective OSC/theme color.
-pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx, dark: bool) -> Result<()> {
+/// `notice` is marked whenever the program emits a desktop notification.
+pub fn install(
+    term: &mut Terminal<'static, 'static>,
+    cell_px: CellPx,
+    dark: bool,
+    notice: NoticeFlag,
+) -> Result<()> {
     term.on_device_attributes(|_| {
         Some(DeviceAttributes {
             primary: PrimaryDeviceAttributes::new(
@@ -71,12 +83,24 @@ pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx, dark: boo
             ColorScheme::Light
         })
     })?;
+
+    // Any desktop notification (OSC 9 iTerm2-style, OSC 777 rxvt-style)
+    // marks the pane for attention; title/body are irrelevant here - the
+    // UI raises its notice badge, not an OS toast.
+    term.on_desktop_notification(move |_term, _notif| {
+        notice.store(true, Ordering::Release);
+    })?;
     Ok(())
 }
 
 /// Fresh shared cell size for a new session.
 pub fn new_cell_px() -> CellPx {
     Arc::new(Mutex::new(NOMINAL_CELL_PX))
+}
+
+/// Fresh notice flag for a new session.
+pub fn new_notice() -> NoticeFlag {
+    Arc::new(AtomicBool::new(false))
 }
 
 #[cfg(test)]
@@ -90,7 +114,7 @@ mod tests {
         let sink = Arc::clone(&output);
         term.on_pty_write(move |_, bytes| sink.lock().unwrap().extend_from_slice(bytes))
             .expect("pty response");
-        install(&mut term, new_cell_px(), true).expect("effects");
+        install(&mut term, new_cell_px(), true, new_notice()).expect("effects");
         term.set_default_bg_color(Some(RgbColor {
             r: 12,
             g: 24,
@@ -102,5 +126,35 @@ mod tests {
         term.vt_write(b"\x1b]111\x07\x1b[?996n");
         let response = output.lock().unwrap().clone();
         assert_eq!(response, b"\x1b[?997;1n\x1b[?997;2n\x1b[?997;1n");
+    }
+
+    #[test]
+    fn desktop_notification_osc_marks_the_notice_flag() {
+        let mut term = Terminal::new(20, 4).expect("terminal");
+        let notice = new_notice();
+        install(&mut term, new_cell_px(), true, Arc::clone(&notice)).expect("effects");
+        // The exact bytes the remote keeper injects (OSC 9, BEL-terminated),
+        // fed through the same vt_write call task::pump uses for PTY output.
+        term.vt_write(b"\x1b]9;terminator-rust notice\x07");
+        assert!(notice.load(Ordering::Acquire), "OSC 9 must mark the pane");
+        // take_notice semantics: the swap yields true exactly once.
+        assert!(notice.swap(false, Ordering::AcqRel));
+        assert!(!notice.swap(false, Ordering::AcqRel));
+        // A later notification re-marks the drained flag.
+        term.vt_write(b"\x1b]9;terminator-rust notice\x07");
+        assert!(notice.swap(false, Ordering::AcqRel));
+        // Non-notification output leaves the flag at rest.
+        term.vt_write(b"plain\r\n");
+        assert!(!notice.swap(false, Ordering::AcqRel));
+    }
+
+    #[test]
+    fn rxvt_osc777_notification_also_marks_the_notice_flag() {
+        let mut term = Terminal::new(20, 4).expect("terminal");
+        let notice = new_notice();
+        install(&mut term, new_cell_px(), true, Arc::clone(&notice)).expect("effects");
+        term.vt_write(b"\x1b]777;notify;terminator-rust;notice\x07");
+        assert!(notice.swap(false, Ordering::AcqRel));
+        assert!(!notice.swap(false, Ordering::AcqRel));
     }
 }
