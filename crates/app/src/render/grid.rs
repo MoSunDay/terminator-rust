@@ -98,8 +98,8 @@ pub struct DrawArgs<'a> {
     pub font_size: f32,
     /// Cursor visibility alpha (0 = hidden, 1 = solid block).
     pub cursor_alpha: f32,
-    /// Opaque effective pane background (theme or global override).
-    pub bg: Color32,
+    /// Text blink phase, shared by focused and unfocused panes.
+    pub blink_on: bool,
     /// Pane fill alpha: `pane_bg_alpha(settings.transparency,
     /// settings.opacity)` (pane bg + cell bgs), computed by the caller.
     pub fill_alpha: f32,
@@ -120,12 +120,12 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     let font_size = a.font_size;
     let cursor_alpha = a.cursor_alpha;
     let fill_alpha = a.fill_alpha;
-    let bg = with_opacity(a.bg, fill_alpha);
+    let bg = with_opacity(to_c32(vt_rgb(fr.default_bg)), fill_alpha);
     // Cursor-block glyph ink uses the bg COLOR at full alpha: on glass the
     // semi-transparent fill would render the glyph invisible.
     let bg_ink = Color32::from_rgb(bg.r(), bg.g(), bg.b());
     painter.rect_filled(rect, 0.0, bg);
-    let default_fg = to_c32(pal.foreground);
+    let default_fg = to_c32(vt_rgb(fr.default_fg));
     let cursor_col = fr
         .cursor_color
         .map(vt_rgb)
@@ -177,12 +177,23 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
             }
             let span: u16 = if cd.wide { 2 } else { 1 };
             let r = cell_rect(rect, ux, uy, cell, span);
-            let fg = cell_colors(cd, default_fg, bg).0;
+            let (base_fg, explicit_bg) = cell_colors(cd, default_fg, bg_ink);
+            let ink_bg = if cd.selected {
+                sel_opaque
+            } else {
+                explicit_bg.unwrap_or(bg_ink)
+            };
+            let fg = if cd.faint {
+                crate::render::tokens::lerp_color(base_fg, ink_bg, 0.5)
+            } else {
+                base_fg
+            };
             let is_cursor = cursor_at == Some((ux, uy));
             if is_cursor {
                 painter.rect_filled(r, 2.0, cursor_col);
             }
-            if !cd.text.is_empty() {
+            let ink_visible = !cd.invisible && (!cd.blink || a.blink_on);
+            if ink_visible && !cd.text.is_empty() {
                 // Cursor-block glyph ink: the cell's own effective bg at
                 // full alpha (contrast on colored cells), else the pane
                 // bg color - a semi-transparent fill would hide it on
@@ -195,16 +206,30 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
                 // Wide cells paint at the scaled size so the glyph fills
                 // exactly the two-cell span; narrow cells are unchanged.
                 let cell_font = if cd.wide { &wide_font } else { &font };
-                painter.text(
+                super::ink::draw(
+                    painter,
                     Pos2::new(r.min.x, r.center().y),
-                    Align2::LEFT_CENTER,
                     cd.text.as_str(),
                     cell_font.clone(),
                     glyph,
+                    cd.italic,
                 );
+                if cd.bold {
+                    super::ink::draw(
+                        painter,
+                        Pos2::new(r.min.x + 0.5, r.center().y),
+                        cd.text.as_str(),
+                        cell_font.clone(),
+                        glyph,
+                        cd.italic,
+                    );
+                }
             }
-            if cd.underline {
+            if ink_visible && cd.underline {
                 painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, fg));
+            }
+            if ink_visible && cd.strikethrough {
+                painter.line_segment([r.left_center(), r.right_center()], Stroke::new(1.0, fg));
             }
             if cd.wide {
                 skip_tail = true;
@@ -276,6 +301,11 @@ mod tests {
         let fr = VtFrame {
             cols: 5,
             rows: 3,
+            default_bg: vt_pane::term::Color {
+                r: 40,
+                g: 42,
+                b: 54,
+            },
             cells: vec![row(), row(), row()],
             ..Default::default()
         };
@@ -295,7 +325,7 @@ mod tests {
                 },
                 font_size: 15.0,
                 cursor_alpha: 0.0,
-                bg: Color32::from_rgb(40, 42, 54),
+                blink_on: true,
                 fill_alpha: 0.5,
             },
         );
@@ -404,5 +434,164 @@ mod tests {
             "wide advance {advance} should fill two snapped cells ({}pts)",
             2.0 * cell.w
         );
+    }
+
+    #[test]
+    fn terminal_ink_styles_affect_painted_shapes() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts::install(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        let ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("ink-style-test"),
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 80.0))),
+        );
+        let cell = |text: &str| vt_pane::CellData {
+            text: text.into(),
+            fg: Some(vt_pane::term::Color {
+                r: 200,
+                g: 100,
+                b: 50,
+            }),
+            ..Default::default()
+        };
+        let fr = VtFrame {
+            cols: 4,
+            rows: 1,
+            default_bg: vt_pane::term::Color {
+                r: 40,
+                g: 42,
+                b: 54,
+            },
+            cells: vec![vec![
+                vt_pane::CellData {
+                    bold: true,
+                    ..cell("A")
+                },
+                vt_pane::CellData {
+                    faint: true,
+                    italic: true,
+                    ..cell("B")
+                },
+                vt_pane::CellData {
+                    invisible: true,
+                    ..cell("C")
+                },
+                vt_pane::CellData {
+                    blink: true,
+                    ..cell("D")
+                },
+            ]],
+            ..Default::default()
+        };
+        let bg = Color32::from_rgb(40, 42, 54);
+        draw_frame(
+            ui.painter(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(36.0, 18.0)),
+            &DrawArgs {
+                fr: &fr,
+                pal: &theme::builtin::dracula(),
+                cell: CellSize {
+                    w: 9.0,
+                    h: 18.0,
+                    wide_size: 15.0,
+                    w_px: 9,
+                    h_px: 18,
+                },
+                font_size: 15.0,
+                cursor_alpha: 0.0,
+                blink_on: false,
+                fill_alpha: 1.0,
+            },
+        );
+        let mut out = ctx.end_pass();
+        let ink: Vec<&egui::epaint::TextShape> = out
+            .shapes
+            .iter()
+            .filter_map(|s| {
+                if let egui::Shape::Text(t) = &s.shape {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            ink.len(),
+            3,
+            "bold doubles A; faint B remains; hidden C/D paint nothing"
+        );
+        assert_eq!(
+            ink[2].fallback_color,
+            crate::render::tokens::lerp_color(Color32::from_rgb(200, 100, 50), bg, 0.5)
+        );
+        assert!(ink[2].galley.job.sections[0].format.italics);
+        let row = &ink[2].galley.rows[0];
+        let vertices = &row.visuals.mesh.vertices;
+        let glyph = row.visuals.glyph_vertex_range.start;
+        assert!(
+            vertices[glyph].pos.x > vertices[glyph + 2].pos.x,
+            "epaint must slant italic glyphs at tessellation"
+        );
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn frame_default_colors_drive_background_and_plain_ink() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts::install(&ctx);
+        ctx.begin_pass(egui::RawInput::default());
+        let ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("frame-default-colors"),
+            egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(40.0, 30.0))),
+        );
+        let fr = VtFrame {
+            cols: 1,
+            rows: 1,
+            default_fg: vt_pane::term::Color {
+                r: 18,
+                g: 52,
+                b: 86,
+            },
+            default_bg: vt_pane::term::Color {
+                r: 171,
+                g: 205,
+                b: 239,
+            },
+            cells: vec![vec![vt_pane::CellData {
+                text: "A".into(),
+                ..Default::default()
+            }]],
+            ..Default::default()
+        };
+        draw_frame(
+            ui.painter(),
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(9.0, 18.0)),
+            &DrawArgs {
+                fr: &fr,
+                pal: &theme::builtin::dracula(),
+                cell: CellSize {
+                    w: 9.0,
+                    h: 18.0,
+                    wide_size: 15.0,
+                    w_px: 9,
+                    h_px: 18,
+                },
+                font_size: 15.0,
+                cursor_alpha: 0.0,
+                blink_on: true,
+                fill_alpha: 1.0,
+            },
+        );
+        let mut out = ctx.end_pass();
+        assert!(out.shapes.iter().any(|s| {
+            matches!(&s.shape, egui::Shape::Rect(r) if r.fill == Color32::from_rgb(171, 205, 239))
+        }));
+        assert!(out.shapes.iter().any(|s| {
+            matches!(&s.shape, egui::Shape::Text(t) if t.fallback_color == Color32::from_rgb(18, 52, 86))
+        }));
+        out.textures_delta.clear();
     }
 }

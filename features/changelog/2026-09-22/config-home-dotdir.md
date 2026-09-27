@@ -35,7 +35,7 @@ remote/registry.rs, ctl/sidecar.rs + ctl/uds.rs client probe).
   on rerun.
 - scripts/bin/e2e-empty-restore.sh PASS end-to-end against the new
   path (preset restore + quit persistence + empty relaunch loop).
-- Live deploy to 192.168.31.196 via scripts/bin/deploy-remote.sh:
+- Live deploy via scripts/bin/deploy-remote.sh:
   legacy state.json (theme kanagawa-wave) auto-copied to
   ~/.terminator-rust on first launch, legacy file preserved; a
   Ctrl+Shift+E split saved ONLY to the new path (old-path mtime

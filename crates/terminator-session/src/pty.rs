@@ -56,6 +56,7 @@ pub fn spawn(cwd: &str) -> Result<Shell> {
     cmd.arg("-i")
         .current_dir(cwd)
         .env("TERM", "xterm-256color")
+        .env("COLORTERM", "truecolor")
         .stdin(Stdio::from(duplicate(slave.as_raw_fd())?))
         .stdout(Stdio::from(duplicate(slave.as_raw_fd())?))
         .stderr(Stdio::from(duplicate(slave.as_raw_fd())?));

@@ -9,6 +9,7 @@ mod persist;
 mod render;
 mod session_map;
 mod state;
+mod terminal_theme;
 mod ui;
 mod windows;
 

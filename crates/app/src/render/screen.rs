@@ -81,6 +81,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let cell = grid::measure_cells(&ctx, font_size);
 
     // Lifecycle bookkeeping.
+    crate::terminal_theme::sync(&mut d.sess, &pal, d.st.settings.bg_color);
     session_map::pump_all(&mut d.sess);
     actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
     // Remote panes whose connection dropped are kept and reattached
@@ -90,6 +91,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         actions::do_new_tab(&mut d.st, &mut d.sess, PaneKind::Local, &mut d.dirty);
     }
     actions::ensure_sessions(&d.st, &mut d.sess);
+    // New panes must receive theme defaults before their first output is parsed.
+    crate::terminal_theme::sync(&mut d.sess, &pal, d.st.settings.bg_color);
     // A gone shell closes its own pane (after EXIT_GRACE); closing the
     // last pane of THIS window removes it mid-pass - stop rendering then
     // rather than drawing the next window's tree into this viewport.
@@ -139,7 +142,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         w.ui.ime_cursor = None;
         w.ui.ime_pane = None;
     }
-    let cursor_a = tokens::cursor_alpha(ctx.input(|i| i.time) as f32);
+    let frame_time = ctx.input(|i| i.time) as f32;
+    let cursor_a = tokens::cursor_alpha(frame_time);
+    let blink_on = frame_time.rem_euclid(1.0) < 0.5;
     let painter = ui.painter().clone();
     let rects = pane_rects(st, area, m.header_h);
     // Uniform pane appearance: one opaque bg + one fill alpha for every
@@ -190,7 +195,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         cell,
                         font_size,
                         cursor_alpha: if Some(pane) == focused { cursor_a } else { 0.0 },
-                        bg: pane_bg,
+                        blink_on,
                         fill_alpha,
                     },
                 );
@@ -233,7 +238,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                                 &text,
                                 cell,
                                 font_size,
-                                colors::to_c32(pal.foreground),
+                                colors::to_c32(colors::vt_rgb(fr.default_fg)),
                                 ui.visuals().ime_composition.active_underline_stroke,
                             );
                         }
@@ -406,6 +411,15 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         }
     }
 
-    // Terminals stream output continuously.
-    ctx.request_repaint_after(Duration::from_millis(50));
+    // Follow active TUI frames promptly; keep idle panes on the cheaper
+    // cadence while retaining cursor blink and PTY output polling.
+    let active = sess
+        .map
+        .values()
+        .any(|s| s.last_output.elapsed() < Duration::from_millis(500));
+    ctx.request_repaint_after(if active {
+        Duration::from_millis(16)
+    } else {
+        Duration::from_millis(50)
+    });
 }

@@ -24,8 +24,12 @@ pub struct CellData {
     pub bg: Option<Color>,
     pub bold: bool,
     pub italic: bool,
+    pub faint: bool,
+    pub blink: bool,
+    pub invisible: bool,
     pub inverse: bool,
     pub underline: bool,
+    pub strikethrough: bool,
     /// Inside the terminal's active selection (render as highlighted).
     pub selected: bool,
 }
@@ -99,8 +103,12 @@ fn cell_data(cell: &CellIteration<'_, '_>) -> CellData {
         if let Ok(style) = cell.style() {
             data.bold = style.bold;
             data.italic = style.italic;
+            data.faint = style.faint;
+            data.blink = style.blink;
+            data.invisible = style.invisible;
             data.inverse = style.inverse;
             data.underline = !matches!(style.underline, libghostty_vt::style::Underline::None);
+            data.strikethrough = style.strikethrough;
         }
     }
     data

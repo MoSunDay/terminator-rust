@@ -100,6 +100,12 @@ fn read_clipboard() -> String {
         .unwrap_or_default()
 }
 
+fn copy_focused(ctx: &Context, st: &AppState, sess: &mut SessionMap) {
+    if let Some(text) = actions::focused_selection_text(st, sess) {
+        ctx.copy_text(text);
+    }
+}
+
 /// Frame-level input dispatch: shortcuts first, then terminal input.
 ///
 /// `ui` is the app-global UI state (quit flag); per-window input state
@@ -166,7 +172,7 @@ pub fn handle(
             Event::Paste(text) => {
                 // Bare Ctrl+V is quoted-insert in the child, not a paste
                 // (Ctrl+Shift+V is the terminal paste shortcut).
-                if mods_at.ctrl && !mods_at.shift {
+                if mods_at.ctrl && !mods_at.mac_cmd && !mods_at.shift {
                     if let Some(p) = focused {
                         if let Some(s) = sess.map.get_mut(&p) {
                             if let Some(gk) = key_from_char('v') {
@@ -189,7 +195,7 @@ pub fn handle(
                 // Ctrl combos must still reach the child (SIGINT, ^X), so
                 // only Shift / dedicated-key / macOS-Cmd forms act on the
                 // clipboard.
-                if mods_at.ctrl && !mods_at.shift {
+                if mods_at.ctrl && !mods_at.mac_cmd && !mods_at.shift {
                     let c = if matches!(ev, Event::Cut) { 'x' } else { 'c' };
                     if let Some(p) = focused {
                         if let Some(s) = sess.map.get_mut(&p) {
@@ -199,7 +205,7 @@ pub fn handle(
                         }
                     }
                 } else {
-                    actions::copy_focused(st, sess);
+                    copy_focused(ctx, st, sess);
                 }
             }
             Event::Text(t) => {
@@ -241,6 +247,10 @@ pub fn handle(
                                     }
                                 }
                             }
+                            continue;
+                        }
+                        if action == Action::Copy {
+                            copy_focused(ctx, st, sess);
                             continue;
                         }
                         if action == Action::Quit {
@@ -462,6 +472,38 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(s.exit.is_none(), "cat died without SIGINT");
+    }
+
+    #[test]
+    fn mac_command_copy_exports_selected_text() {
+        let Some((mut st, mut sess, mut ui)) = harness() else {
+            return;
+        };
+        let s = sess.map.get_mut(&1).expect("pane");
+        assert!(wait_grid(s, "READY"), "session did not start echoing");
+        let (cw, _) = vtask::cell_px(s);
+        vt_pane::mouse::select_press(s, 0.0, 0.0).expect("selection start");
+        vt_pane::mouse::select_drag(s, cw as f32 * 5.0, 0.0, false).expect("selection drag");
+        vt_pane::mouse::select_release(s, cw as f32 * 5.0, 0.0).expect("selection end");
+
+        for mods in [
+            Modifiers::MAC_CMD | Modifiers::COMMAND,
+            Modifiers::MAC_CMD | Modifiers::COMMAND | Modifiers::CTRL,
+        ] {
+            let ctx = Context::default();
+            ctx.begin_pass(RawInput {
+                events: vec![Event::ModifiersChanged(mods), Event::Copy],
+                ..Default::default()
+            });
+            let mut dirty = false;
+            handle(&ctx, &mut st, &mut sess, &mut ui, &mut dirty);
+            let mut out = ctx.end_pass();
+            assert!(out.platform_output.commands.iter().any(|cmd| {
+                matches!(cmd, egui::OutputCommand::CopyText(text) if text == "READY")
+            }));
+            out.textures_delta.clear();
+            assert!(!grid_text(sess.map.get_mut(&1).expect("pane")).contains("^C"));
+        }
     }
 
     #[test]
