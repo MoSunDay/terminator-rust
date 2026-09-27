@@ -82,7 +82,11 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
 
     // Lifecycle bookkeeping.
     crate::terminal_theme::sync(&mut d.sess, &pal, d.st.settings.bg_color);
-    session_map::pump_all(&mut d.sess);
+    // Panes whose program emitted a desktop notification (OSC 9/777)
+    // join the IPC-sourced attention set for the tab badge.
+    for pane in session_map::pump_all(&mut d.sess) {
+        d.ui.notices.insert(pane);
+    }
     actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
     // Remote panes whose connection dropped are kept and reattached
     // (before ensure_sessions, so a fired retry respawns this frame).

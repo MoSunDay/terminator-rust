@@ -169,13 +169,20 @@ pub fn spawn_meta(
     }
 }
 
-/// Drain pty bytes for every live session (call each frame).
-pub fn pump_all(sess: &mut SessionMap) {
+/// Drain pty bytes for every live session (call each frame). Returns the
+/// panes whose terminal reported a desktop notification (OSC 9/777) since
+/// the previous pump, for the attention badge.
+pub fn pump_all(sess: &mut SessionMap) -> Vec<PaneId> {
+    let mut noticed = Vec::new();
     for (id, s) in sess.map.iter_mut() {
         if let Err(e) = vtask::pump(s) {
             warn!("pump pane {id}: {e}");
         }
+        if vtask::take_notice(s) {
+            noticed.push(*id);
+        }
     }
+    noticed
 }
 
 /// Pump one session, resize the terminal to the content area if needed and
@@ -246,6 +253,42 @@ mod tests {
         let f = drain_until_text(&mut sess, "hello-app");
         let text: String = f.cells.iter().flatten().map(|c| c.text.as_str()).collect();
         assert!(text.contains("hello-app"), "frame text: {text:?}");
+    }
+
+    #[test]
+    fn pump_all_reports_a_pane_that_emitted_the_notice_osc_once() {
+        // printf renders the exact bytes the remote keeper injects
+        // (\007 = BEL); the reader thread loops them back as PTY output.
+        let opts = SessionOpts::command(
+            20,
+            5,
+            vec![
+                "printf".into(),
+                "\\033]9;terminator-rust notice\\007".into(),
+            ],
+        );
+        let sess = match vtask::spawn_session(&opts) {
+            Ok(s) => s,
+            Err(e) => {
+                // CI without a usable pty: skip rather than fail.
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+        let mut map = session_map();
+        note_spawned(&mut map, 7, sess);
+        let mut seen = false;
+        for _ in 0..200 {
+            if pump_all(&mut map).contains(&7) {
+                seen = true;
+                break;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert!(seen, "OSC 9 pane never surfaced via pump_all");
+        // The mark is consumed by the take: no further notification
+        // means the pane is never reported again.
+        assert!(!pump_all(&mut map).contains(&7));
     }
 
     #[test]

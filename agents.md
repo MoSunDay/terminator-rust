@@ -7,7 +7,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 
 ## Crate map
 - layout-tree: tab/pane tree, splits, focus, `layout_tab` geometry
-- vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`; open_pty = posix_openpt+O_CLOEXEC pair, pre-fork argv/env/PATH tables (child branch is async-signal-safe only)
+- vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`; open_pty = posix_openpt+O_CLOEXEC pair, pre-fork argv/env/PATH tables (child branch is async-signal-safe only); effects install on_desktop_notification so OSC 9/777 sets a per-Session notice flag drained once per frame by task::take_notice
 - theme: palettes + xterm 256 cube + `blend_background`
 - remote: ssh -tt attaches through remote `terminator-session` when present;
   exit 42 = no keeper -> plain ssh. conn-drop exits
@@ -17,14 +17,35 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   quick fails grow the delay), ssh argv carries ConnectTimeout=10
 - terminator-session: remote binary with one detached PTY owner per named
   session, private Unix socket, bounded output replay, multi-client attach,
-  and `list` columns SESSION/STATE/CWD/TITLE; shell exit removes the socket
+  and `list` columns SESSION/STATE/CWD/TITLE; shell exit removes the socket;
+  the keeper exports $TERMINATOR_SESSION into its shell purely as METADATA
+  (the `notice` subcommand + broadcast channel are GONE - notices are now
+  ordinary OSC 9 PTY output written by `terminator-ctl notice`, so through
+  an attach they ride the replay history and a reattach re-fires the badge;
+  do not reintroduce a subcommand or env routing). In-band OSC 9
+  is deliberate: an ssh -R forward of the app socket was REJECTED (sshd
+  AllowStreamLocalForwarding policy, stale /tmp streamlocal sockets, and
+  ssh_argv's ExitOnForwardFailure=yes turns a refused forward into exit
+  255 = is_disconnect -> endless reconnect backoff)
 - ipc-proto: serde wire types for the UDS control socket (Request/Response),
-  including pane-scoped `Notice` and `Noticed`
+  including pane-scoped `Notice` and `Noticed` (handler kept in the app as
+  the socket route for external/legacy callers; ctl's notice writes OSC 9
+  to the pane tty and never uses it)
 - paths: config root $HOME/.terminator-rust (state.json / sessions.json /
   oc-links.json + ipc.sock fallback); paths::migrate_legacy copies a legacy
   ~/.config/terminator-rust/<file> forward on first use (existing new file
   wins, best-effort) - do NOT re-hardcode the XDG resolution per crate
-- ctl: `terminator-ctl` CLI: list/capture/send/notice + `oc` link/submit/status/
+- ctl: `terminator-ctl` CLI: list/capture/send + `notice` (NO arguments,
+  any arg = usage error; writes the canonical OSC 9 from
+  ipc_proto::notice_osc() to /dev/tty, stdout fallback, best-effort
+  ALWAYS exit 0 - works in every pane kind, incl. through a keeper
+  attach; opencoder hookup recipe in
+  features/changelog/2026-09-27/remote-session-notice.md - LIVE on the
+  AI-coding box: ~/.opencoder/hooks.json turn_done+question -> notice
+  (hot-reloaded per event), a /tmp/oc-hook.log verification line in the
+  hook is still to be REMOVED after one confirmed fire; the desktop app
+  (amos) still runs a pre-OSC9 build, the bubble stays invisible there
+  until deploy+restart) + `oc` link/submit/status/
   sessions; /proc discovery of the pane's opencoder process
 - oc-store: direct rusqlite access to opencoder per-workdir stores
   (schema guard v18, insert/pending/receipts; `oc-store-fixture` dev bin)
@@ -32,7 +53,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   {windows: Vec<WindowState{id,tree,WindowUi}>, active=rendering idx,
   focus=user window}; state at ~/.terminator-rust/state.json
   (PWindow[] + legacy tabs mirror); UDS ipc in src/ipc/;
-  `UiState.notices` keeps transient pane IDs; tab rendering aggregates them,
+  `UiState.notices` keeps transient pane IDs (ipc Request::Notice + session_map::pump_all returning OSC-noticed ids each frame); tab rendering aggregates them,
   focused windows acknowledge their active tab and discard closed panes;
   actions::close_exited auto-closes EXITED panes 250ms (EXIT_GRACE)
   after the exit was seen - exit 42 stays for auto_degrade, remote
@@ -75,17 +96,30 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   exits BEFORE any kill and before the stale-socket `rm`, stage 6 then
   smokes the STILL-RUNNING (old) build and says so - used when the user
   has live work in the target's window, so the fix goes live only at that
-  app's next launch. Restart candidates come from BOTH
+  app's next launch. DECIDE restart vs keep-running by probing the
+  live instance first over ssh as the desktop user:
+  `XDG_RUNTIME_DIR=/run/user/1000 /opt/terminator-rust/current/bin/
+  terminator-ctl list` + `capture` every pane + `ps --ppid <shell pid>`
+  - the target's panes regularly carry live children (multi-hour
+  `ssh` jumps into other machines, opencoder TUIs) that a pid-kill
+  restart would SIGHUP away. Restart candidates come from BOTH
   `pgrep -f <install path>` AND `pgrep -x terminator-rust`: a
   panel/desktop-launched instance has a BARE argv[0]
   (e.g. ~/.local/bin/terminator-rust, a symlink into /opt), so the -f
   pattern alone missed it and a deploy left the day-old instance running
   beside the fresh one; /proc/<pid>/exe under /opt/terminator-rust is the
   only kill gate (a repack replaces the live build's dir in place, so
-  pids_of strips a trailing ` (deleted)` from the readlink). To verify a
+  pids_of strips a trailing ` (deleted)` from the readlink). ADDRESSING one specific pane on the live target: `ctl list`'s PID column is the pane's login SHELL - interactive children like `ssh`/TUIs are grandchildren (`ps --ppid <shell pid>`); the exact pane of a given session = the ssh whose source port ($SSH_CONNECTION's second field) shows in `ss -tnp` on the desktop; a SECOND app instance answers on its per-pid socket (`/run/user/1000/terminator-rust/ipc-<pid>.sock`) - probe each with `terminator-ctl --socket <path> list` before noticing/capturing. To verify a
   kept-running deploy without touching that window, launch the new
   `current/bin/terminator-rust` under a PRIVATE `HOME` +
-  `XDG_RUNTIME_DIR` on a scratch Xvfb display, never on the user's :0.
+  `XDG_RUNTIME_DIR` on a scratch Xvfb display, never on the user's :0
+  (verified live 2026-09-27: new binary list/capture + notice round-trip
+  on a private :NN while the old instance kept its panes). Run
+  deploy-remote.sh in the tool-call FOREGROUND (warm release build +
+  upload = ~2min): a `setsid nohup`-detached deploy died silently between
+  tool calls mid-compile (log frozen, no OOM, cargo gone) - setsid
+  survival is reliable only for the short Xvfb launches inside one
+  e2e-script call.
 - releases: push an annotated `v*` tag -> .github/workflows/release.yml
   builds linux-x86_64 + macos-aarch64 release tarballs via
   scripts/bin/pack-release.sh (deterministic GNU-tar archive + .sha256

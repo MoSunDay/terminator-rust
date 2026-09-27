@@ -20,6 +20,12 @@ Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
   测试连接，不能停止共享 sshd 或触碰已有会话。
 - control-channel e2e（`e2e-ipc-oc.sh`）：list/capture/send +
   oc link/submit/status/--wait + SIGTERM 后陈旧 socket 回收
+- notice 气泡 e2e（`e2e-notice.sh`）：`terminator-ctl notice`（无参数，
+  任何参数 = 用法错误）把规范 OSC 9 字节写进所在 pane 的 /dev/tty →
+  后台 tab 的 chip 蓝点像素出现、重复 notice 去重、
+  点击 chip 激活该 tab 即确认清除、激活 tab 聚焦时抑制、切回非激活后
+  蓝点同位重现；裸 printf 同样点亮；keeper 案例：pane 经
+  `terminator-session attach` 附着后 notice 字节穿过 keeper 照样点亮
 - mouse/key e2e（`e2e-mouse-key.sh`）：裸 Ctrl+C 的 ^C 回显、跨 pane 拖拽
   SGR 投递到按下者、Shift+PageUp/End 翻页、Ctrl+C 真打断前台任务
 - multi-window e2e（`e2e-windows.sh`）：Ctrl+Shift+N 真开第二个 X 窗口、
@@ -54,6 +60,27 @@ Commit: 832f94ebca7792accf3a918f29d42cc130fb075b
 - control-channel e2e: `scripts/bin/e2e-ipc-oc.sh` (Xvfb + fake opencoder
   holding a fixture store open in a named pane; covers list/capture/send,
   oc link/submit/status/--wait, stale-socket reclaim after SIGTERM)
+- notice bubble e2e: `scripts/bin/e2e-notice.sh` (Xvfb + scrot/PIL + ctl
+  + terminator-session; `terminator-ctl notice` (NO arguments, any arg =
+  usage error) writes the canonical OSC 9 bytes
+  `\x1b]9;terminator-rust notice\x07` from ipc_proto::notice_osc() to the
+  pane's own /dev/tty - ordinary PTY output, so no keeper is needed for
+  the core flow; N1 = a notice typed in a PLAIN pane on a NON-selected
+  tab paints the blue dot rgb(70,150,255) right of the active chip and
+  prints NOTHING on success (capture asserts silence + no rendered OSC
+  garbage), N2 = repeated notices dedup to ONE dot cluster, N3 =
+  `terminator-ctl notice foo` is a usage error (rc!=0, empty stdout,
+  badge unchanged) while the bare command always exits 0, N4 = clicking
+  the badged chip switches active_tab (persisted to state.json) and the
+  focused window's acknowledge clears the dot, N5 = noticing from the
+  ACTIVE focused tab is suppressed/acked (zero clusters),
+  N6 = backgrounding beta again re-lands the dot right of the active
+  chip at the SAME x, N7 = the zero-binary fallback
+  `printf '\033]9;terminator-rust notice\007'` paints and acks the same
+  way, N8 = after `terminator-session attach notes --title notes` INSIDE
+  pane 13 a notice typed in the keeper shell still lands the badge (the
+  bytes traverse the keeper as ordinary PTY output; private socket +
+  `list` STATE=attached asserted first), N9 = app + keeper liveness).
 - mouse/key e2e: `scripts/bin/e2e-mouse-key.sh` (Xvfb + xdotool over the
   live socket: bare Ctrl+C ^C echo, cross-pane drag SGR press/motion/
   RELEASE landing in the press-owner pane, Shift+PageUp/End scrollback

@@ -4,8 +4,10 @@ Commit: e4b23d756b53dbf71970da47f8a64e0db3bf27b0
 
 `terminator-ctl notice` now marks the calling pane's inactive tab with one blue
 dot. The terminal exports `TERMINATOR_PANE_ID` and, when available, the sibling
-`TERMINATOR_CTL` path to pane children. An optional pane argument lets callers
-target a pane explicitly. Repeated notices collapse to one dot; focusing the
+`TERMINATOR_CTL` path to pane children. (Superseded 2026-09-27: the pane
+argument and `$TERMINATOR_PANE_ID` routing are gone — `terminator-ctl notice`
+takes no arguments and writes the canonical OSC 9 bytes to the pane's own
+tty; see remote-session-notice.md.) Repeated notices collapse to one dot; focusing the
 tab in the focused window acknowledges it, and closing a pane discards its
 notice. A selected tab in an unfocused window still shows its dot until that
 window is focused.

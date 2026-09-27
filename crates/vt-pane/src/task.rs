@@ -14,7 +14,7 @@ use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::Terminal;
 
-use crate::effects::{self, CellPx};
+use crate::effects::{self, CellPx, NoticeFlag};
 use crate::pty::{self, PtyHandle};
 use crate::term::{snapshot_frame, Frame};
 
@@ -96,6 +96,9 @@ pub struct Session {
     pub last_output: Instant,
     /// Current cell pixel size, shared with the size-query effect.
     cell_px: CellPx,
+    /// Set by the desktop-notification effect (OSC 9/777); drained once
+    /// per frame by [`take_notice`] for the pane's attention badge.
+    notice: NoticeFlag,
     /// Mouse encoder + selection gesture objects (see `mouse`).
     pub(crate) pointer: crate::mouse::PointerState,
 }
@@ -180,7 +183,13 @@ fn assemble(
         let _ = pty::pty_write(write_fd, data);
     })?;
     let cell_px = effects::new_cell_px();
-    effects::install(&mut term, Arc::clone(&cell_px), opts.dark)?;
+    let notice = effects::new_notice();
+    effects::install(
+        &mut term,
+        Arc::clone(&cell_px),
+        opts.dark,
+        Arc::clone(&notice),
+    )?;
     // Build every fallible field before the reader thread exists; the
     // struct literal below is infallible.
     let render_state = RenderState::new()?;
@@ -215,6 +224,7 @@ fn assemble(
         exit: None,
         last_output: Instant::now(),
         cell_px,
+        notice,
         pointer,
     })
 }
@@ -472,6 +482,14 @@ pub fn pump(sess: &mut Session) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Take the pane's pending desktop-notification mark (any OSC 9/777
+/// notification parsed from its PTY stream): returns true exactly once
+/// per notification, so the caller raises the attention badge only for
+/// freshly noticed panes.
+pub fn take_notice(sess: &mut Session) -> bool {
+    sess.notice.swap(false, Ordering::AcqRel)
 }
 
 /// Snapshot the current terminal state into plain render data.

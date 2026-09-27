@@ -20,7 +20,7 @@ fn duplicate(fd: c_int) -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(copy) })
 }
 
-pub fn spawn(cwd: &str) -> Result<Shell> {
+pub fn spawn(cwd: &str, session: &str) -> Result<Shell> {
     let mut master = -1;
     let mut slave = -1;
     let size = libc::winsize {
@@ -57,6 +57,9 @@ pub fn spawn(cwd: &str) -> Result<Shell> {
         .current_dir(cwd)
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
+        // Identifies this keeper session to any child running in the
+        // shell (documented environment contract, not a command route).
+        .env(ipc_proto::ENV_SESSION, session)
         .env_remove("NO_COLOR")
         .stdin(Stdio::from(duplicate(slave.as_raw_fd())?))
         .stdout(Stdio::from(duplicate(slave.as_raw_fd())?))
