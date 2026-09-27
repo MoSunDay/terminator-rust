@@ -489,15 +489,10 @@ pub fn apply_action(
 
 /// Text selected in the focused pane, ready for the window clipboard output.
 pub fn focused_selection_text(st: &AppState, sess: &mut SessionMap) -> Option<String> {
-    let Some(pane) = st
+    let pane = st
         .win()
-        .and_then(|w| w.tree.tabs.get(w.tree.active_tab).map(|t| t.focused))
-    else {
-        return None;
-    };
-    let Some(s) = sess.map.get_mut(&pane) else {
-        return None;
-    };
+        .and_then(|w| w.tree.tabs.get(w.tree.active_tab).map(|t| t.focused))?;
+    let s = sess.map.get_mut(&pane)?;
     match vt_pane::mouse::selection_text(s) {
         Ok(text) if !text.is_empty() => Some(text),
         Ok(_) => None,
