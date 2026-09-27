@@ -7,6 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use libghostty_vt::style::RgbColor;
 use libghostty_vt::terminal::SizeReportSize;
 use libghostty_vt::terminal::{
     ColorScheme, ConformanceLevel, DeviceAttributeFeature, DeviceAttributes, DeviceType,
@@ -20,10 +21,16 @@ pub type CellPx = Arc<Mutex<(u32, u32)>>;
 /// Nominal cell size until the UI reports real geometry.
 const NOMINAL_CELL_PX: (u32, u32) = (8, 16);
 
+fn dark_background(color: RgbColor) -> bool {
+    let brightness =
+        0.2126 * f32::from(color.r) + 0.7152 * f32::from(color.g) + 0.0722 * f32::from(color.b);
+    brightness < 127.5
+}
+
 /// Install the query-response effects on a freshly created terminal.
 ///
-/// `dark` selects the color-scheme answer (CSI ? 996 n) reported to
-/// programs; wire it to the active theme's background luminance.
+/// `dark` is the fallback until a background is installed; color-scheme
+/// queries subsequently reflect the terminal's effective OSC/theme color.
 pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx, dark: bool) -> Result<()> {
     term.on_device_attributes(|_| {
         Some(DeviceAttributes {
@@ -51,9 +58,13 @@ pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx, dark: boo
         })
     })?;
 
-    // Capture the Copy bool (not the enum) so the closure stays trivially
-    // 'static and independent of ColorScheme's derives.
-    term.on_color_scheme(move |_| {
+    term.on_color_scheme(move |term| {
+        let dark = term
+            .bg_color()
+            .ok()
+            .flatten()
+            .map(dark_background)
+            .unwrap_or(dark);
         Some(if dark {
             ColorScheme::Dark
         } else {
@@ -66,4 +77,29 @@ pub fn install(term: &mut Terminal<'static, 'static>, cell_px: CellPx, dark: boo
 /// Fresh shared cell size for a new session.
 pub fn new_cell_px() -> CellPx {
     Arc::new(Mutex::new(NOMINAL_CELL_PX))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_scheme_query_tracks_effective_background() {
+        let mut term = Terminal::new(20, 4).expect("terminal");
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&output);
+        term.on_pty_write(move |_, bytes| sink.lock().unwrap().extend_from_slice(bytes))
+            .expect("pty response");
+        install(&mut term, new_cell_px(), true).expect("effects");
+        term.set_default_bg_color(Some(RgbColor {
+            r: 12,
+            g: 24,
+            b: 36,
+        }))
+        .expect("dark default");
+        term.vt_write(b"\x1b[?996n");
+        term.vt_write(b"\x1b]11;#f0f0f0\x07\x1b[?996n");
+        let response = output.lock().unwrap().clone();
+        assert_eq!(response, b"\x1b[?997;1n\x1b[?997;2n");
+    }
 }

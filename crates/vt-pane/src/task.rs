@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use libghostty_vt::key::{Action, Encoder as KeyEncoder, Event as KeyEvent, Mods};
@@ -92,6 +92,8 @@ pub struct Session {
     key_event: KeyEvent<'static>,
     /// Non-empty once the child has exited / the master closed.
     pub exit: Option<i32>,
+    /// Time of the most recent PTY output, used to keep active TUIs smooth.
+    pub last_output: Instant,
     /// Current cell pixel size, shared with the size-query effect.
     cell_px: CellPx,
     /// Mouse encoder + selection gesture objects (see `mouse`).
@@ -211,6 +213,7 @@ fn assemble(
         key_encoder,
         key_event,
         exit: None,
+        last_output: Instant::now(),
         cell_px,
         pointer,
     })
@@ -449,7 +452,10 @@ fn restore_terminal(snap: Option<&[u8]>, opts: &SessionOpts) -> Result<Terminal<
 pub fn pump(sess: &mut Session) -> Result<()> {
     loop {
         match sess.events.try_recv() {
-            Ok(PtyEvent::Output(data)) => sess.term.vt_write(&data),
+            Ok(PtyEvent::Output(data)) => {
+                sess.last_output = Instant::now();
+                sess.term.vt_write(&data);
+            }
             Ok(PtyEvent::Exit(status)) => {
                 if sess.exit.is_none() {
                     log::debug!("pty exit: {status}");

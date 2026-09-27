@@ -10,7 +10,7 @@ All current UI suites green (ui-style, mouse-key, windows W1-W10, window-control
 R1-R6/S1-S5, ipc-oc, cjk, oc-exit, ime M1-M7, migrate M1-M5);
 per-script coverage in [agents/e2e-suites.md](e2e-suites.md); Xvfb
 scripts export TERMINATOR_OPAQUE=1; live-verified
-on deploy target 192.168.31.196 (2 X windows, per-window typing
+on a graphical desktop (2 X windows, per-window typing
 isolation, window close keeps the app, opacity 1.0 = mocha bg not
 black, ctl list/capture; remote px differ only via wallpaper blend).
 - rendering: catppuccin + ANSI 256 bg exact px, CJK cmap (Han/kana/

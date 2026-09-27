@@ -4,6 +4,7 @@ pub mod bg_runs;
 pub mod colors;
 pub mod dropzone;
 pub mod grid;
+mod ink;
 pub mod preedit;
 pub mod screen;
 pub mod surface_guard;

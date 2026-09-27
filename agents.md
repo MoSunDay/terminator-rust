@@ -1,4 +1,4 @@
-Commit: 5c8147f6068dcb1bfb21990043a3d5990b32dd20
+Commit: dfac4c0272e337805f3954d3f431ad8473c052c9
 
 # agents.md - repo memory for terminator-rust
 
@@ -86,7 +86,6 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   kept-running deploy without touching that window, launch the new
   `current/bin/terminator-rust` under a PRIVATE `HOME` +
   `XDG_RUNTIME_DIR` on a scratch Xvfb display, never on the user's :0.
-  Target 192.168.31.196: user m, DISPLAY=:0, XDG_RUNTIME_DIR=/run/user/1000.
 - releases: push an annotated `v*` tag -> .github/workflows/release.yml
   builds linux-x86_64 + macos-aarch64 release tarballs via
   scripts/bin/pack-release.sh (deterministic GNU-tar archive + .sha256
@@ -173,9 +172,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   are normal, do not "fix" them by trusting i.modifiers.
 - copy path: egui-winit folds ctrl/cmd+C/X/V (shift variants and dedicated
   keys too) into Event::Copy/Cut/Paste and emits NO Key event; keyboard.rs
-  gates on ctrl&&!shift: bare Ctrl+C/X/V forwards ^C(SIGINT)/^X/^V to the
-  child, other forms -> actions::copy_focused (arboard, skip empty); follow_output(s) after keys/paste so typing snaps
-  scrollback to live. context_menu suppressed while tracking.
+  gates on ctrl&&!mac_cmd&&!shift: bare Ctrl+C/X/V forwards
+  ^C(SIGINT)/^X/^V to the child. Copy of a nonempty focused-pane selection
+  uses ctx.copy_text so egui-winit writes the OS clipboard; follow_output(s)
+  after keys/paste snaps scrollback to live. context_menu suppressed while tracking.
 - scrollback review (batch 2 slice): Shift+PageUp/PageDown pages the
   focused pane's local viewport, Shift+Home/End jump top/live (intercepted
   in app/input/scroll.rs BEFORE child pass-through; ctrl forms stay
@@ -193,10 +193,17 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   50/50 split that is exactly ON the gutter, so any pointer-state visual
   (divider hover handle) is live from frame one: e2e-ui-style parks the
   pointer on bare chrome (`xdotool mousemove`) + sleeps ~0.5s before
-  scrot (the app repaints on a 50ms cadence; an instant scrot grabs the
+  scrot (idle panes repaint every 50ms; active PTY output within 500ms
+  uses 16ms; an instant scrot grabs the
   pre-motion frame). All Xvfb e2e scripts export TERMINATOR_NO_MOTION=1
   (hover fades + cursor sine blink pinned to end states; see
   render/tokens.rs - radius/shadow/motion token layer, pure functions).
+- VT snapshots retain faint/blink/invisible/strikethrough in CellData;
+  grid ink dims faint against its cell background, blinks text in every
+  pane, suppresses invisible ink, draws strikethrough and reinforces bold
+  glyphs with a half-pixel second pass. Italic uses epaint's glyph slant.
+  task::pump timestamps PTY output for the active/idle repaint cadence
+  in render/screen.rs.
 - cell backgrounds paint as MERGED runs (render/bg_runs/ since 2026-09-23 split: row.rs classify, merge.rs interval-absorb, rect.rs bleed; 2026-09-22):
   one rect_filled PER CELL feathered a seam lattice (1/255/column at the
   cell pitch, vertical AND row boundaries) across every ANSI-bg region,
@@ -726,3 +733,10 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
 ## Verified end-to-end (final state)
 See [agents/verified-end-to-end.md](agents/verified-end-to-end.md) -
 suite status + the user-visible checks proven live.
+
+- Theme query sync (2026-09-27): app/terminal_theme.rs sets libghostty VT
+  default fg/bg/cursor and the 256-color palette BEFORE pumping PTY output,
+  and again after ensure_sessions. OSC 10/11 return no response when defaults
+  are unset, which makes Codex omit composer shading. Never replace application
+  OSC overrides while syncing themes. Local PTYs and keeper shells declare
+  COLORTERM=truecolor; render/ink.rs applies the parsed italic flag via epaint.

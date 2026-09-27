@@ -55,6 +55,47 @@ fn sgr_colors_and_flags_resolve() {
 }
 
 #[test]
+fn osc_default_colors_reach_render_snapshot() {
+    let frame = frame_of(|t| {
+        t.vt_write(b"\x1b]10;#123456\x07\x1b]11;#abcdef\x07plain");
+    });
+    assert_eq!(
+        frame.default_fg,
+        Color {
+            r: 18,
+            g: 52,
+            b: 86
+        }
+    );
+    assert_eq!(
+        frame.default_bg,
+        Color {
+            r: 171,
+            g: 205,
+            b: 239
+        }
+    );
+    assert_eq!(frame.cells[0][0].fg, None);
+}
+
+#[test]
+fn sgr_visual_flags_survive_snapshot() {
+    let frame = frame_of(|t| {
+        t.vt_write(b"\x1b[1;2;3;5;8;9mstyled\x1b[0mplain");
+    });
+    let styled = &frame.cells[0][0];
+    assert!(styled.bold);
+    assert!(styled.faint);
+    assert!(styled.italic);
+    assert!(styled.blink);
+    assert!(styled.invisible);
+    assert!(styled.strikethrough);
+    let plain = &frame.cells[0][6];
+    assert!(!plain.bold && !plain.faint && !plain.blink);
+    assert!(!plain.invisible && !plain.strikethrough);
+}
+
+#[test]
 fn inverse_video_swaps_rendering_hint() {
     let frame = frame_of(|t| t.vt_write(b"\x1b[7minv\x1b[27m"));
     assert!(frame.cells[0][0].inverse);
@@ -707,5 +748,28 @@ mod deadzone_tests {
         .expect("encode");
         // Clamped to col 40, row 5 (1-based) instead of dropped.
         assert_eq!(out, b"\x1b[<0;40;5M");
+    }
+}
+
+#[test]
+fn pty_declares_truecolor_and_honors_explicit_override() {
+    for override_value in [None, Some("24bit")] {
+        let mut opts = SessionOpts::command(
+            40,
+            4,
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "printf '%s' \"$COLORTERM\"".into(),
+            ],
+        );
+        if let Some(value) = override_value {
+            opts.env.push(format!("COLORTERM={value}"));
+        }
+        let mut sess = task::spawn_session(&opts).expect("session");
+        wait_output(&mut sess, 2000);
+        task::pump(&mut sess).expect("pump");
+        let frame = task::frame(&mut sess).expect("frame");
+        assert_eq!(row_text(&frame, 0), override_value.unwrap_or("truecolor"));
     }
 }

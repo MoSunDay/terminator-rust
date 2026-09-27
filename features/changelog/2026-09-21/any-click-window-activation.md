@@ -35,6 +35,6 @@ chrome) or a tab chip did not - and a chrome drag afterwards moved
   activate; consecutive chrome drags x3 each move the window with
   exactly one STARTDRAG per gesture; chip clicks after drags live.
 - e2e: windows, window-controls, mouse-key, dragdrop all green.
-- Deploy target 192.168.31.196 (xfwm4): STILL/JITTER-CHROME/
+- Desktop with xfwm4: STILL/JITTER-CHROME/
   JITTER-CHIP/CHIP-AFTER-DRAG/PANE all ACTIVATED, REAL-DRAG moves
   (150,75), 3 consecutive drags all move + pane click still activates.

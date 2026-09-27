@@ -483,30 +483,28 @@ pub fn apply_action(
         }
         Action::Paste => {} // handled in input::keyboard with clipboard access
         Action::Quit => {}  // handled in input::keyboard (viewport close)
-        Action::Copy => copy_focused(st, sess),
+        Action::Copy => {}  // handled in input::keyboard with egui's clipboard output
     }
 }
 
-/// Copy the focused pane's selection to the system clipboard.
-/// Best-effort: empty selection or clipboard failure is silent.
-pub fn copy_focused(st: &AppState, sess: &mut SessionMap) {
+/// Text selected in the focused pane, ready for the window clipboard output.
+pub fn focused_selection_text(st: &AppState, sess: &mut SessionMap) -> Option<String> {
     let Some(pane) = st
         .win()
         .and_then(|w| w.tree.tabs.get(w.tree.active_tab).map(|t| t.focused))
     else {
-        return;
+        return None;
     };
     let Some(s) = sess.map.get_mut(&pane) else {
-        return;
+        return None;
     };
     match vt_pane::mouse::selection_text(s) {
-        Ok(text) if !text.is_empty() => {
-            if let Err(e) = arboard::Clipboard::new().and_then(|mut c| c.set_text(text)) {
-                warn!("clipboard set: {e}");
-            }
+        Ok(text) if !text.is_empty() => Some(text),
+        Ok(_) => None,
+        Err(e) => {
+            warn!("selection text pane {pane}: {e}");
+            None
         }
-        Ok(_) => {}
-        Err(e) => warn!("selection text pane {pane}: {e}"),
     }
 }
 

@@ -120,7 +120,12 @@ Run: `cargo run -p app` (binary `terminator-rust`).
 | Ctrl+PageUp / Down  | prev / next tab              |
 | Ctrl+Shift+F        | zoom focused pane            |
 | Ctrl+Shift+R        | respawn / reconnect pane     |
+| Ctrl+Shift+C        | copy selected terminal text  |
 | Ctrl+Shift+V        | paste into pane              |
+| Command+C (macOS)   | copy selected terminal text  |
+
+Bare Ctrl+C is sent to the terminal as an interrupt. Copying with no
+selection leaves the system clipboard unchanged.
 
 Tab bar: middle-click closes, double-click renames. Pane header:
 double-click renames, swatch button sets color, moon button sets

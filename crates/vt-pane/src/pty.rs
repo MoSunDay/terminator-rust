@@ -54,6 +54,9 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
         CString::new(format!("LANG={LOCALE}"))?,
         CString::new(format!("LC_ALL={LOCALE}"))?,
     ];
+    if !overridden(extra_env, "COLORTERM") {
+        env.push(CString::new("COLORTERM=truecolor")?);
+    }
     for kv in extra_env {
         if kv.contains('=') {
             env.push(CString::new(kv.as_str())?);
@@ -62,7 +65,12 @@ pub fn open_pty(cols: u16, rows: u16, argv: &[&str], extra_env: &[String]) -> Re
     // Inherit the rest of the parent environment (PATH etc.).
     for (k, v) in std::env::vars_os() {
         let key = k.to_string_lossy();
-        if key == "TERM" || key == "TERM_PROGRAM" || key == "LANG" || key == "LC_ALL" {
+        if key == "TERM"
+            || key == "TERM_PROGRAM"
+            || key == "LANG"
+            || key == "LC_ALL"
+            || key == "COLORTERM"
+        {
             continue;
         }
         // A nested terminator instance may inherit an older pane identity.
