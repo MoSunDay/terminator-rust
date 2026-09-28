@@ -43,14 +43,14 @@ pub struct SessionOpts {
 }
 
 impl SessionOpts {
-    /// Options for the user's default shell (`$SHELL`, fallback `sh -i`).
+    /// Account shell on macOS; elsewhere `$SHELL`, falling back to `sh -i`.
     pub fn local_shell(cols: u16, rows: u16) -> Self {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let shell = crate::shell::default_shell();
         SessionOpts {
             cols,
             rows,
-            argv: vec![shell, "-i".to_string()],
-            env: Vec::new(),
+            argv: vec![shell.clone(), "-i".to_string()],
+            env: vec![format!("SHELL={shell}")],
             scrollback_lines: 10_000,
             dark: true,
         }
@@ -99,6 +99,8 @@ pub struct Session {
     /// Set by the desktop-notification effect (OSC 9/777); drained once
     /// per frame by [`take_notice`] for the pane's attention badge.
     notice: NoticeFlag,
+    pub clipboard: crate::clipboard::PendingCopy,
+    pub copy_transport: Arc<std::sync::atomic::AtomicU8>,
     /// Mouse encoder + selection gesture objects (see `mouse`).
     pub(crate) pointer: crate::mouse::PointerState,
 }
@@ -184,11 +186,14 @@ fn assemble(
     })?;
     let cell_px = effects::new_cell_px();
     let notice = effects::new_notice();
+    let clipboard = crate::clipboard::install(&mut term)?;
+    let copy_transport = Arc::new(std::sync::atomic::AtomicU8::new(0));
     effects::install(
         &mut term,
         Arc::clone(&cell_px),
         opts.dark,
         Arc::clone(&notice),
+        Arc::clone(&copy_transport),
     )?;
     // Build every fallible field before the reader thread exists; the
     // struct literal below is infallible.
@@ -225,6 +230,8 @@ fn assemble(
         last_output: Instant::now(),
         cell_px,
         notice,
+        clipboard,
+        copy_transport,
         pointer,
     })
 }

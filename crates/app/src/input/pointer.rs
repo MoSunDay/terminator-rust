@@ -238,6 +238,14 @@ pub fn handle(
                 pressed,
                 modifiers,
             } => {
+                if button == PointerButton::Primary && !pressed {
+                    if let Some((_, origin, url)) = wui.link_press.take() {
+                        if origin.distance(pos) <= 6.0 {
+                            ctx.open_url(egui::OpenUrl::new_tab(url));
+                        }
+                        continue;
+                    }
+                }
                 // Releases follow the press owner (implicit grab): a drag can
                 // end outside its pane, and the owner must still see the
                 // button go up.
@@ -268,6 +276,21 @@ pub fn handle(
                 let bit = button_bit(button);
                 match sess.map.get_mut(&pane) {
                     Some(s) if s.exit.is_none() => {
+                        if pressed
+                            && button == PointerButton::Primary
+                            && (modifiers.mac_cmd || modifiers.ctrl)
+                        {
+                            let (x, y) = surface_px(*rect, pos, ppp);
+                            let (cw, ch) = vt_pane::task::cell_px(s);
+                            if let Some(url) = vt_pane::links::at(
+                                &s.term,
+                                (x / cw.max(1) as f32) as u16,
+                                (y / ch.max(1) as f32) as u32,
+                            ) {
+                                wui.link_press = Some((pane, pos, url));
+                                continue;
+                            }
+                        }
                         on_button(s, *rect, pos, ppp, button, pressed, &modifiers);
                         if pressed {
                             wui.pointer_pane = Some(pane);

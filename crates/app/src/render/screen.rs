@@ -87,6 +87,28 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     for pane in session_map::pump_all(&mut d.sess) {
         d.ui.notices.insert(pane);
     }
+    for session in d.sess.map.values_mut() {
+        // Announced -> active while tmux owns the mouse; leaving that mode
+        // invalidates the negotiated private copy key for subsequent programs.
+        use std::sync::atomic::Ordering;
+        match (
+            session.copy_transport.load(Ordering::Acquire),
+            vt_pane::mouse::is_mouse_tracking(session),
+        ) {
+            (1, true) => session.copy_transport.store(2, Ordering::Release),
+            (2, false) => session.copy_transport.store(0, Ordering::Release),
+            _ => {}
+        }
+
+        if let Some(text) = session
+            .clipboard
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            ctx.copy_text(text);
+        }
+    }
     actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
     // Remote panes whose connection dropped are kept and reattached
     // (before ensure_sessions, so a fired retry respawns this frame).

@@ -100,9 +100,22 @@ fn read_clipboard() -> String {
         .unwrap_or_default()
 }
 
-fn copy_focused(ctx: &Context, st: &AppState, sess: &mut SessionMap) {
+fn copy_focused(ctx: &Context, st: &AppState, sess: &mut SessionMap, chord: Option<GMods>) {
+    log::debug!("copy dispatch: {chord:?}");
     if let Some(text) = actions::focused_selection_text(st, sess) {
         ctx.copy_text(text);
+    } else if let Some(mods) = chord {
+        let pane = st
+            .win()
+            .and_then(|w| w.tree.tabs.get(w.tree.active_tab))
+            .map(|t| t.focused);
+        if let Some(s) = pane.and_then(|p| sess.map.get_mut(&p)) {
+            if vt_pane::mouse::is_mouse_tracking(s) {
+                if let Err(e) = super::copy_chord::forward(s, mods) {
+                    warn!("copy chord: {e}");
+                }
+            }
+        }
     }
 }
 
@@ -205,7 +218,10 @@ pub fn handle(
                         }
                     }
                 } else {
-                    copy_focused(ctx, st, sess);
+                    let chord = (matches!(ev, Event::Copy)
+                        && (mods_at.mac_cmd || (mods_at.ctrl && mods_at.shift)))
+                        .then(|| ghostty_mods(&mods_at));
+                    copy_focused(ctx, st, sess, chord);
                 }
             }
             Event::Text(t) => {
@@ -250,7 +266,7 @@ pub fn handle(
                             continue;
                         }
                         if action == Action::Copy {
-                            copy_focused(ctx, st, sess);
+                            copy_focused(ctx, st, sess, Some(ghostty_mods(&modifiers)));
                             continue;
                         }
                         if action == Action::Quit {
@@ -472,6 +488,36 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(s.exit.is_none(), "cat died without SIGINT");
+    }
+
+    #[test]
+    fn command_copy_reaches_mouse_owned_selection_as_super_c() {
+        let opts = SessionOpts::command(80, 5, vec![
+            "sh".into(), "-c".into(),
+            "stty raw -echo; printf READY; dd bs=1 count=7 2>/dev/null | od -An -tx1 | tr -s ' '; sleep 1".into(),
+        ]);
+        let mut session = vtask::spawn_session(&opts).expect("PTY");
+        assert!(wait_grid(&mut session, "READY"));
+        session.term.vt_write(b"\x1b[?1002h\x1b[>1u");
+        let mut sess = session_map();
+        sess.map.insert(1, session);
+        let mut st = fresh_state();
+        let mut ui = ui_state();
+        dispatch(
+            &Context::default(),
+            Modifiers::MAC_CMD | Modifiers::COMMAND,
+            Event::Copy,
+            &mut st,
+            &mut sess,
+            &mut ui,
+        );
+        let session = sess.map.get_mut(&1).unwrap();
+        assert!(
+            wait_grid(session, "1b 5b 39 39 3b 39 75"),
+            "expected CSI 99;9u, got {}",
+            grid_text(session)
+        );
+        vtask::terminate(session);
     }
 
     #[test]

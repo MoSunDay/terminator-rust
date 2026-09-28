@@ -4,7 +4,7 @@
 //! size, color scheme) before drawing anything; without responses they
 //! stall on their loading screen.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -43,6 +43,7 @@ pub fn install(
     cell_px: CellPx,
     dark: bool,
     notice: NoticeFlag,
+    copy_transport: Arc<AtomicU8>,
 ) -> Result<()> {
     term.on_device_attributes(|_| {
         Some(DeviceAttributes {
@@ -87,8 +88,12 @@ pub fn install(
     // Any desktop notification (OSC 9 iTerm2-style, OSC 777 rxvt-style)
     // marks the pane for attention; title/body are irrelevant here - the
     // UI raises its notice badge, not an OS toast.
-    term.on_desktop_notification(move |_term, _notif| {
-        notice.store(true, Ordering::Release);
+    term.on_desktop_notification(move |_term, notif| {
+        if notif.title() == "terminator-rust" && notif.body() == "copy-transport-v1" {
+            copy_transport.store(1, Ordering::Release);
+        } else {
+            notice.store(true, Ordering::Release);
+        }
     })?;
     Ok(())
 }
@@ -114,7 +119,14 @@ mod tests {
         let sink = Arc::clone(&output);
         term.on_pty_write(move |_, bytes| sink.lock().unwrap().extend_from_slice(bytes))
             .expect("pty response");
-        install(&mut term, new_cell_px(), true, new_notice()).expect("effects");
+        install(
+            &mut term,
+            new_cell_px(),
+            true,
+            new_notice(),
+            Arc::new(AtomicU8::new(0)),
+        )
+        .expect("effects");
         term.set_default_bg_color(Some(RgbColor {
             r: 12,
             g: 24,
@@ -132,7 +144,14 @@ mod tests {
     fn desktop_notification_osc_marks_the_notice_flag() {
         let mut term = Terminal::new(20, 4).expect("terminal");
         let notice = new_notice();
-        install(&mut term, new_cell_px(), true, Arc::clone(&notice)).expect("effects");
+        install(
+            &mut term,
+            new_cell_px(),
+            true,
+            Arc::clone(&notice),
+            Arc::new(AtomicU8::new(0)),
+        )
+        .expect("effects");
         // The exact bytes the remote keeper injects (OSC 9, BEL-terminated),
         // fed through the same vt_write call task::pump uses for PTY output.
         term.vt_write(b"\x1b]9;terminator-rust notice\x07");
@@ -152,7 +171,14 @@ mod tests {
     fn rxvt_osc777_notification_also_marks_the_notice_flag() {
         let mut term = Terminal::new(20, 4).expect("terminal");
         let notice = new_notice();
-        install(&mut term, new_cell_px(), true, Arc::clone(&notice)).expect("effects");
+        install(
+            &mut term,
+            new_cell_px(),
+            true,
+            Arc::clone(&notice),
+            Arc::new(AtomicU8::new(0)),
+        )
+        .expect("effects");
         term.vt_write(b"\x1b]777;notify;terminator-rust;notice\x07");
         assert!(notice.swap(false, Ordering::AcqRel));
         assert!(!notice.swap(false, Ordering::AcqRel));

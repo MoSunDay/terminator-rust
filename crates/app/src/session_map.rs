@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use layout_tree::PaneId;
 use log::warn;
-use remote::{local_plan, remote_plan, PaneKind, SpawnPlan};
+use remote::{remote_plan, PaneKind, SpawnPlan};
 use vt_pane::{task as vtask, Frame as VtFrame, Session, SessionOpts};
 
 use crate::render::colors;
@@ -122,6 +122,14 @@ pub fn note_spawned(sess: &mut SessionMap, id: PaneId, s: Session) {
     sess.exited_seen.remove(&id);
     sess.reconnect_at.remove(&id);
     sess.spawned_at.insert(id, Instant::now());
+}
+
+fn local_plan() -> SpawnPlan {
+    let options = SessionOpts::local_shell(80, 24);
+    SpawnPlan {
+        argv: options.argv,
+        env: options.env,
+    }
 }
 
 fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool, pane: PaneId) -> SessionOpts {
@@ -325,6 +333,9 @@ mod tests {
     #[test]
     fn local_pane_exports_its_notice_identity() {
         let opts = opts(&local_plan(), 80, 24, true, 42);
+        let shell = SessionOpts::local_shell(80, 24);
+        assert_eq!(opts.argv, shell.argv);
+        assert!(opts.env.contains(&format!("SHELL={}", opts.argv[0])));
         assert!(opts
             .env
             .iter()

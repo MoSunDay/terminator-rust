@@ -209,6 +209,8 @@ pub struct WindowUi {
     /// reporting) of ANY button; keeps receiving PointerMoved even
     /// outside its rect.
     pub pointer_pane: Option<PaneId>,
+    /// Local modifier-click, kept out of the child mouse-report stream.
+    pub link_press: Option<(PaneId, egui::Pos2, String)>,
     /// Bitmask of held pointer buttons during a grab (bit 0 = Primary,
     /// 1 = Secondary, 2 = Middle, 3 = Extra1, 4 = Extra2).
     pub pointer_buttons: u8,
@@ -298,6 +300,7 @@ pub fn window_ui() -> WindowUi {
         tab_drag: None,
         pane_drag: None,
         pointer_pane: None,
+        link_press: None,
         pointer_buttons: 0,
         pointer_last: None,
         wheel_rows: 0.0,
