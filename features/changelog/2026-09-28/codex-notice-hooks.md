@@ -1,3 +1,5 @@
+Commit: 10c1d1515e5963d9441e8df0f9c0ab3aeecd667c
+
 # Codex attention hooks on ssh_dev
 
 `/usr/local/bin/terminator-ctl` is built from this checkout. Its `notice`

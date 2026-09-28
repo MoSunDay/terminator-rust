@@ -1,3 +1,5 @@
+Commit: 10c1d1515e5963d9441e8df0f9c0ab3aeecd667c
+
 # Copy from SSH/tmux TUIs and open links on the client
 
 Mouse-aware TUIs own their text selection. Terminal-local selection still copies,
