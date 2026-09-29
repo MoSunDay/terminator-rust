@@ -7,7 +7,7 @@ use layout_tree::{content_rect, layout_tab, PaneId};
 use remote::PaneKind;
 
 use crate::actions;
-use crate::input::{mouse, pointer, resize};
+use crate::input::{ime, mouse, pointer, resize};
 use crate::render::{colors, dropzone, grid, preedit, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W};
@@ -245,29 +245,37 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         );
                     }
                 }
-                // IME anchor + composition overlay for the focused pane:
-                // the popup anchors at the live cursor cell and any
-                // in-flight preedit paints with grid conventions (same
-                // fonts/alignment as committed text, the shared egui
-                // composition underline), clipped to the pane.
+                // IME anchor + composition overlay for the focused
+                // pane: the popup anchors at the cursor cell, but while
+                // a composition is in flight the anchor LATCHES on the
+                // cell it started at (ime::pane_anchor) so a hidden VT
+                // cursor (DECTCEM under a TUI), a resize transition
+                // frame or PTY-output cursor moves never unanchor or
+                // bounce the candidate panel. The in-flight preedit
+                // paints at that same anchor with grid conventions
+                // (same fonts/alignment as committed text, the shared
+                // egui composition underline), clipped to the pane.
                 if Some(pane) == focused {
-                    if let Some(anchor) = grid::cursor_rect(content, &fr, cell) {
-                        let preedit = st.win().and_then(|w| w.ui.ime.clone());
-                        if let Some(w) = st.win_mut() {
-                            w.ui.ime_cursor = Some(anchor);
-                            w.ui.ime_pane = Some(pane);
-                        }
-                        if let Some(text) = preedit.filter(|t| !t.is_empty()) {
-                            preedit::paint(
-                                &painter.with_clip_rect(content),
-                                anchor,
-                                &text,
-                                cell,
-                                font_size,
-                                colors::to_c32(colors::vt_rgb(fr.default_fg)),
-                                ui.visuals().ime_composition.active_underline_stroke,
-                            );
-                        }
+                    let text = st.win().and_then(|w| w.ui.ime.clone());
+                    let composing = text.as_deref().is_some_and(|t| !t.is_empty());
+                    let live = grid::cursor_rect(content, &fr, cell);
+                    let (anchor, latch) =
+                        ime::pane_anchor(composing, live, st.win().and_then(|w| w.ui.ime_anchor));
+                    if let Some(w) = st.win_mut() {
+                        w.ui.ime_cursor = anchor;
+                        w.ui.ime_pane = Some(pane);
+                        w.ui.ime_anchor = latch;
+                    }
+                    if let (Some(anchor), Some(text)) = (anchor, text.filter(|t| !t.is_empty())) {
+                        preedit::paint(
+                            &painter.with_clip_rect(content),
+                            anchor,
+                            &text,
+                            cell,
+                            font_size,
+                            colors::to_c32(colors::vt_rgb(fr.default_fg)),
+                            ui.visuals().ime_composition.active_underline_stroke,
+                        );
                     }
                 }
             }

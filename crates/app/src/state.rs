@@ -243,12 +243,22 @@ pub struct WindowUi {
     /// Focused pane's cursor cell rect in egui points, refreshed by the
     /// render pass each frame; the IME popup anchors here.
     pub ime_cursor: Option<egui::Rect>,
-    /// Pane the IME anchor belonged to last frame; a change interrupts
-    /// any in-flight composition.
+    /// Pane the IME anchor belonged to this frame (the focused live
+    /// pane); a change mid-composition does NOT interrupt - the
+    /// composition keeps its latched anchor and the commit lands on
+    /// whatever pane is focused when it arrives.
     pub ime_pane: Option<PaneId>,
     /// Pane the IME platform output was anchored to on the previous
-    /// frame (interrupt detection memory).
+    /// frame; composition-period fallback memory when the live anchor
+    /// is missing for a frame (dead pane / empty tree frame).
     pub ime_last_pane: Option<PaneId>,
+    /// Composition anchor latch: the cursor cell the in-flight
+    /// composition started at. While composing, the IME anchor holds
+    /// this rect even when the live cursor cell transiently vanishes
+    /// (hidden VT cursor, a resize transition frame), so the platform
+    /// IME output never flips to None mid-composition. Cleared whenever
+    /// no composition is in flight.
+    pub ime_anchor: Option<egui::Rect>,
     /// Chip-strip horizontal scroll offset (px); 0 while the tabs fit.
     pub tab_scroll: f32,
     /// Active tab when the scroll was last auto-followed (keep the active
@@ -312,6 +322,7 @@ pub fn window_ui() -> WindowUi {
         ime_cursor: None,
         ime_pane: None,
         ime_last_pane: None,
+        ime_anchor: None,
         tab_scroll: 0.0,
         tab_scroll_tab: 0,
         close_dialog: None,

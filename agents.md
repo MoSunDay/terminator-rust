@@ -385,7 +385,30 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   no interrupt, so the IC survives. Ime::Commit delivers RAW UTF-8 bytes
   (vtask::write) - never the key encoder (CJK lands Unidentified+utf8)
   nor bracketed paste (commit is typed input); Preedit with empty text
-  = composition ended. Pane preedit STYLE is the shared one (2026-09-22
+  = composition ended. COMPOSITION INVARIANT (2026-09-29, macOS
+  candidate-panel death): while composing, `o.ime` must never flip to
+  None on a frame whose live anchor is transiently missing (ime::sync
+  falls back to (ime_last_pane, ime_anchor); a pane whose SESSION
+  itself died mid-composition still turns IME off - correct,
+  vtask::write on a closed session is a silent no-op) and must NEVER
+  set should_interrupt_composition - egui-winit
+  maps None to set_ime_allowed(false) and the interrupt flag to a
+  false/true PAIR (egui-winit 0.36 lib.rs:1157); winit macOS's
+  set_ime_allowed(false) silently ERASES the NSView marked text
+  without unmarkText/discardMarkedText, the engine keeps composing
+  against a desynced client and the CANDIDATE PANEL DIES until the
+  input source is deactivated/reactivated (preedit keeps updating -
+  the confusing symptom), and on X11 the pair rebuilds an XIC that is
+  never XSetICFocus-ed again (same family as the request_focus bug -
+  ANY pane change used to kill XIM this way, fixed by making
+  platform_ime_output interrupt-free). Anchoring therefore LATCHES
+  while composing (ime::pane_anchor + WindowUi.ime_anchor: first live
+  cursor cell wins, hidden DECTCEM cursors / resize transition frames
+  / PTY-output cursor moves cannot move or drop the anchor - rect
+  stays bit-stable, no invalidateCharacterCoordinates panel bounce)
+  and ime::sync falls back to (ime_last_pane, ime_anchor) on frames
+  whose live anchor is missing (dead pane/empty tree); the preedit
+  overlay paints at the SAME latched anchor. Pane preedit STYLE is the shared one (2026-09-22
   fix: it used to be a one-off 2px purple accent pill + narrow-size
   top-left text): render/preedit.rs paints per cell with grid
   conventions (advance-2 glyphs -> wide font + 2-cell span, LEFT_CENTER
