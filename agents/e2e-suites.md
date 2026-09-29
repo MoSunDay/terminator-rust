@@ -29,7 +29,8 @@ Commit: 4224d64e16b9e6f7da6c6bdb8352d65fabc1e3c5
 - mouse/key e2e（`e2e-mouse-key.sh`）：裸 Ctrl+C 的 ^C 回显、跨 pane 拖拽
   SGR 投递到按下者、Shift+PageUp/End 翻页、Ctrl+C 真打断前台任务
 - multi-window e2e（`e2e-windows.sh`）：Ctrl+Shift+N 真开第二个 X 窗口、
-  跨窗口输入隔离、关最后 pane 即关窗口、W6-W10（含跨窗口 chip 拖拽）
+  跨窗口输入隔离、关最后 pane 即关窗口、W6-W11（含跨窗口 chip 拖拽、
+  三窗口拖放不得误 resize 第三窗口的 SIGWINCH 探针）
 - window-chrome e2e（`e2e-window-controls.sh`）：需要 OPENBOX 的边角
   resize / 最大化 / 最小化 / tab 溢出滚动 / 关闭 X 弹确认框（R6：Esc、
   再点一次 X、Cancel 取消，Quit 退出全部窗口）
@@ -92,7 +93,16 @@ Commit: 4224d64e16b9e6f7da6c6bdb8352d65fabc1e3c5
   respawns a fresh root tab, W7/W8/W9 Ctrl+Shift+J move + single-window
   split + Ctrl+Shift+M merge, W10 = chip drag onto the OTHER window's
   strip: source window dies, pane keeps its pid and lands ACTIVE in the
-  root). W10's pixel gates are THEME-AGNOSTIC (DEFAULT = kanagawa-wave):
+  root, W11 = THREE windows, dragging the middle one's last chip onto
+  root must NOT resize the third window: its pane runs a python SIGWINCH
+  watcher via ctl send (a shell `trap` is NOT a usable probe - dash
+  defers/loses it while waiting in the poll loop; python runs the
+  handler promptly mid-sleep), gate = no exact-line `^WINCH$` in
+  capture; the source window is externally resized to a distinctive
+  600x460 first so the WRONG resize is not a geometry no-op (why W7-W10
+  never caught the bug: two windows made the dying viewport's retarget
+  slot coincide with the destination and equal-size grids made the
+  spurious TIOCSWINSZ a no-op). W10's pixel gates are THEME-AGNOSTIC (DEFAULT = kanagawa-wave):
   chip_edges = FIRST wide non-bare-chrome run (chips left-aligned, the
   trailing chrome merges into a LONGER run), strip_diff = strip band vs a
   baseline scrot (never e2e-lib's dracula fill scan). CI runs it (zig via
