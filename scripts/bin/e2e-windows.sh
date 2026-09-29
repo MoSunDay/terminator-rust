@@ -22,6 +22,14 @@
 #       the tab there (the source window disappears, the pane keeps
 #       its pid, the receiver activates it); the receiving strip
 #       shows the drop tint while the drag hovers it.
+#   W11: with THREE windows, dropping the MIDDLE window's last tab on
+#       the root strip must never resize the remaining third window:
+#       its pane runs a python SIGWINCH watcher and must not print WINCH
+#       (the dying viewport once rendered the neighbour's tree and
+#       resized its tmux/ssh panes to the dying geometry - needs a
+#       size-distinct source so the wrong resize is not a no-op; a shell
+#       `trap` is NOT a reliable probe, dash defers/loses it while
+#       waiting in the poll loop).
 #
 # Usage: scripts/bin/e2e-windows.sh  (repo root; needs Xvfb + xdotool).
 #        E2E_KEEP=1 keeps the scratch dir for debugging.
@@ -432,6 +440,102 @@ until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
 xdotool type --delay 60 "E2EWIN8"
 wait_capture "$DRAG_PANE" E2EWIN8 || { "$CTL" capture "$DRAG_PANE" | tail -3; fail "dropped tab is not the receiver's active tab"; }
 echo "dragged pane $DRAG_PANE (pid $DRAG_PID) into the root"
+
+# --- W11: 3-window drop must not resize an unrelated window --------------
+step "W11: 3-window chip drop leaves the third window untouched"
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+sleep 0.5
+xdotool key --clearmodifiers ctrl+shift+n
+SEC1_WID=$(wait_win 'terminator-rust #') || { tail "$ROOT/app.log"; fail "no first secondary for W11"; }
+sleep 1
+xdotool key --clearmodifiers ctrl+shift+n
+# Poll for a NEW matching window: wait_win alone would happily return the
+# first secondary again while the second one is still being created.
+SEC2_WID=""
+for _ in $(seq 1 40); do
+    ids=$(xdotool search --name 'terminator-rust #' 2>/dev/null | sort -n | tail -1 || true)
+    if [ -n "$ids" ] && [ "$ids" != "$SEC1_WID" ]; then SEC2_WID="$ids"; break; fi
+    sleep 0.25
+done
+[ -n "$SEC2_WID" ] || { tail "$ROOT/app.log"; fail "second secondary never appeared for W11"; }
+P_SEC1=$(pane_ids | tail -2 | head -1)
+P_VICTIM=$(pane_ids | tail -1)
+SEC1_PID=$(pane_pid "$P_SEC1")
+VICTIM_PID=$(pane_pid "$P_VICTIM")
+[ -n "$VICTIM_PID" ] || { "$CTL" list; fail "no child pid for the W11 panes"; }
+# Spread the three windows so nothing overlaps, and give the SOURCE a
+# size nothing else has: when the dying viewport (wrongly) laid out the
+# victim's tree, its pane was resized to THIS geometry - with equal
+# default sizes the resize is a no-op and the bug hides (why W10 never
+# caught it).
+read RX RY ROOT_W ROOT_H <<<"$(win_geom "$ROOT_WID")"
+read SCREEN_W SCREEN_H <<<"$(xdotool getdisplaygeometry)"
+# Source BELOW the root (chip scan band clamped on-screen), victim to the
+# RIGHT of it: nothing overlaps the root strip the drop targets.
+SEC1_Y=$(( RY + ROOT_H + 16 ))
+SEC1_Y=$(( SEC1_Y > SCREEN_H - 80 ? SCREEN_H - 80 : SEC1_Y ))
+xdotool windowmove "$SEC2_WID" "$(( RX + ROOT_W + 16 ))" "$RY"
+xdotool windowmove "$SEC1_WID" "$RX" "$SEC1_Y"
+xdotool windowsize "$SEC1_WID" 600 460
+sleep 1
+# Python SIGWINCH watcher = deterministic probe for a spurious resize:
+# python runs the handler PROMPTLY even mid-sleep (a shell trap defers
+# while waiting for `sleep`). ctl send needs no window focus. The
+# "WI"+"NCH" split keeps the plain token out of the echoed command line,
+# and $((3+4)) makes the ready marker runtime-only.
+"$CTL" send "$P_VICTIM" --text $'echo VICTIM-$((3+4))-READY; python3 -c \'import signal,time; signal.signal(signal.SIGWINCH, lambda *a: print("WI"+"NCH",flush=True)); time.sleep(1e9)\'\n' \
+    || fail "ctl send to the victim pane failed"
+wait_capture "$P_VICTIM" "VICTIM-7-READY" \
+    || { "$CTL" capture "$P_VICTIM" | tail -3; fail "victim pane never ran its watcher setup"; }
+sleep 0.5
+# Drag the middle window's only chip onto the ROOT strip (mirror W10's
+# gesture: settle before press, step the move, dwell on the target).
+xdotool windowraise "$SEC1_WID"
+read X1 Y1 W1 H1 <<<"$(win_geom "$SEC1_WID")"
+xdotool mousemove --sync "$(( X1 + W1 * 2 / 3 ))" "$(( Y1 + 200 ))"
+sleep 0.5
+scrot -o "$ROOT/w11-base.png"
+CHIP_EDGES=$(chip_edges "$ROOT/w11-base.png" "$X1" "$Y1" "$W1") \
+    || fail "no active chip found in the W11 source window's row"
+read CHIP_L CHIP_R <<<"$CHIP_EDGES"
+CHIPX=$(( (CHIP_L + CHIP_R) / 2 ))
+CHIPY=$(( Y1 + 18 ))
+DRAGX=$(( RX + ROOT_W / 2 ))
+DRAGY=$(( RY + 18 ))
+xdotool mousemove --sync "$CHIPX" "$CHIPY"
+sleep 0.4
+xdotool mousedown 1
+sleep 0.4
+xdotool mousemove --sync "$CHIPX" "$(( (CHIPY + DRAGY) / 2 ))"
+sleep 0.2
+xdotool mousemove --sync "$DRAGX" "$DRAGY"
+sleep 0.6
+xdotool mouseup 1
+sleep 0.8
+# The moved pane keeps its child and lands in the root; the app lives.
+kill -0 "$APP_PID" 2>/dev/null || { tail "$ROOT/app.log"; fail "app died in the W11 drop"; }
+[ "$(pane_ids | wc -l)" -eq 5 ] || { "$CTL" list; fail "W11 drop lost panes"; }
+[ "$(pane_pid "$P_SEC1")" = "$SEC1_PID" ] || { "$CTL" list; fail "W11 moved pane lost its child"; }
+[ "$(pane_win "$P_SEC1")" = "1" ] || { "$CTL" list; fail "W11 moved tab did not land in the root window"; }
+[ "$(pane_pid "$P_VICTIM")" = "$VICTIM_PID" ] || { "$CTL" list; fail "victim pane lost its child in W11"; }
+# THE regression gate: the innocent third window must not have been
+# resized to the dying window's geometry.
+if "$CTL" capture "$P_VICTIM" 2>/dev/null | grep -q '^WINCH$'; then
+    "$CTL" capture "$P_VICTIM" | tail -5
+    fail "unrelated window's pane was resized by the W11 drop (SIGWINCH watcher fired)"
+fi
+# The emptied source window goes away; the victim window stays.
+for _ in $(seq 1 40); do
+    xdotool getwindowgeometry "$SEC1_WID" >/dev/null 2>&1 || break
+    sleep 0.25
+done
+xdotool getwindowgeometry "$SEC1_WID" >/dev/null 2>&1     && fail "W11 source window still alive"
+xdotool getwindowgeometry "$SEC2_WID" >/dev/null 2>&1     || fail "W11 victim window vanished"
+xdotool getwindowgeometry "$ROOT_WID" >/dev/null 2>&1     || fail "root window vanished in W11"
+xdotool windowfocus "$ROOT_WID"
+until xdotool windowfocus "$ROOT_WID" 2>/dev/null; do sleep 0.3; done
+echo "W11: victim pane $P_VICTIM never saw a WINCH, moved pane $P_SEC1 landed in root"
 
 # --- W5: Ctrl+Shift+Q from a secondary quits the whole app ----------------
 step "W5: Ctrl+Shift+Q in the secondary quits the app"

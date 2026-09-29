@@ -143,6 +143,14 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     egui::Panel::top("tab_bar")
         .frame(egui::Frame::NONE.fill(chrome))
         .show(ui, |ui| ui::tabs::bar(ui, d));
+    // The bar stage can also remove this window mid-pass: releasing a
+    // cross-window chip drag on another window's strip drops the SOURCE
+    // window when that tab was its last. Without this guard screen()
+    // would lay out whichever window now sits at this index into the
+    // dying viewport - resizing its panes to the dying geometry.
+    if d.st.windows.get(idx).map(|w| w.id) != Some(id) {
+        return;
+    }
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(page_bg))
         .show(ui, |panel| render::screen::screen(panel, d));

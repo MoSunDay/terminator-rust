@@ -783,7 +783,20 @@ PY- window chrome (2026-09-20): edge_cells now ends with min + max/restore
   Two open panels coexist via Id salted with win_id.
 - windows::render bails early when its window vanished mid-pass
   (keyboard action removed it) - never render the NEXT window's tree
-  into the dying viewport. Secondary viewport destruction lags a few
+  into the dying viewport. The SAME identity guard runs AFTER the tab
+  bar panel too (2026-09-29): a cross-window chip release runs in the
+  SOURCE window's own bar pass (drag state lives on its WindowUi,
+  release truth from the X11 poll) and drop_empty_window removes it
+  there; retarget_after_remove clamps active to min(src, n-1) which is
+  NOT the drop destination with >=3 windows, so the dying pass rendered
+  an INNOCENT window's tree into the dying viewport and sync_frame
+  TIOCSWINSZ'd its tmux/ssh panes to the dying geometry (one-two frames,
+  visible as a flick-wrong-then-snap-back). Two windows never showed it:
+  the retarget slot coincided with dst AND equal default grids made the
+  spurious resize a no-op. e2e W11 (3 windows, source externally sized
+  600x460, python SIGWINCH watcher in the victim pane via ctl send -
+  dash `trap` is NOT a probe, it defers/loses WINCH while waiting in a
+  sleep loop; python handlers run promptly mid-sleep). Secondary viewport destruction lags a few
   seconds behind (eframe GC) - e2e polls for the X window to disappear.
 - remote desktop (WM present): `xdotool windowfocus` is NOT enough for
   key delivery - `xdotool windowactivate` (EWMH _NET_ACTIVE_WINDOW) is
