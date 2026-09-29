@@ -248,7 +248,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 // IME anchor + composition overlay for the focused
                 // pane: the popup anchors at the cursor cell, but while
                 // a composition is in flight the anchor LATCHES on the
-                // cell it started at (ime::pane_anchor) so a hidden VT
+                // last live cell at or before its start (ime::pane_anchor
+                // seeds the latch on every idle frame) so a hidden VT
                 // cursor (DECTCEM under a TUI), a resize transition
                 // frame or PTY-output cursor moves never unanchor or
                 // bounce the candidate panel. The in-flight preedit

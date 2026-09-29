@@ -256,8 +256,11 @@ pub struct WindowUi {
     /// composition started at. While composing, the IME anchor holds
     /// this rect even when the live cursor cell transiently vanishes
     /// (hidden VT cursor, a resize transition frame), so the platform
-    /// IME output never flips to None mid-composition. Cleared whenever
-    /// no composition is in flight.
+    /// IME output never flips to None mid-composition. While idle it is
+    /// re-seeded with every live cursor rect, so a composition whose
+    /// first frame already lacks a live cursor still starts anchored;
+    /// it clears when the cursor is hidden with no composition in
+    /// flight (the platform IME is off and no composition can begin).
     pub ime_anchor: Option<egui::Rect>,
     /// Chip-strip horizontal scroll offset (px); 0 while the tabs fit.
     pub tab_scroll: f32,
