@@ -35,7 +35,12 @@ pub fn spawn(cwd: &str, session: &str) -> Result<Shell> {
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            // libc 0.2.189 declares `winp` as *const winsize on linux
+            // but *mut winsize on macOS: a raw *mut satisfies both
+            // (implicit *mut -> *const weakening) and stays
+            // clippy-clean (`&mut` trips unnecessary_mut_passed on
+            // linux, `&` fails to compile for the macOS target).
+            &raw mut size,
         )
     } < 0
     {
