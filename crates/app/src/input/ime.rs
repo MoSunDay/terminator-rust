@@ -53,7 +53,15 @@ fn spot_at_baseline() -> bool {
 /// the cursor (a moving anchor spams
 /// `invalidateCharacterCoordinates` and makes some input methods
 /// bounce or dismiss the candidate panel). With no composition in
-/// flight the live rect is used and any stale latch clears.
+/// flight the live rect is used and the latch is RE-SEEDED with it:
+/// a composition whose very first frame already lacks a live cursor
+/// (the cursor turned hidden between the keypress and the first
+/// Preedit frame - a vim scroll or TUI mode switch racing the first
+/// CJK key) still starts anchored at the last live cell instead of
+/// flipping `o.ime` to None mid-composition. A cursor hidden with no
+/// composition clears the latch - the platform IME was already off,
+/// so no composition can begin there at all (pre-existing
+/// hidden-cursor limitation, not the candidate-panel death).
 pub fn pane_anchor(
     composing: bool,
     live: Option<Rect>,
@@ -63,7 +71,7 @@ pub fn pane_anchor(
         let anchor = latched.or(live);
         (anchor, anchor)
     } else {
-        (live, None)
+        (live, live)
     }
 }
 
@@ -231,11 +239,33 @@ mod tests {
     }
 
     #[test]
-    fn no_composition_uses_live_anchor_and_clears_latch() {
+    fn idle_frames_reseed_the_latch_with_the_live_rect() {
+        // Idle frame with a live cursor: passes through AND seeds the
+        // latch with that rect (composition-start insurance).
         let (anchor, latch) = pane_anchor(false, Some(rect_at(40.0)), Some(rect_at(20.0)));
         assert_eq!(anchor, Some(rect_at(40.0)));
-        assert_eq!(latch, None, "stale latch clears once composing ends");
-        // Composing with neither latch nor live: nothing to anchor on.
+        assert_eq!(latch, Some(rect_at(40.0)), "idle frames reseed, not clear");
+        // Idle frame with a hidden cursor: no anchor and no seed -
+        // the platform IME is off, a composition cannot begin there.
+        let (anchor, latch) = pane_anchor(false, None, Some(rect_at(20.0)));
+        assert_eq!(anchor, None);
+        assert_eq!(latch, None);
+    }
+
+    #[test]
+    fn composition_starting_on_a_hidden_cursor_uses_the_last_live_seed() {
+        // The residual 2026-09-29 race: cursor live on the frame
+        // before the keypress, hidden by the first Preedit frame. The
+        // idle seed must anchor the composition so `o.ime` never
+        // flips to None mid-composition (the macOS marked-text
+        // erasure path).
+        let (_, seed) = pane_anchor(false, Some(rect_at(40.0)), None);
+        assert_eq!(seed, Some(rect_at(40.0)));
+        let (anchor, latch) = pane_anchor(true, None, seed);
+        assert_eq!(anchor, Some(rect_at(40.0)));
+        assert_eq!(latch, Some(rect_at(40.0)));
+        // Composing with neither latch nor live (cursor hidden since
+        // before the composition began): nothing to anchor on.
         let (anchor, latch) = pane_anchor(true, None, None);
         assert_eq!(anchor, None);
         assert_eq!(latch, None);

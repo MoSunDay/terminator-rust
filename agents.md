@@ -402,9 +402,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   never XSetICFocus-ed again (same family as the request_focus bug -
   ANY pane change used to kill XIM this way, fixed by making
   platform_ime_output interrupt-free). Anchoring therefore LATCHES
-  while composing (ime::pane_anchor + WindowUi.ime_anchor: first live
-  cursor cell wins, hidden DECTCEM cursors / resize transition frames
-  / PTY-output cursor moves cannot move or drop the anchor - rect
+  while composing (ime::pane_anchor + WindowUi.ime_anchor: the LAST
+  live cursor cell at or before composition start wins - idle frames
+  RE-SEED the latch (2026-09-29 follow-up: a composition whose first
+  frame already lacks a live cursor, cursor turned hidden between
+  keypress and first Preedit, still starts anchored; a cursor hidden
+  since BEFORE the composition began means the platform IME was
+  already off and the composition cannot start AT ALL - less's
+  pre-existing limitation, NOT the panel death) - and hidden DECTCEM
+  cursors / resize transition frames / PTY-output cursor moves cannot
+  move or drop the anchor once latched - rect
   stays bit-stable, no invalidateCharacterCoordinates panel bounce)
   and ime::sync falls back to (ime_last_pane, ime_anchor) on frames
   whose live anchor is missing (dead pane/empty tree); the preedit

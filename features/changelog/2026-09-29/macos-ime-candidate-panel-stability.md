@@ -71,6 +71,32 @@ interrupt is ever requested - both macOS triggers
 (marked-text erasure, panel invalidation) are gone, and the X11
 tab-switch XIC kill is fixed as a side effect.
 
+## Follow-up (same day): first-frame latch seeding
+
+Review of the latch found one residual None path: the IDLE branch of
+`pane_anchor` returned `(live, None)`, clearing the latch every frame
+without a composition. A composition whose very FIRST frame already
+lacked a live cursor - the VT cursor turned hidden between the keypress
+and the first Preedit frame, e.g. a vim scroll or TUI mode switch
+racing the first CJK key - therefore found no latch, produced
+`o.ime = None` on the first composition frame, and hit the same macOS
+marked-text erasure path the latch was built to close.
+
+Fix: idle frames now RE-SEED the latch with the last live cursor rect
+(`pane_anchor` idle branch returns `(live, live)`), so the race frame
+starts the composition anchored at the last live cell instead of
+flipping to None. Semantics while composing are unchanged (frozen,
+bit-stable, `latched.or(live)`).
+
+Deliberately NOT covered (narrowed claim): a cursor that has been
+hidden since BEFORE the composition began (less from the start) sees
+`o.ime = None` while idle, egui-winit keeps the platform IME off, and
+the first CJK key arrives as raw latin - no composition starts. That
+is the pre-existing hidden-cursor limitation ("composition cannot
+begin"), NOT the candidate-panel death: the panel only dies when a
+None flip interrupts an in-flight composition, which the latch now
+prevents on every reachable path.
+
 ## Verification
 
 - `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`,
@@ -82,6 +108,9 @@ tab-switch XIC kill is fixed as a side effect.
   editors, commit round-trip unaffected).
 - macOS manual checklist (needs a real IME): compose while a pane streams
   output (`while sleep 0.2; do date; done`), compose during a live window
-  resize, compose inside vim/less (hidden cursor) - the candidate panel
-  must stay up; after a tab switch, CJK input must still compose (not raw
-  latin).
+  resize, compose in vim right after the cursor turned hidden (scroll /
+  ctrl-o jump then a CJK key) - the panel must stay up, anchored at the
+  last live cell; in less (cursor hidden from the start) a CJK key must
+  arrive as raw latin with NO composition and NO panel death (cannot
+  begin, not death); after a tab switch, CJK input must still compose
+  (not raw latin).
