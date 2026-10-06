@@ -6,6 +6,7 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,6 +48,9 @@ jobs:
 
       - name: Unit + integration tests
         run: cargo test --workspace
+
+      - name: Release install, retry and rollback tests
+        run: python3 scripts/tests/deploy/test_release.py
 
   build-test-macos:
     runs-on: macos-15
@@ -319,5 +323,5 @@ jobs:
       - name: Generate the zh_CN.UTF-8 locale
         run: sudo locale-gen zh_CN.UTF-8
 
-      - name: IME e2e (M1-M4, ibus + libpinyin over XIM)
+      - name: IME e2e (native candidates, delayed echo, rename and passthrough)
         run: scripts/bin/e2e-ime.sh

@@ -68,6 +68,10 @@ pub struct FrameCursor {
     pub x: u16,
     pub y: u16,
     pub visible: bool,
+    /// The cursor has filled the last cell; wrapping still depends on DECAWM.
+    pub pending_wrap: bool,
+    /// DECAWM: wide input with too little space also wraps before writing.
+    pub autowrap: bool,
 }
 
 /// A full render snapshot: everything needed to draw one frame.
@@ -124,6 +128,8 @@ pub fn snapshot_frame(
     row_it: &mut RowIterator<'static>,
     cell_it: &mut CellIterator<'static>,
 ) -> anyhow::Result<Frame> {
+    let pending_wrap = terminal.is_cursor_pending_wrap()?;
+    let autowrap = terminal.mode(libghostty_vt::terminal::Mode::WRAPAROUND)?;
     let snapshot: Snapshot = render_state.update(terminal)?;
     let cols = snapshot.cols()?;
     let rows = snapshot.rows()?;
@@ -138,6 +144,8 @@ pub fn snapshot_frame(
             x: cursor_viewport.map_or(0, |c| c.x),
             y: cursor_viewport.map_or(0, |c| c.y),
             visible: cursor_visible && cursor_viewport.is_some(),
+            pending_wrap,
+            autowrap,
         },
         default_fg: colors.foreground.into(),
         default_bg: colors.background.into(),
@@ -159,3 +167,7 @@ pub fn snapshot_frame(
     }
     Ok(frame)
 }
+
+#[cfg(test)]
+#[path = "term/tests.rs"]
+mod tests;

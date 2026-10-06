@@ -252,15 +252,10 @@ pub struct WindowUi {
     /// frame; composition-period fallback memory when the live anchor
     /// is missing for a frame (dead pane / empty tree frame).
     pub ime_last_pane: Option<PaneId>,
-    /// Composition anchor latch: the cursor cell the in-flight
-    /// composition started at. While composing, the IME anchor holds
-    /// this rect even when the live cursor cell transiently vanishes
-    /// (hidden VT cursor, a resize transition frame), so the platform
-    /// IME output never flips to None mid-composition. While idle it is
-    /// re-seeded with every live cursor rect, so a composition whose
-    /// first frame already lacks a live cursor still starts anchored;
-    /// it clears when the cursor is hidden with no composition in
-    /// flight (the platform IME is off and no composition can begin).
+    /// Most recent live cursor cell. During composition a temporarily
+    /// hidden cursor uses this fallback; valid cursor updates always win,
+    /// including a delayed echo of the previous commit. Idle hidden-cursor
+    /// frames clear it because the platform IME is already disabled.
     pub ime_anchor: Option<egui::Rect>,
     /// Chip-strip horizontal scroll offset (px); 0 while the tabs fit.
     pub tab_scroll: f32,

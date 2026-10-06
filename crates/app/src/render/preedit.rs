@@ -4,6 +4,20 @@ use egui::{Align2, Color32, Context, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 use crate::state::CellSize;
 
+pub mod placement;
+
+pub fn first_span(ctx: &Context, text: Option<&str>, cell: CellSize, font_size: f32) -> u16 {
+    text.and_then(|s| s.chars().next()).map_or(1, |ch| {
+        char_span(ctx, ch, &FontId::monospace(font_size), cell)
+    })
+}
+
+pub struct PaintStyle {
+    pub fg: Color32,
+    pub bg: Color32,
+    pub underline: Stroke,
+}
+
 /// Paint the live IME preedit (composition) string at the focused pane's
 /// cursor cell with the SAME conventions as committed grid text, so the
 /// composition previews exactly how it will land: one glyph per cell on
@@ -12,24 +26,38 @@ use crate::state::CellSize;
 /// underline is egui's own `visuals.ime_composition.active_underline_stroke`
 /// (the exact stroke every other input surface in this app, rename
 /// editors and text fields, uses) instead of a one-off accent pill.
+/// An opaque backing over the composed cells hides existing terminal ink
+/// and the cursor, including on transparent panes. It is purely visual:
+/// committing or cancelling restores the unchanged terminal underneath.
 pub fn paint(
     painter: &Painter,
     at: Rect,
     text: &str,
     cell: CellSize,
     font_size: f32,
-    fg: Color32,
-    underline: Stroke,
+    style: PaintStyle,
 ) {
     let narrow = FontId::monospace(font_size);
     let wide = FontId::monospace(cell.wide_size);
+    let glyphs: Vec<_> = text
+        .chars()
+        .map(|ch| (ch, char_span(painter.ctx(), ch, &narrow, cell)))
+        .collect();
+    let width = glyphs
+        .iter()
+        .map(|(_, span)| f32::from(*span) * cell.w)
+        .sum();
+    if glyphs.is_empty() {
+        return;
+    }
+    painter.rect_filled(
+        Rect::from_min_size(at.min, Vec2::new(width, at.height())),
+        0.0,
+        style.bg.to_opaque(),
+    );
     let mut x = at.left();
-    for ch in text.chars() {
-        let (span, font) = if char_span(painter.ctx(), ch, &narrow, cell) == 2 {
-            (2u16, &wide)
-        } else {
-            (1u16, &narrow)
-        };
+    for (ch, span) in glyphs {
+        let font = if span == 2 { &wide } else { &narrow };
         let r = Rect::from_min_size(
             Pos2::new(x, at.top()),
             Vec2::new(cell.w * f32::from(span), at.height()),
@@ -39,14 +67,17 @@ pub fn paint(
             Align2::LEFT_CENTER,
             ch.to_string(),
             font.clone(),
-            fg,
+            style.fg,
         );
         x = r.right();
     }
     // Underline spans the whole composition (no arbitrary cap); the pane
     // clip keeps a long preedit from bleeding past the pane rect.
     if x > at.left() {
-        painter.line_segment([at.left_bottom(), Pos2::new(x, at.bottom())], underline);
+        painter.line_segment(
+            [at.left_bottom(), Pos2::new(x, at.bottom())],
+            style.underline,
+        );
     }
 }
 
@@ -67,7 +98,12 @@ mod tests {
     use super::*;
     use egui::Rect;
 
-    fn paint_in_ui(at: Rect, text: &str, cell: CellSize, underline: Stroke) {
+    fn paint_in_ui(
+        at: Rect,
+        text: &str,
+        cell: CellSize,
+        underline: Stroke,
+    ) -> Vec<egui::epaint::ClippedShape> {
         let ctx = egui::Context::default();
         crate::ui::fonts::install(&ctx);
         ctx.begin_pass(egui::RawInput::default());
@@ -87,12 +123,18 @@ mod tests {
             text,
             cell,
             15.0,
-            Color32::WHITE,
-            underline,
+            PaintStyle {
+                fg: Color32::WHITE,
+                // Even a transparent pane needs to hide underlying ink.
+                bg: Color32::from_rgba_unmultiplied(40, 42, 54, 100),
+                underline,
+            },
         );
         // Nothing consumes this context: drop the unapplied font texture
         // delta like the other headless egui tests do.
-        ctx.end_pass().textures_delta.clear();
+        let mut out = ctx.end_pass();
+        out.textures_delta.clear();
+        out.shapes
     }
 
     fn cell() -> CellSize {
@@ -123,6 +165,54 @@ mod tests {
         assert_eq!(char_span(&ctx, 'M', &font, cell()), 1);
         assert_eq!(char_span(&ctx, '汉', &font, cell()), 2);
         ctx.end_pass().textures_delta.clear();
+    }
+
+    #[test]
+    fn preedit_covers_existing_ink_before_painting_narrow_and_wide_glyphs() {
+        let at = Rect::from_min_size(egui::pos2(4.0, 8.0), egui::vec2(9.0, 18.0));
+        let stroke = Stroke::new(2.0, Color32::LIGHT_BLUE);
+        // Includes mixed-width candidates and compositions beyond the
+        // old eight-cell cap. The backing and underline span the same cells.
+        for (text, columns) in [("hanzi", 5.0), ("a汉b", 4.0), ("abcdefghijkl", 12.0)] {
+            let shapes = paint_in_ui(at, text, cell(), stroke);
+            let egui::Shape::Rect(backing) = &shapes[0].shape else {
+                panic!("preedit must cover terminal ink before painting text");
+            };
+            assert_eq!(backing.fill.a(), 255, "glass must not expose old glyphs");
+            assert_eq!(backing.rect.min, at.min);
+            assert_eq!(
+                backing.rect.size(),
+                egui::vec2(columns * cell().w, at.height())
+            );
+            assert_eq!(backing.corner_radius, egui::CornerRadius::ZERO);
+            assert!(matches!(shapes[1].shape, egui::Shape::Text(_)));
+            let egui::Shape::LineSegment { points, .. } = &shapes.last().unwrap().shape else {
+                panic!("composition underline must stay visible");
+            };
+            assert_eq!(
+                *points,
+                [backing.rect.left_bottom(), backing.rect.right_bottom()]
+            );
+        }
+        // No backing survives cancellation or commit; the terminal can
+        // draw its original content on the next frame without erasure.
+        assert!(paint_in_ui(at, "", cell(), stroke).is_empty());
+    }
+
+    #[test]
+    fn long_preedit_keeps_the_pane_clip() {
+        let at = Rect::from_min_size(egui::pos2(625.0, 460.0), egui::vec2(9.0, 18.0));
+        let shapes = paint_in_ui(
+            at,
+            "汉字pinyin",
+            cell(),
+            Stroke::new(2.0, Color32::LIGHT_BLUE),
+        );
+        assert!(!shapes.is_empty());
+        for shape in shapes {
+            assert!(shape.clip_rect.right() <= 640.0);
+            assert!(shape.clip_rect.bottom() <= 480.0);
+        }
     }
 
     #[test]

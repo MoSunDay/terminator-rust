@@ -212,15 +212,24 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         match sess.map.get_mut(&pane) {
             Some(s) if s.exit.is_none() => {
                 let fr = session_map::sync_frame(s, content.width(), content.height(), cell);
+                let text = st.win().and_then(|w| w.ui.ime.clone());
+                let composing =
+                    Some(pane) == focused && text.as_deref().is_some_and(|t| !t.is_empty());
+                let span = preedit::first_span(ui.ctx(), text.as_deref(), cell, font_size);
+                let shown = preedit::placement::preview(&fr, composing, span);
                 grid::draw_frame(
                     &painter,
                     content,
                     &grid::DrawArgs {
-                        fr: &fr,
+                        fr: &shown,
                         pal: &pal,
                         cell,
                         font_size,
-                        cursor_alpha: if Some(pane) == focused { cursor_a } else { 0.0 },
+                        cursor_alpha: if Some(pane) == focused && !composing {
+                            cursor_a
+                        } else {
+                            0.0
+                        },
                         blink_on,
                         fill_alpha,
                     },
@@ -245,21 +254,12 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         );
                     }
                 }
-                // IME anchor + composition overlay for the focused
-                // pane: the popup anchors at the cursor cell, but while
-                // a composition is in flight the anchor LATCHES on the
-                // last live cell at or before its start (ime::pane_anchor
-                // seeds the latch on every idle frame) so a hidden VT
-                // cursor (DECTCEM under a TUI), a resize transition
-                // frame or PTY-output cursor moves never unanchor or
-                // bounce the candidate panel. The in-flight preedit
-                // paints at that same anchor with grid conventions
-                // (same fonts/alignment as committed text, the shared
-                // egui composition underline), clipped to the pane.
+                // Report and paint at the same live cursor, preserving the
+                // last position only across transient hidden-cursor frames.
+                // Late commit echoes and resize updates must move both the
+                // preedit and native candidates to the actual insertion point.
                 if Some(pane) == focused {
-                    let text = st.win().and_then(|w| w.ui.ime.clone());
-                    let composing = text.as_deref().is_some_and(|t| !t.is_empty());
-                    let live = grid::cursor_rect(content, &fr, cell);
+                    let live = preedit::placement::cursor_rect(content, &fr, cell, span);
                     let (anchor, latch) =
                         ime::pane_anchor(composing, live, st.win().and_then(|w| w.ui.ime_anchor));
                     if let Some(w) = st.win_mut() {
@@ -274,8 +274,11 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                             &text,
                             cell,
                             font_size,
-                            colors::to_c32(colors::vt_rgb(fr.default_fg)),
-                            ui.visuals().ime_composition.active_underline_stroke,
+                            preedit::PaintStyle {
+                                fg: colors::to_c32(colors::vt_rgb(fr.default_fg)),
+                                bg: colors::to_c32(colors::vt_rgb(fr.default_bg)),
+                                underline: ui.visuals().ime_composition.active_underline_stroke,
+                            },
                         );
                     }
                 }

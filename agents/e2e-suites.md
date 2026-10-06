@@ -1,4 +1,4 @@
-Commit: 5dba9e1146e865380af50b8cec0ba1d851e8e0c7
+Commit: 8ecb8ab47bc992a9522edf0394616e0007744e47
 
 # e2e 套件覆盖索引 / e2e suites - coverage index
 
@@ -42,8 +42,9 @@ Commit: 5dba9e1146e865380af50b8cec0ba1d851e8e0c7
 - empty-window restore e2e（`e2e-empty-restore.sh`）：`windows:[{tabs:[]}]`
   恢复到活 tab、退出自动关 pane 且持久化空 tabs
 - IME e2e（`e2e-ime.sh`）：真 XIM 链路（Xvfb + dbus + ibus + libpinyin）；
-  M1 组合被吞、M2 preedit 墨迹、M3 空格上屏 汉字、M4 tab 改名第一个键、
-  M5 面板改名 + 编辑器关闭后首个键、M6 Shift 切英文直通、M7 退出
+  M1 组合被吞、M2 preedit 墨迹、M3 空格上屏 汉字、M3b 预编辑遮挡旧字与 Esc 恢复、M4 tab 改名第一个键、
+  M3c 延迟回显、M3d 可见原生候选窗在隐藏光标/换行/底部/缩放时的位置、M3e 精确行尾/宽字符/末行取消与提交，
+  M5 面板改名 + 编辑器关闭后首个键、M6 Shift 切英文直通、M7 退出；`--bundle DIRECTORY` 可测试发布包
 - opencoder exit e2e（`e2e-oc-exit.sh`）：真 opencoder 二进制；Ctrl+D /
   Ctrl+C 退出后 pane 自动关闭、非最后一个 pane 的 Ctrl+Shift+W 不退出
 - cjk font e2e（`e2e-cjk.sh`）：两套内嵌字体 cmap 覆盖 + 真实汉字墨迹
@@ -137,15 +138,23 @@ Commit: 5dba9e1146e865380af50b8cec0ba1d851e8e0c7
   E2 = exit auto-closes + app quits persisting empty tabs, E3 = the
   loop relaunches live; wired into ci.yml as e2e-empty-restore).
 - IME e2e: `scripts/bin/e2e-ime.sh` (REAL XIM chain: Xvfb + dbus
-  session bus (private fork fallback) + ibus-daemon --xim + engine
+  session bus (always private) + ibus-daemon --xim + engine
   libpinyin + LANG=zh_CN.UTF-8; M1 composing 'hanzi' never reaches the
-  pty, M2 preedit ink purple-hue-detected vs a baseline scrot, M3 space
-  commits 汉字, M4 tab-chip rename composes 汉字 from the FIRST key,
+  pty, M2 preedit underline detected outside the native candidate window, M3 space
+  commits 汉字, M3b existing red glyphs are hidden by preedit and restored
+  on Escape (missing app preedit fails this check), M3c delayed PTY echo
+  preserves the committed prefix, M3d visible native panel geometry checks
+  (hidden cursor, bottom row, wrap, resize), M3e exact row-end / wide-character
+  wrap / last-row preview preserve committed glyphs and restore on Escape;
+  actual commit follows the previewed wrap. M4 tab-chip rename
+  composes 汉字 from the FIRST key,
   M5 pane-header rename + the pane's first key after the editor composes
   鸟, M6 bare Shift_L toggles libpinyin EN for ASCII passthrough (LAST,
   composing phases need CN), M7 liveness + Ctrl+Shift+Q quit;
   CI job e2e-ime apt: ibus ibus-libpinyin dbus x11-utils locales +
-  locale-gen zh_CN.UTF-8 - XIM locale negotiation needs it).
+  locale-gen zh_CN.UTF-8 - XIM locale negotiation needs it; libX11 >= 1.8.2
+  is required for spot updates. `--bundle DIRECTORY` skips compilation and
+  tests that extracted release. Helpers: `scripts/tests/ime/`).
 - opencoder exit e2e: `scripts/bin/e2e-oc-exit.sh` (Xvfb + REAL
   /root/opencoder binary; OC_BIN override; SHELL wrapper that `exec`s the
   binary so pane pid == opencoder pid -> `kill -0` is exit ground truth; dummy

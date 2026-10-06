@@ -2,15 +2,15 @@
 //! per-window sync that runs at the end of each window render pass.
 //!
 //! Invariant: while a composition is in flight (`WindowUi.ime` non-empty)
-//! the platform IME output stays `Some` with a stable rect and NEVER
+//! the platform IME output stays `Some` with the current or last known cursor and NEVER
 //! requests an interrupt. On winit macOS `set_ime_allowed(false)`
 //! silently erases the NSView-side marked text without telling the
 //! input-method engine (no `unmarkText`), which strands the engine
 //! mid-composition and kills the candidate panel until the input
 //! source is deactivated/reactivated; on winit X11 the false/true
 //! interrupt pair destroys and recreates the XIC and never re-focuses
-//! it (same family as the `request_focus` XIM bug). So the anchor
-//! LATCHES for the composition's duration (see [`pane_anchor`]) and
+//! it (same family as the `request_focus` XIM bug). The anchor
+//! follows live cursor updates (see [`pane_anchor`]) and
 //! [`sync`] falls back to the remembered pane + latch on frames whose
 //! live anchor is missing (see [`effective_target`]).
 
@@ -18,6 +18,18 @@ use egui::{Context, Rect};
 use layout_tree::PaneId;
 
 use crate::state::Data;
+
+#[cfg(any(target_os = "linux", test))]
+mod popup;
+#[cfg(target_os = "linux")]
+mod x11;
+
+fn avoid_native_overlap(ctx: &Context, cursor: Rect, composing: bool) {
+    #[cfg(target_os = "linux")]
+    x11::sync(ctx, cursor, composing);
+    #[cfg(not(target_os = "linux"))]
+    let _ = (ctx, cursor, composing);
+}
 
 /// Platform IME popup anchor derived from the pane cursor cell.
 ///
@@ -43,36 +55,22 @@ fn spot_at_baseline() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_none()
 }
 
-/// Composition-period anchor latch: `(anchor to use, new latch)`.
+/// Follow the terminal's current cursor, remembering it across hidden-cursor
+/// or resize transition frames while composing. A commit only writes to the
+/// PTY: its echo can arrive AFTER the next Preedit, so freezing the first
+/// cursor would paint the next word over that late echo indefinitely.
 ///
-/// While a composition is in flight the anchor FREEZES on the first
-/// live cursor cell it sees (`latched.or(live)`, latched wins so the
-/// rect stays bit-stable) and keeps using it even when the live cursor
-/// cell transiently vanishes (hidden VT cursor under a TUI, an
-/// out-of-grid coordinate during a live resize) or PTY output moves
-/// the cursor (a moving anchor spams
-/// `invalidateCharacterCoordinates` and makes some input methods
-/// bounce or dismiss the candidate panel). With no composition in
-/// flight the live rect is used and the latch is RE-SEEDED with it:
-/// a composition whose very first frame already lacks a live cursor
-/// (the cursor turned hidden between the keypress and the first
-/// Preedit frame - a vim scroll or TUI mode switch racing the first
-/// CJK key) still starts anchored at the last live cell instead of
-/// flipping `o.ime` to None mid-composition. A cursor hidden with no
-/// composition clears the latch - the platform IME was already off,
-/// so no composition can begin there at all (pre-existing
-/// hidden-cursor limitation, not the candidate-panel death).
+/// Keeping output enabled and interrupt-free protects the native composition;
+/// a valid position update does not disable IME or erase marked text. The
+/// egui-winit backend already updates native coordinates on every input event,
+/// even when the rectangle is unchanged.
 pub fn pane_anchor(
     composing: bool,
     live: Option<Rect>,
-    latched: Option<Rect>,
+    remembered: Option<Rect>,
 ) -> (Option<Rect>, Option<Rect>) {
-    if composing {
-        let anchor = latched.or(live);
-        (anchor, anchor)
-    } else {
-        (live, live)
-    }
+    let anchor = if composing { live.or(remembered) } else { live };
+    (anchor, anchor)
 }
 
 /// Effective `(pane, rect)` for the platform output, with the
@@ -105,7 +103,7 @@ pub fn effective_target(
 /// `set_ime_allowed(false); (true)` pair, which on macOS silently
 /// erases the client marked text (stranding the engine's composition
 /// and killing the candidate panel) and on X11 rebuilds an XIC that is
-/// never focused again. A composition follows its latched anchor; the
+/// never focused again. A composition follows the current or last known cursor; the
 /// commit lands on whatever pane is focused when it arrives (see
 /// keyboard.rs), which is the correct terminal behaviour.
 pub fn platform_ime_output(
@@ -144,7 +142,8 @@ fn pane_alive(pane: PaneId, d: &Data) -> bool {
 /// first key after a rename lands as raw latin. Keeping the pane anchor
 /// alive across those single frames never interrupts anything.
 pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
-    if ctx.output(|o| o.ime.is_some()) {
+    if let Some(cursor) = ctx.output(|o| o.ime.map(|ime| ime.cursor_rect)) {
+        avoid_native_overlap(ctx, cursor, true);
         return; // a focused rename editor owns IME this frame
     }
     let Some(w) = d.st.windows.get(idx) else {
@@ -160,6 +159,9 @@ pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
     );
     let alive = pane.is_some_and(|p| pane_alive(p, d));
     let out = platform_ime_output(alive, cursor, spot_at_baseline());
+    if let Some(out) = &out {
+        avoid_native_overlap(ctx, out.cursor_rect, composing);
+    }
     // Assign unconditionally: Some enables IME at the pane cursor, None
     // turns it off (no pane to type into). While composing, the
     // fallback above keeps that Some alive across transient gaps.
@@ -170,125 +172,5 @@ pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rect() -> Rect {
-        Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(8.0, 16.0))
-    }
-
-    fn rect_at(y: f32) -> Rect {
-        Rect::from_min_size(egui::pos2(10.0, y), egui::vec2(8.0, 16.0))
-    }
-
-    #[test]
-    fn dead_pane_or_missing_cursor_disables_ime() {
-        assert!(platform_ime_output(false, Some(rect()), true).is_none());
-        assert!(platform_ime_output(true, None, true).is_none());
-    }
-
-    #[test]
-    fn live_pane_anchors_terminal_ime() {
-        let out = platform_ime_output(true, Some(rect()), true)
-            .expect("live pane with cursor enables IME");
-        assert_eq!(out.purpose, egui::IMEPurpose::Terminal);
-        assert_eq!(out.cursor_rect, rect());
-        assert!(!out.should_interrupt_composition);
-    }
-
-    #[test]
-    fn xim_spot_anchor_sits_at_the_caret_baseline() {
-        // X11: rect.min = bottom-left of the caret cell (the XIM spot
-        // convention shared with xterm/GTK), size carried through.
-        let anchored = anchor_rect(rect(), true);
-        assert_eq!(anchored.min, egui::pos2(10.0, 36.0));
-        assert_eq!(anchored.size(), rect().size());
-        // Full-rect backends (macOS, Wayland) keep the true caret cell.
-        assert_eq!(anchor_rect(rect(), false), rect());
-        let out =
-            platform_ime_output(true, Some(rect()), true).expect("spot anchor keeps IME alive");
-        assert_eq!(out.rect.min, egui::pos2(10.0, 36.0));
-        assert_eq!(out.cursor_rect, rect());
-    }
-
-    #[test]
-    fn ime_output_never_interrupts_composition() {
-        // Even a pane switch mid-composition must not ask the platform
-        // to interrupt: egui-winit implements the flag as a
-        // set_ime_allowed(false)/(true) pair, which erases macOS marked
-        // text and rebuilds an unfocused XIC on X11.
-        let out = platform_ime_output(true, Some(rect()), false).expect("anchored");
-        assert!(!out.should_interrupt_composition);
-    }
-
-    #[test]
-    fn composition_latches_the_first_live_anchor() {
-        // Composing with no latch yet: the live rect latches.
-        let (anchor, latch) = pane_anchor(true, Some(rect_at(20.0)), None);
-        assert_eq!(anchor, Some(rect_at(20.0)));
-        assert_eq!(latch, Some(rect_at(20.0)));
-        // Later frames: the latch wins over a moved live cursor
-        // (stable rect, no invalidateCharacterCoordinates spam).
-        let (anchor, latch) = pane_anchor(true, Some(rect_at(40.0)), Some(rect_at(20.0)));
-        assert_eq!(anchor, Some(rect_at(20.0)));
-        assert_eq!(latch, Some(rect_at(20.0)));
-        // A transiently missing live cursor keeps the latched anchor.
-        let (anchor, latch) = pane_anchor(true, None, Some(rect_at(20.0)));
-        assert_eq!(anchor, Some(rect_at(20.0)));
-        assert_eq!(latch, Some(rect_at(20.0)));
-    }
-
-    #[test]
-    fn idle_frames_reseed_the_latch_with_the_live_rect() {
-        // Idle frame with a live cursor: passes through AND seeds the
-        // latch with that rect (composition-start insurance).
-        let (anchor, latch) = pane_anchor(false, Some(rect_at(40.0)), Some(rect_at(20.0)));
-        assert_eq!(anchor, Some(rect_at(40.0)));
-        assert_eq!(latch, Some(rect_at(40.0)), "idle frames reseed, not clear");
-        // Idle frame with a hidden cursor: no anchor and no seed -
-        // the platform IME is off, a composition cannot begin there.
-        let (anchor, latch) = pane_anchor(false, None, Some(rect_at(20.0)));
-        assert_eq!(anchor, None);
-        assert_eq!(latch, None);
-    }
-
-    #[test]
-    fn composition_starting_on_a_hidden_cursor_uses_the_last_live_seed() {
-        // The residual 2026-09-29 race: cursor live on the frame
-        // before the keypress, hidden by the first Preedit frame. The
-        // idle seed must anchor the composition so `o.ime` never
-        // flips to None mid-composition (the macOS marked-text
-        // erasure path).
-        let (_, seed) = pane_anchor(false, Some(rect_at(40.0)), None);
-        assert_eq!(seed, Some(rect_at(40.0)));
-        let (anchor, latch) = pane_anchor(true, None, seed);
-        assert_eq!(anchor, Some(rect_at(40.0)));
-        assert_eq!(latch, Some(rect_at(40.0)));
-        // Composing with neither latch nor live (cursor hidden since
-        // before the composition began): nothing to anchor on.
-        let (anchor, latch) = pane_anchor(true, None, None);
-        assert_eq!(anchor, None);
-        assert_eq!(latch, None);
-    }
-
-    #[test]
-    fn composition_falls_back_to_remembered_pane_and_latch() {
-        let pane = 7u64;
-        // Live anchor missing while composing: remembered pane + latch.
-        assert_eq!(
-            effective_target(true, None, None, Some(pane), Some(rect())),
-            (Some(pane), Some(rect()))
-        );
-        // Live anchor present: passes through unchanged (latch already
-        // applied by screen.rs via pane_anchor).
-        assert_eq!(
-            effective_target(true, Some(pane), Some(rect()), Some(8), None),
-            (Some(pane), Some(rect()))
-        );
-        // Not composing: live values pass through, even when None.
-        assert_eq!(
-            effective_target(false, None, None, Some(pane), Some(rect())),
-            (None, None)
-        );
-    }
-}
+#[path = "ime/tests.rs"]
+mod tests;

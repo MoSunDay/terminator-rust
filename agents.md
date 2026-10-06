@@ -1,4 +1,4 @@
-Commit: 5dba9e1146e865380af50b8cec0ba1d851e8e0c7
+Commit: 8ecb8ab47bc992a9522edf0394616e0007744e47
 
 # agents.md - repo memory for terminator-rust
 
@@ -89,37 +89,8 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   [agents/e2e-suites.md](agents/e2e-suites.md); user-visible checks that
   were verified live stay in
   [agents/verified-end-to-end.md](agents/verified-end-to-end.md).
-- deploy: `scripts/bin/deploy-remote.sh` one-click (deterministic dist/
-  repack, sha256 gate BOTH ends, /opt/terminator-rust/current symlink,
-  XDG autostart for the desktop user, pid-kill restart, ctl smoke,
-  `--keep-running` = install only: stage 5 prints `DEPLOY-KEEP:<pids>` and
-  exits BEFORE any kill and before the stale-socket `rm`, stage 6 then
-  smokes the STILL-RUNNING (old) build and says so - used when the user
-  has live work in the target's window, so the fix goes live only at that
-  app's next launch. DECIDE restart vs keep-running by probing the
-  live instance first over ssh as the desktop user:
-  `XDG_RUNTIME_DIR=/run/user/1000 /opt/terminator-rust/current/bin/
-  terminator-ctl list` + `capture` every pane + `ps --ppid <shell pid>`
-  - the target's panes regularly carry live children (multi-hour
-  `ssh` jumps into other machines, opencoder TUIs) that a pid-kill
-  restart would SIGHUP away. Restart candidates come from BOTH
-  `pgrep -f <install path>` AND `pgrep -x terminator-rust`: a
-  panel/desktop-launched instance has a BARE argv[0]
-  (e.g. ~/.local/bin/terminator-rust, a symlink into /opt), so the -f
-  pattern alone missed it and a deploy left the day-old instance running
-  beside the fresh one; /proc/<pid>/exe under /opt/terminator-rust is the
-  only kill gate (a repack replaces the live build's dir in place, so
-  pids_of strips a trailing ` (deleted)` from the readlink). ADDRESSING one specific pane on the live target: `ctl list`'s PID column is the pane's login SHELL - interactive children like `ssh`/TUIs are grandchildren (`ps --ppid <shell pid>`); the exact pane of a given session = the ssh whose source port ($SSH_CONNECTION's second field) shows in `ss -tnp` on the desktop; a SECOND app instance answers on its per-pid socket (`/run/user/1000/terminator-rust/ipc-<pid>.sock`) - probe each with `terminator-ctl --socket <path> list` before noticing/capturing. To verify a
-  kept-running deploy without touching that window, launch the new
-  `current/bin/terminator-rust` under a PRIVATE `HOME` +
-  `XDG_RUNTIME_DIR` on a scratch Xvfb display, never on the user's :0
-  (verified live 2026-09-27: new binary list/capture + notice round-trip
-  on a private :NN while the old instance kept its panes). Run
-  deploy-remote.sh in the tool-call FOREGROUND (warm release build +
-  upload = ~2min): a `setsid nohup`-detached deploy died silently between
-  tool calls mid-compile (log frozen, no OOM, cargo gone) - setsid
-  survival is reliable only for the short Xvfb launches inside one
-  e2e-script call.
+- deploy: [发布与回滚](agents/release/index.md) 索引不可变安装、回滚记录、
+  `--keep-running`、真实运行版本检查与隔离验收。
 - releases: push an annotated `v*` tag -> .github/workflows/release.yml
   builds linux-x86_64 + macos-aarch64 release tarballs via
   scripts/bin/pack-release.sh (deterministic GNU-tar archive + .sha256
@@ -358,79 +329,8 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   os.write) - writing /dev/pts/N (slave) simulates terminal OUTPUT,
   keys never reach the child, and every "inert" observed that way is
   void.
-- IME (pane input method): winit X11 XIM is COMPLETE (XFilterEvent
-  swallows composing keys; the ime rect's min is the XIM spot) but
-  needs an XIM server (XMODIFIERS=@im=ibus|fcitx) - bare Xvfb has
-  none, Ime events never fire there. egui-winit allows IME iff
-  PlatformOutput.ime is Some EVERY frame (per viewport, nobody
-  validates it - no TextEdit needed); app/input/ime.rs writes it
-  (purpose Terminal) anchored at grid::cursor_rect; a rename editor's own
-  TextEdit output wins because ime::sync bails on "an IME output already
-  exists" (ctx.output(|o| o.ime.is_some()) - NOT on
-  egui_wants_keyboard_input: an editor publishes nothing on the frame it
-  gains focus from a stale state and on the Enter frame, and publishing
-  None -> Some there would re-enable IME and rebuild the IC), while
-  input/keyboard.rs still clears the pane preedit (WindowUi.ime = None)
-  from its text-field early return. NEVER focus a rename editor with
-  Response::request_focus(): it raises Memory::interrupt_ime, egui-winit
-  turns that into set_ime_allowed(false)+(true), and winit X11 implements
-  the pair as remove_context+create_context - the recreated XIC is never
-  XSetICFocus-ed again (winit focuses it only from a window FocusIn), so
-  every following key BYPASSES the input method and lands raw latin:
-  double-click a chip, type pinyin, get 'hanzi' - and the pane's first key
-  after the editor closing too (e2e-ime M4/M5 gate both). Use
-  ui::focus_rename_editor instead - egui's Tab-navigation path
-  (surrender_focus + move_focus(FocusDirection::Next), the editor being
-  the frame's only focus-interested widget) hands the keyboard over with
-  no interrupt, so the IC survives. Ime::Commit delivers RAW UTF-8 bytes
-  (vtask::write) - never the key encoder (CJK lands Unidentified+utf8)
-  nor bracketed paste (commit is typed input); Preedit with empty text
-  = composition ended. COMPOSITION INVARIANT (2026-09-29, macOS
-  candidate-panel death): while composing, `o.ime` must never flip to
-  None on a frame whose live anchor is transiently missing (ime::sync
-  falls back to (ime_last_pane, ime_anchor); a pane whose SESSION
-  itself died mid-composition still turns IME off - correct,
-  vtask::write on a closed session is a silent no-op) and must NEVER
-  set should_interrupt_composition - egui-winit
-  maps None to set_ime_allowed(false) and the interrupt flag to a
-  false/true PAIR (egui-winit 0.36 lib.rs:1157); winit macOS's
-  set_ime_allowed(false) silently ERASES the NSView marked text
-  without unmarkText/discardMarkedText, the engine keeps composing
-  against a desynced client and the CANDIDATE PANEL DIES until the
-  input source is deactivated/reactivated (preedit keeps updating -
-  the confusing symptom), and on X11 the pair rebuilds an XIC that is
-  never XSetICFocus-ed again (same family as the request_focus bug -
-  ANY pane change used to kill XIM this way, fixed by making
-  platform_ime_output interrupt-free). Anchoring therefore LATCHES
-  while composing (ime::pane_anchor + WindowUi.ime_anchor: the LAST
-  live cursor cell at or before composition start wins - idle frames
-  RE-SEED the latch (2026-09-29 follow-up: a composition whose first
-  frame already lacks a live cursor, cursor turned hidden between
-  keypress and first Preedit, still starts anchored; a cursor hidden
-  since BEFORE the composition began means the platform IME was
-  already off and the composition cannot start AT ALL - less's
-  pre-existing limitation, NOT the panel death) - and hidden DECTCEM
-  cursors / resize transition frames / PTY-output cursor moves cannot
-  move or drop the anchor once latched - rect
-  stays bit-stable, no invalidateCharacterCoordinates panel bounce)
-  and ime::sync falls back to (ime_last_pane, ime_anchor) on frames
-  whose live anchor is missing (dead pane/empty tree); the preedit
-  overlay paints at the SAME latched anchor. Pane preedit STYLE is the shared one (2026-09-22
-  fix: it used to be a one-off 2px purple accent pill + narrow-size
-  top-left text): render/preedit.rs paints per cell with grid
-  conventions (advance-2 glyphs -> wide font + 2-cell span, LEFT_CENTER
-  vertical, clipped to the pane) and underlines with egui's
-  visuals.ime_composition.active_underline_stroke (2px square stroke,
-  rgb(192,222,255) dark default) - the SAME stroke every TextEdit in
-  the app uses. winit X11 consumes ONLY IMEOutput.rect.min as the raw
-  XIM spot (size ignored): ime.rs anchor_rect drops it to the caret
-  cell BOTTOM-left (xterm/GTK baseline convention; candidates float
-  below the composing line instead of a row high); Wayland/macos
-  (WAYLAND_DISPLAY set) keep the true cell. e2e realities: the
-  composition stroke ANTIALIASES (exact-color match finds zero pixels
-  - blue-hue detector b-g>=18 r-g<=5 b>=110 vs baseline scrot), and
-  libpinyin starts in CN mode (all latin keys compose: probe shell
-  liveness via ctl, ASCII needs the bare Shift_L EN toggle).
+- IME: [input-method/index.md](agents/input-method/index.md) indexes pane
+  composition state, candidate anchoring, preedit painting and rename focus rules.
 - chrome row height: nominal constants are NOT the rendered height -
   egui adds the row's trailing item_spacing.y plus a 1px panel offset
   (CHIP_H 28 + 2x4 insets = 36 nominal, ~41 rendered; the old 24+2x3
