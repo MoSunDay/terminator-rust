@@ -80,16 +80,6 @@ fn cell_rect(origin: Rect, x: u16, y: u16, cell: CellSize, span: u16) -> Rect {
     )
 }
 
-/// Focused-pane cursor cell rect (the IME anchor), None while the cursor
-/// is hidden or outside the grid (same guard as the drawn cursor block).
-pub fn cursor_rect(origin: Rect, fr: &VtFrame, cell: CellSize) -> Option<Rect> {
-    if fr.cursor.visible && fr.cursor.x < fr.cols && fr.cursor.y < fr.rows {
-        Some(cell_rect(origin, fr.cursor.x, fr.cursor.y, cell, 1))
-    } else {
-        None
-    }
-}
-
 /// Bundled arguments of [`draw_frame`] (keeps the call sites readable).
 pub struct DrawArgs<'a> {
     pub fr: &'a VtFrame,

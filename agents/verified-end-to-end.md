@@ -1,4 +1,4 @@
-Commit: 4224d64e16b9e6f7da6c6bdb8352d65fabc1e3c5
+Commit: 8ecb8ab47bc992a9522edf0394616e0007744e47
 
 # Verified end-to-end (final state)
 
@@ -6,8 +6,10 @@ Live-checked capabilities of the current build. Maintenance: keep
 this list to what was actually verified - suite names/ids move here
 only when the matching script exists and passed.
 
-All current UI suites green (ui-style, mouse-key, windows W1-W10, window-controls
-R1-R6/S1-S5, ipc-oc, notice N1-N9, cjk, oc-exit, ime M1-M7, migrate M1-M5);
+Previously verified UI suites (ui-style, mouse-key, windows W1-W10, window-controls
+R1-R6/S1-S5, ipc-oc, notice N1-N9, cjk, oc-exit, ime M1-M7, migrate M1-M5).
+Current checks pass for cjk, mouse-key and the expanded IME suite on both
+debug binaries and the packed Linux release, using libX11 1.8.12;
 per-script coverage in [agents/e2e-suites.md](e2e-suites.md); Xvfb
 scripts export TERMINATOR_OPAQUE=1; live-verified
 on a graphical desktop (2 X windows, per-window typing
@@ -46,7 +48,21 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   paints the preedit underline, space commits 汉字 into the pty, bare
   Shift_L switches to EN passthrough; double-click rename editors (tab
   chip AND pane header) compose CJK from the FIRST key and the pane's own
-  IME survives the editor closing
+  IME survives the editor closing; composing over existing colored text hides
+  the covered glyphs, and Escape restores them (M3b pixel assertions).
+  Delaying committed 汉字 echo by 1.2s while composing ni preserves all 183
+  committed glyph pixels (M3c). Native panel checks pass on ordinary rows,
+  hidden cursor, screen bottom, wrapped input and 900x600 resize (M3d).
+  Exact row-end and wide-character wrap preserve all 180 committed glyph
+  pixels; last-row preview preserves 182, Escape restores the original
+  image, and actual commit follows the previewed wrap (M3e).
+  macOS native panel and Fcitx runtime behavior remain unverified.
+- release installer: 8 isolated tests cover immutable versions, corruption,
+  stale retries, crash-before/after-switch, rollback, and rejection before
+  remote upload/install when candidate verification fails. A packed release
+  launched in private Xvfb before and after restoring a legacy install path;
+  `/proc/PID/exe`, IPC and PTY round-trips matched the selected artifact.
+  This does not prove a production deployment or a previous build’s behavior.
 - opencode panes: real opencoder Ctrl+D/Ctrl+C exits the idle prompt
   (status 0), Ctrl+Shift+W closes a live TUI pane
 - control channel: ctl list/capture/send/instances/migrate over the live

@@ -31,3 +31,4 @@ libc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11-dl = "2"
+x11rb = { version = "0.13", features = ["randr"] }

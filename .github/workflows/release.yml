@@ -17,7 +17,11 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: validate
     name: build ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -66,6 +70,14 @@ jobs:
 
       - name: Pack tarball + sha256
         run: scripts/bin/pack-release.sh
+
+      - name: Verify the Linux archive with a real input method
+        if: matrix.name == 'linux-x86_64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil ibus ibus-libpinyin dbus x11-utils locales
+          sudo locale-gen zh_CN.UTF-8
+          bash scripts/deploy/verify-release.sh dist/*.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:

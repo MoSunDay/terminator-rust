@@ -108,6 +108,44 @@ cargo test -p terminator-session --test reconnect
 
 Run: `cargo run -p app` (binary `terminator-rust`).
 
+## Input methods
+
+Linux X11 requires an active XIM service (`XMODIFIERS=@im=ibus` or
+`@im=fcitx`) and libX11 1.8.2 or newer for candidate position updates.
+The IME test runs its own Xvfb, D-Bus session and visible IBus panel:
+`scripts/bin/e2e-ime.sh`.
+
+Preedit follows the next insertion position, including pending line wraps
+and wide characters at the right edge. At the last row, a temporary display
+scroll preserves committed text and is undone when composition is cancelled.
+On X11, overlapping native panels are moved using their measured size while
+an app window owns keyboard focus. The real IBus tests cover bottom-row
+placement, delayed echo, wrapping and cancellation. macOS native candidate
+placement still requires a real desktop test; cross-compilation does not
+verify it.
+
+## Remote deployment
+
+`scripts/bin/deploy-remote.sh` builds and installs a Linux x86_64 archive.
+The target needs Python 3.8 or newer. Each archive is stored separately in
+`/opt/terminator-rust/releases/<sha256>`; an immutable journal records the
+previous release before `current` is switched. The printed
+`--rollback <sha256>` command restores that previous release. A first
+installation has no previous release and refuses rollback without
+disabling the installed app. Corrupted artifacts and stale rollback
+requests also fail before switching versions.
+
+Deployment restarts the app unless `--keep-running` is supplied. When
+preserving an existing instance, smoke checks exercise that old instance;
+the selected artifact takes effect at its next launch. Local installer
+checks: `python3 scripts/tests/deploy/test_release.py`.
+
+Tag releases first run CI for that same commit. Linux release archives are
+then tested with a real input method before upload. Remote deployment uses
+the same archive check, including with `--no-build`; the build host needs the
+IME test dependencies. Run it locally with
+`bash scripts/deploy/verify-release.sh dist/<archive>.tar.gz`.
+
 ## Shortcuts
 
 | keys                | action                       |

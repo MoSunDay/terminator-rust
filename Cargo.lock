@@ -277,6 +277,7 @@ dependencies = [
  "theme",
  "vt-pane",
  "x11-dl",
+ "x11rb",
 ]
 
 [[package]]
