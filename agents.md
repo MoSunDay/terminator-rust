@@ -1,4 +1,4 @@
-Commit: 8ecb8ab47bc992a9522edf0394616e0007744e47
+Commit: d0584de719aac52afc1c02384e061a39806eecb0
 
 # agents.md - repo memory for terminator-rust
 
@@ -7,7 +7,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 
 ## Crate map
 - layout-tree: tab/pane tree, splits, focus, `layout_tab` geometry
-- vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`; open_pty = posix_openpt+O_CLOEXEC pair, pre-fork argv/env/PATH tables (child branch is async-signal-safe only); effects install on_desktop_notification so OSC 9/777 sets a per-Session notice flag drained once per frame by task::take_notice
+- vt-pane: PTY sessions; `spawn_session/pump/frame/resize/send_key/paste`; open_pty = posix_openpt+O_CLOEXEC pair, pre-fork argv/env/PATH tables (child branch is async-signal-safe only); effects install on_desktop_notification so OSC 9/777 sets a per-Session notice flag drained once per frame by task::take_notice; SessionOpts.wake (reader-loop output/exit callback) and the per-Session frame cache (cache_valid, frame_cached/invalidate_frame) feed the reactive render loop
 - theme: palettes + xterm 256 cube + `blend_background`
 - remote: ssh -tt attaches through remote `terminator-session` when present;
   exit 42 = no keeper -> plain ssh. conn-drop exits
@@ -52,7 +52,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
 - app: egui UI; binary `terminator-rust`; MULTI-OS-WINDOW: AppState
   {windows: Vec<WindowState{id,tree,WindowUi}>, active=rendering idx,
   focus=user window}; state at ~/.terminator-rust/state.json
-  (PWindow[] + legacy tabs mirror); UDS ipc in src/ipc/;
+  (PWindow[] + legacy tabs mirror); REACTIVE render loop, deadlines in render/cadence.rs (see hard-won facts); UDS ipc in src/ipc/;
   `UiState.notices` keeps transient pane IDs (ipc Request::Notice + session_map::pump_all returning OSC-noticed ids each frame); tab rendering aggregates them,
   focused windows acknowledge their active tab and discard closed panes;
   actions::close_exited auto-closes EXITED panes 250ms (EXIT_GRACE)
@@ -242,9 +242,13 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   NVIDIA/Vulkan present path dithers exactly-1-off columns at
   screen-fixed positions on ANY fill (single rects too; GL clean) - seam
   gates must count only >=2-off deviations or they flake.
-- Xvfb smoke ops: launch with `setsid nohup ... </dev/null &` to survive
-  across tool calls; NEVER `pkill -f` a pattern that occurs in your own
+- Xvfb smoke ops: NEVER `pkill -f` a pattern that occurs in your own
   command line (self-kill, tool exit -1) - kill by PID instead.
+  PERSISTENCE IS ENV-DEPENDENT: `setsid nohup` kept processes alive
+  across tool calls in earlier sandboxes, but the 2026-10-12 one REAPS
+  them between calls (Xvfb + app both verified dead in the next call,
+  leaving stale /tmp/.X11-unix sockets) - keep a whole scenario inside
+  ONE invocation, exactly like every e2e script already does.
   Ground truth: select text + Ctrl+Shift+C then `xclip -o -selection
   clipboard`; pixels via scrot + PIL. `xdotool --window <id> key/click`
   sends XSendEvent, which winit DROPS - focus the window
@@ -279,6 +283,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   and every secondary viewport pass (windows.rs); never remove.
 - libghostty default palette green ~(181,189,104) red ~(224,108,117) -
   color tests assert dominance, not VGA values.
+- SGR ANSI colors resolve through the INSTALLED THEME palette since the
+  2026-09-27 theme sync (terminal_theme sets the engine's 256-color
+  palette): e2e pixel pins must be probed against the preset THEME, not
+  ghostty defaults - e2e-bg-seams drifted stale for two weeks and failed
+  K1/K4 on BOTH old and new builds before the 2026-10-12 re-pin
+  (dracula: 41=(255,85,85), 44=(189,147,249), 45=(255,121,198); the
+  48;5;208 cube slot is palette-independent). When a pixel gate fails,
+  compare against the OLD build FIRST before suspecting your change
+  (`git stash` is a NO-OP on a committed tree - use
+  `git checkout <parent> -- crates/` + rebuild, then restore).
 - vendored ghostty (22d1317) FAST-FILL HANG (2026-09-23, K5 chase): a
   multi-KB wrapped print of SGR-bg spaces ending mid-BOTTOM-row can spin
   the engine forever in printSliceFill -> printWrap -> index ->
