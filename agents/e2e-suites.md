@@ -26,6 +26,17 @@ Commit: 8ecb8ab47bc992a9522edf0394616e0007744e47
   点击 chip 激活该 tab 即确认清除、激活 tab 聚焦时抑制、切回非激活后
   蓝点同位重现；裸 printf 同样点亮；keeper 案例：pane 经
   `terminator-session attach` 附着后 notice 字节穿过 keeper 照样点亮
+- bg 底色接缝 e2e（`e2e-bg-seams.sh`）：K1/K2 行列接缝（≥2 off 才计数，
+  NVIDIA/Vulkan 抖动豁免）、K3 末列 bleed、K4 CJK 宽字背景零 pane-bg
+  洞、K5 BCE 2J 底行 bleed（严禁 wrapped spaces print —— 引擎 fast-fill
+  hang）。2026-10-12 重钉色板：SGR 41/44/45 现经 dracula 预置色板解析
+  （255,85,85 / 189,147,249 / 255,121,198），256-cube 208 橙不变；
+  旧钉的 ghostty 默认色（204,102,102 等）是 2026-09-27 色板同步之前的值
+- idle CPU e2e（`e2e-idle-cpu.sh`）：空闲 5s utime+stime 门槛
+  （≤100 ticks，旧恒定 16/50ms tick 构建实测 190 = 正确 FAIL）、
+  ctl send→capture 标记往返 ≤2000ms（唤醒路径，实测 52ms）、
+  busy `cat` 阶段仅信息输出；TERMINATOR_OPAQUE=1、故意不设
+  TERMINATOR_NO_MOTION（悬停/光标动画必须仍被 reactive 循环驱动）
 - mouse/key e2e（`e2e-mouse-key.sh`）：裸 Ctrl+C 的 ^C 回显、跨 pane 拖拽
   SGR 投递到按下者、Shift+PageUp/End 翻页、Ctrl+C 真打断前台任务
 - multi-window e2e（`e2e-windows.sh`）：Ctrl+Shift+N 真开第二个 X 窗口、

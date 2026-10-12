@@ -198,17 +198,28 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   50/50 split that is exactly ON the gutter, so any pointer-state visual
   (divider hover handle) is live from frame one: e2e-ui-style parks the
   pointer on bare chrome (`xdotool mousemove`) + sleeps ~0.5s before
-  scrot (idle panes repaint every 50ms; active PTY output within 500ms
-  uses 16ms; an instant scrot grabs the
-  pre-motion frame). All Xvfb e2e scripts export TERMINATOR_NO_MOTION=1
-  (hover fades + cursor sine blink pinned to end states; see
+  scrot (the loop is REACTIVE since 2026-10-12: mousemove itself wakes a
+  frame, and the 0.5s lets hover fades settle; an instant scrot grabs
+  the pre-motion frame). All Xvfb e2e scripts export TERMINATOR_NO_MOTION=1
+  (hover fades + cursor blink pinned to end states; the cursor blink is
+  a SQUARE wave 1.2s on / 0.8s off, tokens.rs CURSOR_ON_S - see
   render/tokens.rs - radius/shadow/motion token layer, pure functions).
 - VT snapshots retain faint/blink/invisible/strikethrough in CellData;
   grid ink dims faint against its cell background, blinks text in every
   pane, suppresses invisible ink, draws strikethrough and reinforces bold
   glyphs with a half-pixel second pass. Italic uses epaint's glyph slant.
-  task::pump timestamps PTY output for the active/idle repaint cadence
-  in render/screen.rs.
+  RENDER LOOP IS REACTIVE (2026-10-12, render/cadence.rs): NO
+  unconditional 16/50ms tick exists - idle CPU is ~4% vs ~38% before.
+  Wakes: PTY reader-loop output/exit sends fire SessionOpts.wake ->
+  ctx.request_repaint_of(ROOT) (secondaries render inside the root
+  pass); ipc/server.rs accept wakes likewise; cadence::next_deadline
+  schedules ONLY the next real need (cursor blink edge - square wave,
+  user-focused window only; blink-text edges; 50ms while a drag/resize
+  gesture is live; pane retry/reconnect backoff; EXIT_GRACE). Frame
+  snapshots are CACHED per Session (cache_valid; invalidate on pump,
+  resize, theme change, selection/viewport mutations - vt-pane
+  task.rs frame_cached/invalidate_frame, session_map::sync_frame) and
+  Frame.has_blink gates blink scheduling.
 - cell backgrounds paint as MERGED runs (render/bg_runs/ since 2026-09-23 split: row.rs classify, merge.rs interval-absorb, rect.rs bleed; 2026-09-22):
   one rect_filled PER CELL feathered a seam lattice (1/255/column at the
   cell pitch, vertical AND row boundaries) across every ANSI-bg region,

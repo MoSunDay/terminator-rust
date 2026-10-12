@@ -261,7 +261,7 @@ fn rollback(
             master_fd: dup.into_raw_fd(),
             child_pid: l.pid,
         };
-        let opts = session_map::adopt_opts(l.cols, l.rows, dark);
+        let opts = session_map::adopt_opts(l.cols, l.rows, dark, &data.sess.wake);
         match vtask::adopt_session(handle, snaps.get(i).and_then(|s| s.as_deref()), &opts) {
             Ok(sess) => session_map::note_spawned(&mut data.sess, l.id, sess),
             Err(e) => failed.push(format!("{}: {e}", l.id)),

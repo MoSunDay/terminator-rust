@@ -65,7 +65,7 @@ pub fn tab_offer(data: &mut Data, tab: MigrateTab, payload: &[u8], fds: Vec<Owne
             master_fd: fd.into_raw_fd(),
             child_pid: mp.pid,
         };
-        let opts = session_map::adopt_opts(mp.cols, mp.rows, dark);
+        let opts = session_map::adopt_opts(mp.cols, mp.rows, dark, &data.sess.wake);
         match vtask::adopt_session(handle, snaps.get(i).and_then(|s| s.as_deref()), &opts) {
             Ok(sess) => {
                 data.st.panes.insert(*id, meta_of(mp, &data.registry));

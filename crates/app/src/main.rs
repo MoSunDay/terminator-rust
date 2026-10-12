@@ -13,6 +13,8 @@ mod terminal_theme;
 mod ui;
 mod windows;
 
+use std::sync::Arc;
+
 use egui::ViewportBuilder;
 use log::warn;
 
@@ -39,10 +41,19 @@ impl Terminator {
         }
         let reg_path = remote::default_registry_path();
         let registry = remote::load_registry(&reg_path);
+        // The render loop is reactive (no repaint tick), so pty output and
+        // IPC requests must wake it from their threads. Secondary
+        // viewports render inside the root pass, so waking ROOT refreshes
+        // every window. `request_repaint` is thread-safe and coalesces.
+        let mut d = data(st, registry);
+        let wake_ctx = cc.egui_ctx.clone();
+        d.sess.wake = Some(Arc::new(move || {
+            wake_ctx.request_repaint_of(egui::ViewportId::ROOT)
+        }));
         Self {
-            data: data(st, registry),
+            data: d,
             path,
-            ipc: ipc::server::start(),
+            ipc: ipc::server::start(&cc.egui_ctx),
         }
     }
 

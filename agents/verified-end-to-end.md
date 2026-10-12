@@ -73,6 +73,16 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
 - remote keeper: isolated tests verify named attach, retained shell state,
   concurrent clients, listing, exit-42 degrade and no Zellij invocation.
   Current keeper-based SSH interruption has not been live verified.
+- reactive render loop (2026-10-12): idle 5s CPU 190 -> 22 ticks
+  (~38% -> ~4.4% of a core, cursor still blinking) measured via
+  /proc/<pid>/stat on the old vs new build; `terminator-ctl send` ->
+  `capture` marker round-trip 52ms from a fully idle loop (PTY reader
+  + IPC accept wakes both reach the ROOT viewport). Gate:
+  scripts/bin/e2e-idle-cpu.sh. Same session re-verified: e2e-notice,
+  e2e-ui-style, e2e-oc-exit, e2e-ipc-oc, e2e-mouse-key, e2e-cjk and
+  e2e-bg-seams K1-K5 all green (bg-seams re-pinned to the dracula
+  palette the 2026-09-27 sync installs - its old ghostty-default
+  color pins had drifted stale, failing K1/K4 on BOTH builds).
 - persistence: state.json save/restore across restart
 
 See [agents.md](../agents.md) for the crate map and the

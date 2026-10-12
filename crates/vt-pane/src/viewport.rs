@@ -25,16 +25,19 @@ pub fn page_delta(rows: u16, up: bool) -> isize {
 /// Scroll the viewport by signed `lines` (up = negative); the engine clamps.
 pub fn scroll_by(sess: &mut Session, lines: isize) {
     sess.term.scroll_viewport(ScrollViewport::Delta(lines));
+    crate::task::invalidate_frame(sess);
 }
 
 /// Jump to the top of the scrollback history.
 pub fn scroll_top(sess: &mut Session) {
     sess.term.scroll_viewport(ScrollViewport::Top);
+    crate::task::invalidate_frame(sess);
 }
 
 /// Return to the live area (what follow_output does after typing).
 pub fn scroll_bottom(sess: &mut Session) {
     sess.term.scroll_viewport(ScrollViewport::Bottom);
+    crate::task::invalidate_frame(sess);
 }
 
 /// Viewport pinned to the live area (false = user scrolled into history).

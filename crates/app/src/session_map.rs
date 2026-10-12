@@ -11,7 +11,7 @@ use anyhow::Result;
 use layout_tree::PaneId;
 use log::warn;
 use remote::{remote_plan, PaneKind, SpawnPlan};
-use vt_pane::{task as vtask, Frame as VtFrame, Session, SessionOpts};
+use vt_pane::{task as vtask, Frame as VtFrame, Session, SessionOpts, Wake};
 
 use crate::render::colors;
 use crate::state::{compute_grid, CellSize, PaneMeta};
@@ -22,6 +22,10 @@ pub const START_ROWS: u16 = 24;
 
 pub struct SessionMap {
     pub map: HashMap<PaneId, Session>,
+    /// Reader-thread wakeup injected into every spawned/adopted session
+    /// (egui `request_repaint`): pty output wakes the render loop, so no
+    /// polling tick is needed. Set once at app startup.
+    pub wake: Option<Wake>,
     /// Earliest allowed re-spawn per pane after a spawn failure (backoff).
     pub retry_at: HashMap<PaneId, Instant>,
     /// First moment each pane's EXITED session was seen; auto-close waits
@@ -48,6 +52,7 @@ pub const EXIT_GRACE: Duration = Duration::from_millis(250);
 pub fn session_map() -> SessionMap {
     SessionMap {
         map: HashMap::new(),
+        wake: None,
         retry_at: HashMap::new(),
         exited_seen: HashMap::new(),
         reconnect_at: HashMap::new(),
@@ -100,7 +105,7 @@ pub fn detach(sess: &mut SessionMap, id: PaneId) {
 /// Options for ADOPTING an existing session rather than spawning one:
 /// `argv`/`env` are unused past the fork, so only the terminal-facing
 /// policy (size, scrollback, color-scheme answer) is carried over.
-pub fn adopt_opts(cols: u16, rows: u16, dark: bool) -> SessionOpts {
+pub fn adopt_opts(cols: u16, rows: u16, dark: bool, wake: &Option<Wake>) -> SessionOpts {
     SessionOpts {
         cols,
         rows,
@@ -108,6 +113,7 @@ pub fn adopt_opts(cols: u16, rows: u16, dark: bool) -> SessionOpts {
         env: Vec::new(),
         scrollback_lines: 10_000,
         dark,
+        wake: wake.clone(),
     }
 }
 
@@ -132,7 +138,14 @@ fn local_plan() -> SpawnPlan {
     }
 }
 
-fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool, pane: PaneId) -> SessionOpts {
+fn opts(
+    plan: &SpawnPlan,
+    cols: u16,
+    rows: u16,
+    dark: bool,
+    pane: PaneId,
+    wake: &Option<Wake>,
+) -> SessionOpts {
     let mut env = plan.env.clone();
     env.push(format!("{}={pane}", ipc_proto::ENV_PANE_ID));
     if let Ok(path) = std::env::current_exe() {
@@ -148,6 +161,7 @@ fn opts(plan: &SpawnPlan, cols: u16, rows: u16, dark: bool, pane: PaneId) -> Ses
         env,
         scrollback_lines: 10_000,
         dark,
+        wake: wake.clone(),
     }
 }
 
@@ -161,17 +175,18 @@ pub fn spawn_meta(
     cols: u16,
     rows: u16,
     pane: PaneId,
+    wake: &Option<Wake>,
 ) -> Result<Session> {
     let dark = colors::is_dark(theme_name);
     match &meta.kind {
-        PaneKind::Local => vtask::spawn_session(&opts(&local_plan(), cols, rows, dark, pane)),
+        PaneKind::Local => vtask::spawn_session(&opts(&local_plan(), cols, rows, dark, pane, wake)),
         PaneKind::Remote(target) => {
             if meta.degraded {
                 let plan = remote_plan(target, false);
-                vtask::spawn_session(&opts(&plan, cols, rows, dark, pane))
+                vtask::spawn_session(&opts(&plan, cols, rows, dark, pane, wake))
             } else {
                 let plan = remote_plan(target, true);
-                vtask::spawn_session(&opts(&plan, cols, rows, dark, pane))
+                vtask::spawn_session(&opts(&plan, cols, rows, dark, pane, wake))
             }
         }
     }
@@ -194,26 +209,24 @@ pub fn pump_all(sess: &mut SessionMap) -> Vec<PaneId> {
 }
 
 /// Pump one session, resize the terminal to the content area if needed and
-/// return the render snapshot.
-pub fn sync_frame(sess: &mut Session, w: f32, h: f32, cell: CellSize) -> VtFrame {
+/// return the render snapshot (cached between changes - see
+/// `vtask::frame_cached` - so idle frames cost no snapshot churn).
+pub fn sync_frame(sess: &mut Session, w: f32, h: f32, cell: CellSize) -> &VtFrame {
     if let Err(e) = vtask::pump(sess) {
         warn!("pump: {e}");
     }
     let (cols, rows) = compute_grid(w, h, cell.w, cell.h);
-    let cur = match vtask::frame(sess) {
-        Ok(f) => f,
-        Err(e) => {
-            warn!("frame: {e}");
-            return VtFrame::default();
-        }
+    let stale_grid = {
+        let cur = vtask::frame_cached(sess);
+        cur.cols != cols || cur.rows != rows
     };
-    if cur.cols != cols || cur.rows != rows {
+    if stale_grid {
         if let Err(e) = vtask::resize(sess, cols, rows, cell.w_px, cell.h_px) {
             warn!("resize: {e}");
         }
-        return vtask::frame(sess).unwrap_or_default();
+        vtask::invalidate_frame(sess);
     }
-    cur
+    vtask::frame_cached(sess)
 }
 
 /// OSC 0/2 title of a pane's session ("" when absent).
@@ -327,12 +340,12 @@ mod tests {
             manual_title: None,
             degraded: false,
         };
-        assert!(spawn_meta(&meta, "dracula", 10, 5, 1).is_ok());
+        assert!(spawn_meta(&meta, "dracula", 10, 5, 1, &None).is_ok());
     }
 
     #[test]
     fn local_pane_exports_its_notice_identity() {
-        let opts = opts(&local_plan(), 80, 24, true, 42);
+        let opts = opts(&local_plan(), 80, 24, true, 42, &None);
         let shell = SessionOpts::local_shell(80, 24);
         assert_eq!(opts.argv, shell.argv);
         assert!(opts.env.contains(&format!("SHELL={}", opts.argv[0])));

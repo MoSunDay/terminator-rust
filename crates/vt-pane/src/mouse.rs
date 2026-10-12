@@ -299,6 +299,7 @@ pub fn send_wheel(
         WheelRoute::Viewport => {
             if let Some(delta) = wheel_delta(lines) {
                 sess.term.scroll_viewport(ScrollViewport::Delta(delta));
+                vtask::invalidate_frame(sess);
             }
         }
     }
@@ -308,12 +309,14 @@ pub fn send_wheel(
 /// Clear the active selection (mouse-grabbing apps own the screen).
 pub fn clear_selection(sess: &mut Session) {
     let _ = sess.term.set_selection(None);
+    vtask::invalidate_frame(sess);
 }
 
 /// Snap the viewport back to the live area if the user had scrolled up.
 pub fn follow_output(sess: &mut Session) {
     if !sess.term.viewport_active().unwrap_or(true) {
         sess.term.scroll_viewport(ScrollViewport::Bottom);
+        vtask::invalidate_frame(sess);
     }
 }
 
@@ -333,6 +336,7 @@ pub fn select_press(sess: &mut Session, x: f32, y: f32) -> Result<()> {
         .set_position(f64::from(x), f64::from(y))?
         .apply(gesture, &sess.term, grid_ref)?;
     sess.term.set_selection(sel.as_ref())?;
+    vtask::invalidate_frame(sess);
     Ok(())
 }
 
@@ -359,6 +363,7 @@ pub fn select_drag(sess: &mut Session, x: f32, y: f32, rectangle: bool) -> Resul
         .set_rectangle(rectangle)?
         .apply(&mut sess.pointer.gesture, &sess.term, grid_ref, geometry)?;
     sess.term.set_selection(sel.as_ref())?;
+    vtask::invalidate_frame(sess);
     Ok(())
 }
 
@@ -372,6 +377,7 @@ pub fn select_release(sess: &mut Session, x: f32, y: f32) -> Result<()> {
     sess.pointer
         .release
         .apply(&mut sess.pointer.gesture, &sess.term, grid_ref)?;
+    vtask::invalidate_frame(sess);
     Ok(())
 }
 

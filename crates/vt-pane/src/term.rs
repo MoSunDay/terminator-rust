@@ -85,6 +85,9 @@ pub struct Frame {
     pub default_bg: Color,
     pub cursor_color: Option<Color>,
     pub cells: Vec<Vec<CellData>>,
+    /// Some cell carries the blink attribute: the renderer must keep
+    /// scheduling blink edges for this pane even without new output.
+    pub has_blink: bool,
 }
 
 /// Read one cell iteration into plain data.
@@ -151,6 +154,7 @@ pub fn snapshot_frame(
         default_bg: colors.background.into(),
         cursor_color: snapshot.cursor_color()?.map(Color::from),
         cells: Vec::with_capacity(rows as usize),
+        has_blink: false,
     };
 
     let mut rows_iter: RowIteration<'_, '_> = row_it.update(&snapshot)?;
@@ -158,7 +162,9 @@ pub fn snapshot_frame(
         let mut row_cells = Vec::with_capacity(cols as usize);
         let mut cells: CellIteration<'_, '_> = cell_it.update(row)?;
         while let Some(cell) = cells.next() {
-            row_cells.push(cell_data(cell));
+            let data = cell_data(cell);
+            frame.has_blink |= data.blink;
+            row_cells.push(data);
         }
         frame.cells.push(row_cells);
     }

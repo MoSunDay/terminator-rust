@@ -159,15 +159,18 @@ import os, sys
 from collections import Counter
 from PIL import Image
 
-# Dracula pane bg (theme), and the libghostty default ANSI palette the
-# VT engine resolves SGR 41/44/48;5;208/45 into (exact-revision pinned).
+# Dracula pane bg + ANSI slots: terminal_theme installs the theme's
+# 256-color palette into the VT engine (2026-09-27 sync), so SGR
+# 41/44/45 resolve through DRACULA and 48;5;208 through the shared
+# xterm cube. Values probed live on the dracula preset; re-pin only
+# after a deliberate palette/sync change.
 PANE_BG = (40, 42, 54)
 BANDS = [
-    ("red", (204, 102, 102)),    # SGR 41
-    ("blue", (129, 162, 190)),   # SGR 44
-    ("orange", (255, 135, 0)),   # SGR 48;5;208
+    ("red", (255, 85, 85)),      # SGR 41  (dracula red)
+    ("blue", (189, 147, 249)),   # SGR 44  (dracula purple in the blue slot)
+    ("orange", (255, 135, 0)),   # SGR 48;5;208 (cube, palette-independent)
 ]
-MAGENTA = (178, 148, 187)     # SGR 45 (pinned from a probe run)
+MAGENTA = (255, 121, 198)     # SGR 45 (dracula pink, probed)
 
 def close(p, e, tol):
     return all(abs(a - b) <= tol for a, b in zip(p, e))
@@ -319,7 +322,7 @@ from collections import Counter
 from PIL import Image
 
 PANE_BG = (40, 42, 54)
-RED = (204, 102, 102)     # SGR 41, same pin as K1
+RED = (255, 85, 85)      # SGR 41 -> dracula red, same pin as K1
 
 def close(p, e, tol):
     return all(abs(a - b) <= tol for a, b in zip(p, e))

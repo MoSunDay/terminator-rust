@@ -12,8 +12,11 @@ pub const R_LG: u8 = 10;
 
 /// Hover fade duration (seconds).
 pub const FADE_S: f32 = 0.12;
-/// Cursor blink period (seconds), matching the legacy duty cycle.
+/// Cursor blink period (seconds).
 pub const CURSOR_PERIOD_S: f32 = 2.0;
+/// Cursor blink on-time (seconds) within [`CURSOR_PERIOD_S`]: 1.2s on,
+/// 0.8s off - the classic terminal duty cycle.
+pub const CURSOR_ON_S: f32 = 1.2;
 
 /// Kinds of floating layers that carry an elevation shadow.
 #[derive(Clone, Copy)]
@@ -66,11 +69,15 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
-/// Cursor visibility alpha at time `t` (seconds): a sine soft-blink, or
-/// the legacy 1.2s-of-2s square duty cycle when motion is disabled.
+/// Cursor visibility alpha at time `t` (seconds): a square-wave blink
+/// (1.2s on / 0.8s off per 2s), matching the blink-attribute text duty
+/// cycle and mainstream terminals. Square edges keep the next blink
+/// moment schedulable - `render::cadence` computes the exact wakeup
+/// instead of re-rendering continuously (a soft sine never rests).
 pub fn cursor_alpha(t: f32) -> f32 {
-    if !motion_enabled() {
-        return if (t * 2.0) % 2.0 < 1.2 { 1.0 } else { 0.0 };
+    if t.rem_euclid(CURSOR_PERIOD_S) < CURSOR_ON_S {
+        1.0
+    } else {
+        0.0
     }
-    0.5 + 0.5 * (t * std::f32::consts::TAU / CURSOR_PERIOD_S + std::f32::consts::FRAC_PI_2).sin()
 }
