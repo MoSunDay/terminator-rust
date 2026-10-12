@@ -74,7 +74,22 @@ fn panel(s: &State, window: Window) -> Result<Option<Rect>> {
     )))
 }
 
-fn repair(s: &mut State, local_caret: Rect) -> Result<()> {
+/// Monitor containing `caret` (root px); `None` when RandR lists none.
+fn monitor_of(s: &State, caret: &Rect) -> Result<Option<Rect>> {
+    let monitors = randr::get_monitors(&s.conn, s.root, true)?.reply()?;
+    Ok(monitors
+        .monitors
+        .iter()
+        .map(|m| {
+            Rect::from_min_size(
+                pos2(f32::from(m.x), f32::from(m.y)),
+                vec2(f32::from(m.width), f32::from(m.height)),
+            )
+        })
+        .find(|m| m.contains(caret.center())))
+}
+
+fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<()> {
     let focus = s.conn.get_input_focus()?.reply()?.focus;
     if focus == 0 || focus == 1 {
         return Ok(());
@@ -116,21 +131,18 @@ fn repair(s: &mut State, local_caret: Rect) -> Result<()> {
         return Ok(());
     };
     s.candidate = Some(window);
-    if bounds.bottom() <= caret.top() || bounds.top() >= caret.bottom() {
-        return Ok(());
-    }
-    let monitors = randr::get_monitors(&s.conn, s.root, true)?.reply()?;
-    let monitor = monitors
-        .monitors
-        .iter()
-        .map(|m| {
-            Rect::from_min_size(
-                pos2(f32::from(m.x), f32::from(m.y)),
-                vec2(f32::from(m.width), f32::from(m.height)),
-            )
-        })
-        .find(|m| m.contains(caret.center()));
-    if let Some(target) = monitor.and_then(|m| avoid_row(caret, bounds, m)) {
+    // Overlap repair always applies; a panel parked far from the caret
+    // row (XIM servers that ignore the spot under preedit callbacks,
+    // libX11 bug 1580) is pulled next to the row while composing.
+    let monitor = monitor_of(s, &caret)?;
+    let target = if bounds.bottom() > caret.top() && bounds.top() < caret.bottom() {
+        monitor.and_then(|m| avoid_row(caret, bounds, m))
+    } else if composing {
+        monitor.and_then(|m| super::popup::follow_row(caret, bounds, m))
+    } else {
+        None
+    };
+    if let Some(target) = target {
         s.conn
             .configure_window(
                 window,
@@ -153,7 +165,7 @@ pub fn sync(ctx: &Context, caret: Rect, composing: bool) {
     }
     STATE.with(|state| {
         if let Some(state) = state.borrow_mut().as_mut() {
-            let _ = repair(state, caret * ctx.pixels_per_point());
+            let _ = repair(state, caret * ctx.pixels_per_point(), composing);
             // The IME's window may map after the frame containing Preedit.
             if composing {
                 ctx.request_repaint_after(Duration::from_millis(16));

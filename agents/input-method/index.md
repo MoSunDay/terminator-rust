@@ -30,4 +30,13 @@ X11 只使用候选位置矩形的起点，所以报告光标单元格左下角�
 - `render/preedit.rs` 的绘制测试：底色顺序和透明度、单双宽范围、长文本裁剪、清空后无残留。
 - [VT 边界测试](../../crates/vt-pane/src/term/tests.rs) 和 placement 测试：精确行尾、宽字符提前换行、DECAWM 关闭、末行预览与取消；popup 测试覆盖实际高度及负坐标显示器。
 - [e2e-ime.sh](../../scripts/bin/e2e-ime.sh)：Xvfb + dbus + ibus/libpinyin 真 XIM 输入，覆盖遮挡与取消恢复的像素检查、提交、重命名及英文切换。使用独立 HOME、D-Bus 和可见的原生面板；M3c 验证延迟回显，M3d 验证隐藏/换行/底部/缩放，M3e 验证精确行尾/宽字符/末行的像素保留、取消和实际提交。`--bundle DIRECTORY` 直接验收发布包二进制。任何失败使整套非零退出；裸 Xvfb 不能验证组合输入。
+- XIM spot 陷阱（2026-10-12，本机实测）：libX11 在 preedit callback
+  风格（winit 协商的正是这种）下 IGNORE `XNSpotLocation`
+  （freedesktop bug 1580，winit `ime/context.rs` 源码注释自述），
+  ibus 候选面板停靠在窗口左下角且 `XSetICValues` 无法移动——本机
+  libX11 1.7.5 必现（xterm 无 callback、spot 正常，可作对照），
+  2026-10-07 的 M2 绿灯记录来自 libX11 1.8.12 的另一台机器。
+  修复：`ime/popup.rs::follow_row` + `x11.rs::repair(composing)`——
+  组合期间把距插入行 >24px 的停摆面板搬到 caret.bottom()+1px（下方
+  放不下则上方），已贴行的面板不动（不打架原生定位）。
 - [测试索引](../e2e-suites.md)；[已实测能力](../verified-end-to-end.md)。原生窗口实测覆盖 IBus；Fcitx 尚无同等级运行证据。macOS 原生候选窗仍需实机验证，Linux XIM 与交叉编译不能代替。
