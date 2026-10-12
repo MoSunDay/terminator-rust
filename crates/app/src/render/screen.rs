@@ -1,6 +1,6 @@
 //! Per-frame rendering: pane layout, headers, terminal grids, chrome.
 
-use std::time::Duration;
+use std::time::Instant;
 
 use egui::{Color32, CornerRadius, Rect, Stroke, StrokeKind, Ui};
 use layout_tree::{content_rect, layout_tab, PaneId};
@@ -8,7 +8,7 @@ use remote::PaneKind;
 
 use crate::actions;
 use crate::input::{ime, mouse, pointer, resize};
-use crate::render::{colors, dropzone, grid, preedit, tokens};
+use crate::render::{cadence, colors, dropzone, grid, preedit, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W};
 use crate::ui::chrome;
@@ -169,8 +169,19 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         w.ui.ime_pane = None;
     }
     let frame_time = ctx.input(|i| i.time) as f32;
-    let cursor_a = tokens::cursor_alpha(frame_time);
+    // Blink scheduling only pays for the user-focused window; every other
+    // window draws a steady cursor (mainstream terminal behavior).
+    let user_focused = st.focus == st.active;
+    let cursor_a = if user_focused {
+        tokens::cursor_alpha(frame_time)
+    } else {
+        1.0
+    };
     let blink_on = frame_time.rem_euclid(1.0) < 0.5;
+    // Collected during the pane loop to schedule the next wakeup (see
+    // cadence): which frames need blink edges at all.
+    let mut blink_text = false;
+    let mut cursor_blink = false;
     let painter = ui.painter().clone();
     let rects = pane_rects(st, area, m.header_h);
     // Uniform pane appearance: one opaque bg + one fill alpha for every
@@ -211,12 +222,19 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         let dead = sess.map.get(&pane).is_none_or(|s| s.exit.is_some());
         match sess.map.get_mut(&pane) {
             Some(s) if s.exit.is_none() => {
+                // Read-only viewport queries first: `fr` keeps the session
+                // borrow until the end of this arm.
+                let vp_pinned = vt_pane::viewport::pinned(s);
+                let vp_geo = vt_pane::viewport::geometry(s);
                 let fr = session_map::sync_frame(s, content.width(), content.height(), cell);
                 let text = st.win().and_then(|w| w.ui.ime.clone());
                 let composing =
                     Some(pane) == focused && text.as_deref().is_some_and(|t| !t.is_empty());
                 let span = preedit::first_span(ui.ctx(), text.as_deref(), cell, font_size);
-                let shown = preedit::placement::preview(&fr, composing, span);
+                blink_text |= fr.has_blink;
+                cursor_blink =
+                    user_focused && Some(pane) == focused && fr.cursor.visible && !composing;
+                let shown = preedit::placement::preview(fr, composing, span);
                 grid::draw_frame(
                     &painter,
                     content,
@@ -235,8 +253,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                     },
                 );
                 // Scrollback review indicator over the grid, right edge.
-                if Some(pane) == focused && !vt_pane::viewport::pinned(s) {
-                    if let Some(geo) = vt_pane::viewport::geometry(s) {
+                if Some(pane) == focused && !vp_pinned {
+                    if let Some(geo) = vp_geo {
                         draw_viewport_bar(
                             &painter,
                             content,
@@ -259,7 +277,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 // Late commit echoes and resize updates must move both the
                 // preedit and native candidates to the actual insertion point.
                 if Some(pane) == focused {
-                    let live = preedit::placement::cursor_rect(content, &fr, cell, span);
+                    let live = preedit::placement::cursor_rect(content, fr, cell, span);
                     let (anchor, latch) =
                         ime::pane_anchor(composing, live, st.win().and_then(|w| w.ui.ime_anchor));
                     if let Some(w) = st.win_mut() {
@@ -449,15 +467,22 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         }
     }
 
-    // Follow active TUI frames promptly; keep idle panes on the cheaper
-    // cadence while retaining cursor blink and PTY output polling.
-    let active = sess
-        .map
-        .values()
-        .any(|s| s.last_output.elapsed() < Duration::from_millis(500));
-    ctx.request_repaint_after(if active {
-        Duration::from_millis(16)
-    } else {
-        Duration::from_millis(50)
-    });
+    // Reactive cadence: request exactly the next frame the UI needs
+    // (blink edges, backoff/grace deadlines, live gestures). No deadline
+    // = no repaint request: an idle terminal costs zero CPU, with pty
+    // output and IPC requests waking the loop on demand. Secondary
+    // viewports render inside the root pass, so waking ROOT refreshes
+    // every window.
+    let interacting = dragging
+        || pane_drag.is_some()
+        || edge.is_some()
+        || st.win().is_some_and(|w| w.ui.tab_drag.is_some());
+    let needs = cadence::Needs {
+        cursor_blink,
+        blink_text,
+        interacting,
+    };
+    if let Some(wait) = cadence::next_deadline(Instant::now(), frame_time, sess, needs) {
+        ctx.request_repaint_after_for(wait, egui::ViewportId::ROOT);
+    }
 }

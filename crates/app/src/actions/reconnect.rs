@@ -113,6 +113,7 @@ mod tests {
             env: Vec::new(),
             scrollback_lines: 100,
             dark: true,
+            wake: None,
         };
         let mut s = vtask::spawn_session(&opts).expect("spawn sh");
         for _ in 0..250 {

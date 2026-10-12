@@ -50,6 +50,7 @@ pub(crate) fn spawn_pane(st: &AppState, sess: &mut SessionMap, id: PaneId) {
             session_map::START_COLS,
             session_map::START_ROWS,
             id,
+            &sess.wake,
         ) {
             Ok(s) => session_map::note_spawned(sess, id, s),
             Err(e) => {
@@ -262,6 +263,7 @@ pub fn do_respawn(st: &mut AppState, sess: &mut SessionMap, pane: PaneId, dirty:
             session_map::START_COLS,
             session_map::START_ROWS,
             pane,
+            &sess.wake,
         ) {
             Ok(s) => session_map::note_spawned(sess, pane, s),
             Err(e) => {
@@ -303,6 +305,7 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
                 session_map::START_COLS,
                 session_map::START_ROWS,
                 id,
+                &sess.wake,
             ) {
                 session_map::note_spawned(sess, id, s);
             }
@@ -603,6 +606,7 @@ mod close_exited_tests {
             env: Vec::new(),
             scrollback_lines: 100,
             dark: true,
+            wake: None,
         };
         let mut s = vtask::spawn_session(&opts).expect("spawn sh");
         for _ in 0..250 {

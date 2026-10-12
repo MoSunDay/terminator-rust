@@ -2,10 +2,10 @@
 //!
 //! The listener thread never touches app state: requests cross an mpsc
 //! channel as [`Command`]s and are serviced on the UI thread by [`drain`],
-//! which sends the response back over the per-request reply channel. No
-//! context wakeup is needed (a detached `egui::Context` cannot wake the
-//! real UI anyway): render/screen.rs repaints unconditionally every 50 ms,
-//! so `drain` runs at >=20 Hz and the 5 s reply timeout is ample.
+//! which sends the response back over the per-request reply channel. The
+//! render loop is reactive (no repaint tick), so the listener wakes the
+//! UI with `egui::Context::request_repaint` the moment a request is
+//! accepted: `drain` runs on the very next frame.
 //!
 //! Migration requests carry more than a line: the sender attaches one
 //! SCM_RIGHTS fd per pane leaf to the header message and follows it with
@@ -117,7 +117,7 @@ fn bind_at(path: &Path) -> Option<UnixListener> {
 /// nested launch must not lose IPC just because the parent owns the
 /// shared name. Best-effort throughout: `None` (and logs) when nothing
 /// binds; the app runs fine without IPC.
-pub fn start() -> Option<Ipc> {
+pub fn start(ctx: &egui::Context) -> Option<Ipc> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(p) = std::env::var_os(ipc_proto::ENV_SOCKET) {
         if !p.is_empty() {
@@ -128,7 +128,7 @@ pub fn start() -> Option<Ipc> {
     candidates.push(paths::runtime_dir().join(format!("ipc-{}.sock", std::process::id())));
     candidates.dedup();
     for path in candidates {
-        if let Some(ipc) = start_at(path) {
+        if let Some(ipc) = start_at(path, ctx) {
             return Some(ipc);
         }
     }
@@ -139,7 +139,7 @@ pub fn start() -> Option<Ipc> {
 /// Core of [`start`] at one fixed path; split out so tests can pick their
 /// own socket location. `None` when the path is owned by a live instance
 /// or anything else fails on the way to a running listener.
-pub(crate) fn start_at(path: PathBuf) -> Option<Ipc> {
+pub(crate) fn start_at(path: PathBuf, ctx: &egui::Context) -> Option<Ipc> {
     let listener = bind_at(&path)?;
     let (tx, rx) = mpsc::channel::<Command>();
     let stop = Arc::new(AtomicBool::new(false));
@@ -151,7 +151,8 @@ pub(crate) fn start_at(path: PathBuf) -> Option<Ipc> {
         .name("ipc-socket".to_string())
         .spawn({
             let stop = Arc::clone(&stop);
-            move || listen(listener, tx, stop)
+            let ctx = ctx.clone();
+            move || listen(listener, tx, stop, ctx)
         })
         .map_err(|e| warn!("ipc: spawn listener: {e}, control disabled"));
     let thread = match spawned {
@@ -168,10 +169,10 @@ pub(crate) fn start_at(path: PathBuf) -> Option<Ipc> {
 }
 
 /// Accept loop: parks on `WouldBlock` in 50 ms slices so `Drop` can stop it.
-fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>) {
+fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>, ctx: egui::Context) {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, _)) => serve(stream, &tx),
+            Ok((stream, _)) => serve(stream, &tx, &ctx),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(POLL),
             Err(e) => {
                 warn!("ipc: accept: {e}");
@@ -183,7 +184,10 @@ fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>) {
 
 /// Read one request exchange, hand it to the UI thread and write the
 /// response back as one JSON line.
-fn serve(stream: UnixStream, tx: &Sender<Command>) {
+fn serve(stream: UnixStream, tx: &Sender<Command>, ctx: &egui::Context) {
+    // Wake the reactive render loop: without a repaint tick, `drain` on
+    // the UI thread would otherwise wait for the next input event.
+    ctx.request_repaint_of(egui::ViewportId::ROOT);
     // Accepted sockets may inherit non-blocking mode; blocking + timeouts
     // is what a request/response exchange wants.
     let _ = stream.set_nonblocking(false);
@@ -385,13 +389,17 @@ mod tests {
         let path = tmpsock("bind");
         // Stale file from a SIGTERM'd instance: reclaimed on bind.
         std::fs::write(&path, b"").unwrap();
-        let first = start_at(path.clone()).expect("stale socket reclaimed");
+        let first =
+            start_at(path.clone(), &egui::Context::default()).expect("stale socket reclaimed");
         assert!(path.exists());
         // A live owner answers the probe: a second bind must fail.
-        assert!(start_at(path.clone()).is_none(), "double bind refused");
+        assert!(
+            start_at(path.clone(), &egui::Context::default()).is_none(),
+            "double bind refused"
+        );
         // Dropping the first removes its socket file; a rebind works.
         drop(first);
-        let second = start_at(path.clone()).expect("rebind after drop");
+        let second = start_at(path.clone(), &egui::Context::default()).expect("rebind after drop");
         drop(second);
         assert!(!path.exists(), "Drop removes the socket file");
     }
@@ -399,7 +407,7 @@ mod tests {
     #[test]
     fn tab_offer_roundtrips_fds_and_payload() {
         let path = tmpsock("offer");
-        let ipc = start_at(path.clone()).expect("start_at binds");
+        let ipc = start_at(path.clone(), &egui::Context::default()).expect("start_at binds");
         let tab = ipc_proto::migrate::MigrateTab {
             title: "work".into(),
             focused: None,
@@ -431,7 +439,7 @@ mod tests {
     #[test]
     fn plain_request_carries_no_fds() {
         let path = tmpsock("plain");
-        let ipc = start_at(path.clone()).expect("start_at binds");
+        let ipc = start_at(path.clone(), &egui::Context::default()).expect("start_at binds");
         let mut stream = UnixStream::connect(&path).unwrap();
         stream.write_all(b"{\"cmd\":\"list\"}\n").unwrap();
 
@@ -449,7 +457,7 @@ mod tests {
     #[test]
     fn truncated_tab_offer_does_not_kill_the_listener() {
         let path = tmpsock("trunc");
-        let ipc = start_at(path.clone()).expect("start_at binds");
+        let ipc = start_at(path.clone(), &egui::Context::default()).expect("start_at binds");
         let tab = ipc_proto::migrate::MigrateTab {
             title: "t".into(),
             focused: None,

@@ -284,6 +284,7 @@ mod tests {
             env: vec![],
             scrollback_lines: 100,
             dark: true,
+            wake: None,
         };
         let sess = match vtask::spawn_session(&opts) {
             Ok(s) => s,
@@ -340,6 +341,7 @@ mod tests {
             env: vec![],
             scrollback_lines: 100,
             dark: true,
+            wake: None,
         };
         let sess = match vtask::spawn_session(&opts) {
             Ok(s) => s,

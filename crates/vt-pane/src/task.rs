@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use libghostty_vt::key::{Action, Encoder as KeyEncoder, Event as KeyEvent, Mods};
@@ -27,8 +27,14 @@ pub enum PtyEvent {
     Exit(i32),
 }
 
+/// Fired by the pty reader thread the moment output or an exit crosses
+/// to the UI side, so a reactive render loop can wake up instead of
+/// polling. Injected by the app as an egui `request_repaint` closure;
+/// vt-pane itself stays egui-free.
+pub type Wake = Arc<dyn Fn() + Send + Sync>;
+
 /// How to spawn a pane's process.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SessionOpts {
     pub cols: u16,
     pub rows: u16,
@@ -40,6 +46,22 @@ pub struct SessionOpts {
     /// Answers light/dark for terminal color-scheme queries
     /// (CSI ? 996 n); linked to the active theme.
     pub dark: bool,
+    /// Reader-thread wakeup; `None` in tests and library use.
+    pub wake: Option<Wake>,
+}
+
+impl std::fmt::Debug for SessionOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionOpts")
+            .field("cols", &self.cols)
+            .field("rows", &self.rows)
+            .field("argv", &self.argv)
+            .field("env", &self.env)
+            .field("scrollback_lines", &self.scrollback_lines)
+            .field("dark", &self.dark)
+            .field("wake", &self.wake.as_ref().map(|_| "Some(..)"))
+            .finish()
+    }
 }
 
 impl SessionOpts {
@@ -53,6 +75,7 @@ impl SessionOpts {
             env: vec![format!("SHELL={shell}")],
             scrollback_lines: 10_000,
             dark: true,
+            wake: None,
         }
     }
 
@@ -65,6 +88,7 @@ impl SessionOpts {
             env: Vec::new(),
             scrollback_lines: 10_000,
             dark: true,
+            wake: None,
         }
     }
 }
@@ -92,8 +116,11 @@ pub struct Session {
     key_event: KeyEvent<'static>,
     /// Non-empty once the child has exited / the master closed.
     pub exit: Option<i32>,
-    /// Time of the most recent PTY output, used to keep active TUIs smooth.
-    pub last_output: Instant,
+    /// Cached render snapshot (see [`frame_cached`]): rebuilt lazily after
+    /// pty bytes, a resize, selection/viewport edits or a theme sync, so
+    /// an idle frame costs no ghostty traversal + allocation churn.
+    pub(crate) cache: Frame,
+    pub(crate) cache_valid: bool,
     /// Current cell pixel size, shared with the size-query effect.
     cell_px: CellPx,
     /// Set by the desktop-notification effect (OSC 9/777); drained once
@@ -207,12 +234,13 @@ fn assemble(
     let (tx, rx) = channel::<PtyEvent>();
     let read_fd = handle.master_fd;
     let pid = handle.child_pid;
+    let wake = opts.wake.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_reader = Arc::clone(&stop);
     let closed_reader = Arc::clone(&closed);
     thread::Builder::new()
         .name("pty-reader".to_string())
-        .spawn(move || reader_loop(read_fd, pid, stop_reader, closed_reader, tx))
+        .spawn(move || reader_loop(read_fd, pid, stop_reader, closed_reader, tx, wake))
         .context("spawning reader thread")?;
 
     Ok(Session {
@@ -227,7 +255,8 @@ fn assemble(
         key_encoder,
         key_event,
         exit: None,
-        last_output: Instant::now(),
+        cache: Frame::default(),
+        cache_valid: false,
         cell_px,
         notice,
         clipboard,
@@ -272,7 +301,15 @@ fn reader_loop(
     stop: Arc<AtomicBool>,
     closed: Arc<AtomicBool>,
     tx: std::sync::mpsc::Sender<PtyEvent>,
+    wake: Option<Wake>,
 ) {
+    // Wake the UI side (coalesced by the callback itself) whenever an
+    // event actually crossed, so a reactive loop needs no polling tick.
+    let woke = |wake: &Option<Wake>| {
+        if let Some(w) = wake.as_ref() {
+            w();
+        }
+    };
     let mut buf = [0u8; 8192];
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -291,6 +328,7 @@ fn reader_loop(
                 continue;
             }
             let _ = tx.send(PtyEvent::Exit(-1));
+            woke(&wake);
             break;
         }
         if rc == 0 {
@@ -305,12 +343,14 @@ fn reader_loop(
             {
                 break; // receiver dropped: session is gone
             }
+            woke(&wake);
             continue;
         }
         if n == 0 || io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::EIO {
             // EOF or EIO: child side closed.
             let status = reap_exit_status(pid, 0);
             let _ = tx.send(PtyEvent::Exit(status));
+            woke(&wake);
             break;
         }
         if io::Error::last_os_error().raw_os_error().unwrap_or(0) == libc::EINTR {
@@ -318,6 +358,7 @@ fn reader_loop(
         }
         let status = reap_exit_status(pid, -1);
         let _ = tx.send(PtyEvent::Exit(status));
+        woke(&wake);
         break;
     }
     // Publish the close BEFORE dropping the fd, so guarded writers bail
@@ -467,17 +508,19 @@ fn restore_terminal(snap: Option<&[u8]>, opts: &SessionOpts) -> Result<Terminal<
 
 /// Drain pty events into the terminal. Call once per UI frame.
 pub fn pump(sess: &mut Session) -> Result<()> {
+    let mut touched = false;
     loop {
         match sess.events.try_recv() {
             Ok(PtyEvent::Output(data)) => {
-                sess.last_output = Instant::now();
                 sess.term.vt_write(&data);
+                touched = true;
             }
             Ok(PtyEvent::Exit(status)) => {
                 if sess.exit.is_none() {
                     log::debug!("pty exit: {status}");
                 }
                 sess.exit = Some(status);
+                touched = true;
             }
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
@@ -487,6 +530,9 @@ pub fn pump(sess: &mut Session) -> Result<()> {
                 break;
             }
         }
+    }
+    if touched {
+        sess.cache_valid = false;
     }
     Ok(())
 }
@@ -509,6 +555,29 @@ pub fn frame(sess: &mut Session) -> Result<Frame> {
     )
 }
 
+/// The render snapshot, cached: rebuilt only after something visibly
+/// changed (pty bytes via [`pump`], [`resize`], selection/viewport edits
+/// or a theme sync invalidating via [`invalidate_frame`]). Rendering
+/// paths use this; `frame` stays the uncached fresh snapshot.
+pub fn frame_cached(sess: &mut Session) -> &Frame {
+    if !sess.cache_valid {
+        match frame(sess) {
+            Ok(f) => sess.cache = f,
+            Err(e) => {
+                log::warn!("frame snapshot: {e}");
+                sess.cache = Frame::default();
+            }
+        }
+        sess.cache_valid = true;
+    }
+    &sess.cache
+}
+
+/// Drop the cached snapshot; the next [`frame_cached`] rebuilds it.
+pub fn invalidate_frame(sess: &mut Session) {
+    sess.cache_valid = false;
+}
+
 /// Resize terminal + pty window. `cell_{w,h}_px` are font cell metrics.
 pub fn resize(
     sess: &mut Session,
@@ -521,6 +590,7 @@ pub fn resize(
         return Ok(());
     }
     sess.term.resize(cols, rows, cell_w_px, cell_h_px)?;
+    sess.cache_valid = false;
     // Keep the size-query effect answering with live geometry.
     *sess.cell_px.lock().unwrap_or_else(|e| e.into_inner()) = (cell_w_px, cell_h_px);
     pty::pty_resize(sess.handle.master_fd, cols, rows)
