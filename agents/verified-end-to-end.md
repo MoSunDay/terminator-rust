@@ -57,6 +57,13 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   pixels; last-row preview preserves 182, Escape restores the original
   image, and actual commit follows the previewed wrap (M3e).
   macOS native panel and Fcitx runtime behavior remain unverified.
+  2026-10-12 re-run on libX11 1.7.5 exposed a real gap the 1.8.12 box
+  hid: under preedit callbacks libX11 ignores XNSpotLocation (bug
+  1580) so the ibus panel parked bottom-left in BOTH old and new
+  builds (xterm reference proved the environment fine). Fixed by the
+  popup::follow_row parked-panel rescue (composing-only, 1px seam,
+  never fights a panel already near the row); e2e-ime M1-M7 ALL GREEN
+  on this box since, plus 2 new popup unit tests.
 - release installer: 8 isolated tests cover immutable versions, corruption,
   stale retries, crash-before/after-switch, rollback, and rejection before
   remote upload/install when candidate verification fails. A packed release
