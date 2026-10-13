@@ -95,3 +95,16 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
 
 See [agents.md](../agents.md) for the crate map and the
 hard-won facts behind these checks.
+- zero-downtime deploy via tab migration (2026-10-13, live on
+  192.168.31.196): deploy-remote.sh --keep-running installed the new
+  build (autostart/current switched, running instance untouched); a
+  second instance with TERMINATOR_SOCK=migrate.sock was launched on the
+  desktop DISPLAY, `terminator-ctl --socket OLD migrate <pane> --to NEW`
+  handed both tabs over (PTY masters via SCM_RIGHTS; the three running
+  opencode TUIs - 51%/66%/25% ctx act threads - kept their child PIDs
+  and live status bars through the move), then the emptied old instance
+  (only its auto-respawned idle tab left) was SIGTERMed by exact PID.
+  End state: one process, exe = the new release dir, sessions intact.
+  Note: the migrated session's instance runs on migrate.sock until the
+  next login; autostart launches on the default ipc.sock (stale socket
+  files are reclaimed by the next start).
