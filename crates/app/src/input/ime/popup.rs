@@ -53,6 +53,33 @@ pub fn avoid_row(caret: Rect, panel: Rect, monitor: Rect) -> Option<Pos2> {
     Some(Pos2::new(x, y))
 }
 
+/// How far (root px) a panel may sit from its target and still count as
+/// placed: sub-pixel rounding and 1px caret jitter must not re-issue
+/// XMoveWindow.
+pub const MOVE_TOLERANCE_PX: f32 = 2.0;
+
+/// Idempotence latch for panel placement. `measured` is where the panel
+/// actually is, `commanded` the last position WE ordered for it (None
+/// until the first move), `target` where it should be now. Returns the
+/// position to command, or None when the panel is already placed - by an
+/// earlier command whose target has not meaningfully moved, or by a
+/// coinciding native placement. Re-issuing XMoveWindow on an
+/// already-placed panel is what fed the 60Hz tug-of-war with the IME
+/// server (it repositions the panel on its own triggers, we pulled it
+/// back every frame).
+pub fn decide_move(measured: Pos2, commanded: Option<Pos2>, target: Pos2) -> Option<Pos2> {
+    let near = |a: Pos2, b: Pos2| a.distance(b) <= MOVE_TOLERANCE_PX;
+    // Our command landed and the target stayed put.
+    if commanded.is_some_and(|c| near(c, target) && near(measured, c)) {
+        return None;
+    }
+    // The panel's own placement already coincides with the target.
+    if near(measured, target) {
+        return None;
+    }
+    Some(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,5 +129,34 @@ mod tests {
             ),
             Some(caret.left_bottom() + offset)
         );
+    }
+
+    #[test]
+    fn decide_move_is_none_when_native_placement_coincides() {
+        let target = pos2(300.0, 400.0);
+        assert_eq!(decide_move(target, None, target), None);
+    }
+
+    #[test]
+    fn decide_move_reissues_when_the_server_redocks_the_panel() {
+        let target = pos2(300.0, 400.0);
+        let redocked = pos2(4.0, 700.0); // fcitx5 re-docked at window bottom-left
+        assert_eq!(decide_move(redocked, Some(target), target), Some(target));
+    }
+
+    #[test]
+    fn decide_move_follows_a_moved_target() {
+        let old = pos2(300.0, 400.0);
+        let moved = pos2(310.0, 400.0);
+        assert_eq!(decide_move(old, Some(old), moved), Some(moved));
+    }
+
+    #[test]
+    fn decide_move_tolerates_single_pixel_jitter() {
+        let commanded = pos2(300.0, 400.0);
+        for delta in [-1.0_f32, 1.0] {
+            let measured = commanded + vec2(delta, -delta);
+            assert_eq!(decide_move(measured, Some(commanded), commanded), None);
+        }
     }
 }
