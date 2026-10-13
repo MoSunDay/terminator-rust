@@ -8,5 +8,6 @@ pub mod grid;
 mod ink;
 pub mod preedit;
 pub mod screen;
+pub mod shape_cache;
 pub mod surface_guard;
 pub mod tokens;

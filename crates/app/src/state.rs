@@ -135,7 +135,7 @@ pub struct WindowState {
 }
 
 /// Monospace cell metrics: points for layout, pixels for the pty.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CellSize {
     pub w: f32,
     pub h: f32,
@@ -508,12 +508,16 @@ pub use screens::{WinScreens, XTabDrag};
 // ---------------------------------------------------------------------------
 
 /// Everything the GUI loop touches: persisted model, live sessions,
-/// transient UI state, the saved-host registry and the dirty flag.
+/// transient UI state, the saved-host registry, the per-pane egui shape
+/// cache and the dirty flag.
 pub struct Data {
     pub st: AppState,
     pub sess: crate::session_map::SessionMap,
     pub ui: UiState,
     pub registry: Vec<RemoteTarget>,
+    /// Per-pane cached egui shape lists (see `render::shape_cache`):
+    /// an unchanged VT frame skips the whole grid-to-shape rebuild.
+    pub shapes: crate::render::shape_cache::Cache,
     pub dirty: bool,
 }
 
@@ -523,6 +527,7 @@ pub fn data(st: AppState, registry: Vec<RemoteTarget>) -> Data {
         sess: crate::session_map::session_map(),
         ui: ui_state(),
         registry,
+        shapes: Default::default(),
         dirty: false,
     }
 }

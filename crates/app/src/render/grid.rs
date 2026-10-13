@@ -95,7 +95,13 @@ pub struct DrawArgs<'a> {
     pub fill_alpha: f32,
 }
 
-/// Draw one terminal snapshot into `rect`.
+/// Draw one terminal snapshot into `rect` (see [`frame_shapes`] for the
+/// shape order): a thin paint-only wrapper over the shape builder.
+pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
+    painter.extend(frame_shapes(painter.ctx(), rect, a).iter().cloned());
+}
+
+/// Build one terminal snapshot's egui shapes for `rect`.
 ///
 /// Background first (pane effective bg), then the cell backgrounds as
 /// MERGED same-color runs (see [`crate::render::bg_runs`]: one feathered
@@ -103,18 +109,22 @@ pub struct DrawArgs<'a> {
 /// block, text, and underlines. Wide cells span two columns and the
 /// trailing empty cell after them is skipped (per row: a row-final wide
 /// cell must not eat the next row's first cell).
-pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
+///
+/// Shape-returning (not painting) so the per-pane shape cache can store
+/// and replay the output when nothing visibly changed.
+pub fn frame_shapes(ctx: &egui::Context, rect: Rect, a: &DrawArgs<'_>) -> Vec<egui::Shape> {
     let fr = a.fr;
     let pal = a.pal;
     let cell = a.cell;
     let font_size = a.font_size;
     let cursor_alpha = a.cursor_alpha;
     let fill_alpha = a.fill_alpha;
+    let mut out: Vec<egui::Shape> = Vec::new();
     let bg = with_opacity(to_c32(vt_rgb(fr.default_bg)), fill_alpha);
     // Cursor-block glyph ink uses the bg COLOR at full alpha: on glass the
     // semi-transparent fill would render the glyph invisible.
     let bg_ink = Color32::from_rgb(bg.r(), bg.g(), bg.b());
-    painter.rect_filled(rect, 0.0, bg);
+    out.push(egui::Shape::rect_filled(rect, 0.0, bg));
     let default_fg = to_c32(vt_rgb(fr.default_fg));
     let cursor_col = fr
         .cursor_color
@@ -146,11 +156,11 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
     // bleed into the pane's right/bottom remainder (the grid is
     // floor(pane/cell) cells wide and tall).
     for run in bg_runs::bg_runs(fr, default_fg, sel_opaque, fill_alpha) {
-        painter.rect_filled(
+        out.push(egui::Shape::rect_filled(
             bg_runs::run_rect(rect, &run, cell, fr.cols, fr.rows),
             0.0,
             run.color,
-        );
+        ));
     }
     for (y, row) in fr.cells.iter().enumerate() {
         let mut skip_tail = false;
@@ -180,7 +190,7 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
             };
             let is_cursor = cursor_at == Some((ux, uy));
             if is_cursor {
-                painter.rect_filled(r, 2.0, cursor_col);
+                out.push(egui::Shape::rect_filled(r, 2.0, cursor_col));
             }
             let ink_visible = !cd.invisible && (!cd.blink || a.blink_on);
             if ink_visible && !cd.text.is_empty() {
@@ -196,36 +206,47 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
                 // Wide cells paint at the scaled size so the glyph fills
                 // exactly the two-cell span; narrow cells are unchanged.
                 let cell_font = if cd.wide { &wide_font } else { &font };
-                super::ink::draw(
-                    painter,
+                if let Some(shape) = super::ink::shape(
+                    ctx,
                     Pos2::new(r.min.x, r.center().y),
                     cd.text.as_str(),
                     cell_font.clone(),
                     glyph,
                     cd.italic,
-                );
+                ) {
+                    out.push(shape);
+                }
                 if cd.bold {
-                    super::ink::draw(
-                        painter,
+                    if let Some(shape) = super::ink::shape(
+                        ctx,
                         Pos2::new(r.min.x + 0.5, r.center().y),
                         cd.text.as_str(),
                         cell_font.clone(),
                         glyph,
                         cd.italic,
-                    );
+                    ) {
+                        out.push(shape);
+                    }
                 }
             }
             if ink_visible && cd.underline {
-                painter.line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, fg));
+                out.push(egui::Shape::line_segment(
+                    [r.left_bottom(), r.right_bottom()],
+                    Stroke::new(1.0, fg),
+                ));
             }
             if ink_visible && cd.strikethrough {
-                painter.line_segment([r.left_center(), r.right_center()], Stroke::new(1.0, fg));
+                out.push(egui::Shape::line_segment(
+                    [r.left_center(), r.right_center()],
+                    Stroke::new(1.0, fg),
+                ));
             }
             if cd.wide {
                 skip_tail = true;
             }
         }
     }
+    out
 }
 
 /// Dimmed placeholder for panes without a live session.

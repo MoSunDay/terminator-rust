@@ -249,6 +249,7 @@ fn form_section(ui: &mut egui::Ui, d: &mut Data, reg_path: &Path) {
         ui: uist,
         registry,
         dirty,
+        ..
     } = d;
     let f = &mut uist.form;
     field(ui, "label", &mut f.label, "workstation");
