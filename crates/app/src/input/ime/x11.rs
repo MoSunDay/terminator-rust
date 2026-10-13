@@ -21,15 +21,6 @@ const CANDIDATE_GRACE: Duration = Duration::from_millis(150);
 /// per window, so misses re-probe at most every 50ms.
 const PROBE_EVERY: Duration = Duration::from_millis(50);
 
-/// Panel placement outcome: `Settled` = nothing to chase, `Verify` = needs
-/// one short-delay follow-up frame (a move was issued, the panel is briefly
-/// hidden, or nothing measurable was found yet).
-#[derive(PartialEq)]
-enum Placement {
-    Settled,
-    Verify,
-}
-
 struct State {
     conn: RustConnection,
     root: Window,
@@ -118,23 +109,23 @@ fn monitor_of(s: &State, caret: &Rect) -> Result<Option<Rect>> {
 /// once settled: a move is issued only when `decide_move` says the panel is
 /// not where we last put it (or the target genuinely moved), so the IME
 /// server's own repositioning no longer starts a per-frame tug-of-war.
-fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<Placement> {
+fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<()> {
     // No work at all outside composition (the overlap branch is
     // composing-only too); this also skips the per-frame X round-trips
     // (get_input_focus/pid) on ordinary frames.
     if !composing {
-        return Ok(Placement::Settled);
+        return Ok(());
     }
     let focus = s.conn.get_input_focus()?.reply()?.focus;
     if focus == 0 || focus == 1 {
-        return Ok(Placement::Settled);
+        return Ok(());
     }
     let pid = s
         .conn
         .get_property(false, focus, s.pid_atom, AtomEnum::CARDINAL, 0, 1)?
         .reply()?;
     if pid.value32().and_then(|mut v| v.next()) != Some(std::process::id()) {
-        return Ok(Placement::Settled);
+        return Ok(());
     }
     let at = s.conn.translate_coordinates(focus, s.root, 0, 0)?.reply()?;
     let caret = local_caret.translate(vec2(f32::from(at.dst_x), f32::from(at.dst_y)));
@@ -149,13 +140,13 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<Placement
         // Briefly unmapped while the IME redraws candidates: keep the
         // identity and re-check on the next frame.
         None if s.last_seen.elapsed() < CANDIDATE_GRACE => {
-            return Ok(Placement::Verify);
+            return Ok(());
         }
         None => {
             s.candidate = None;
             s.commanded = None;
             if s.last_probe.elapsed() < PROBE_EVERY {
-                return Ok(Placement::Verify);
+                return Ok(());
             }
             s.last_probe = Instant::now();
             let windows = s.conn.query_tree(s.root)?.reply()?.children;
@@ -170,12 +161,12 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<Placement
                 candidates.into_iter().next()
             } else {
                 // Panel not mapped yet / ambiguous menu: re-check next frame.
-                return Ok(Placement::Verify);
+                return Ok(());
             }
         }
     };
     let Some((window, bounds)) = candidate else {
-        return Ok(Placement::Verify);
+        return Ok(());
     };
     s.candidate = Some(window);
     // Both branches are composing-only by construction (the guard above);
@@ -188,10 +179,10 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<Placement
         monitor.and_then(|m| follow_row(caret, bounds, m))
     };
     let Some(target) = target else {
-        return Ok(Placement::Settled);
+        return Ok(());
     };
     match decide_move(bounds.min, s.commanded, target) {
-        None => Ok(Placement::Settled),
+        None => Ok(()),
         Some(at) => {
             s.conn
                 .configure_window(
@@ -203,7 +194,7 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<Placement
                 .check()?;
             s.conn.flush()?;
             s.commanded = Some(at);
-            Ok(Placement::Verify) // one follow-up frame verifies it landed
+            Ok(())
         }
     }
 }
@@ -217,12 +208,16 @@ pub fn sync(ctx: &Context, caret: Rect, composing: bool) {
     }
     STATE.with(|state| {
         if let Some(state) = state.borrow_mut().as_mut() {
-            if let Ok(Placement::Verify) = repair(state, caret * ctx.pixels_per_point(), composing)
-            {
-                // While composing, chase the panel only while it is missing
-                // or misplaced - once settled, input events drive the frames
-                // (every keystroke moves the caret); the unconditional 16ms
-                // loop fought the IME server at 60Hz and burned CPU.
+            let _ = repair(state, caret * ctx.pixels_per_point(), composing);
+            // The panel chase must run for the WHOLE composition: the IME
+            // server re-docks its panel asynchronously after its own
+            // triggers (every candidate update), and none of that wakes a
+            // frame - stopping at the first "settled" observation left the
+            // panel parked when the server's last move landed after ours
+            // (release-build timing exposed it; the idempotence latch keeps
+            // each pass cheap: no XMoveWindow while genuinely in place).
+            // Outside composition `repair` early-returns and no loop runs.
+            if composing {
                 ctx.request_repaint_after(Duration::from_millis(16));
             }
         }
