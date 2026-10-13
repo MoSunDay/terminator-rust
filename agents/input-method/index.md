@@ -39,4 +39,14 @@ X11 只使用候选位置矩形的起点，所以报告光标单元格左下角�
   修复：`ime/popup.rs::follow_row` + `x11.rs::repair(composing)`——
   组合期间把距插入行 >24px 的停摆面板搬到 caret.bottom()+1px（下方
   放不下则上方），已贴行的面板不动（不打架原生定位）。
+- 追赶循环必须覆盖整个组合期（2026-10-13，release gate 实证）：IME
+  服务端在自己的触发点（每次候选更新）异步把面板挪回停靠点，这些
+  动作不会唤醒我们的任何帧——“落位后停 16ms 跟进、靠输入事件驱动”
+  的有界 Verify 循环在 dev 时序下碰巧赢，release 帧更快时服务端最后
+  一次重停靠落在我们最后一次检查之后，面板停在 dock（e2e-ime M2 对
+  release 包断言失败）。现行策略：composing 为真期间每帧 16ms 复查
+  （`x11.rs::sync`），配合 `popup.rs::decide_move` 幂等闩锁（测得在
+  目标 2px 内/与上次命令一致就不 XMoveWindow）让每趟复查零 X 写入；
+  非 composing 帧 repair 早退，普通帧零 X 流量（get_input_focus/pid
+  往返也不再发生）。
 - [测试索引](../e2e-suites.md)；[已实测能力](../verified-end-to-end.md)。原生窗口实测覆盖 IBus；Fcitx 尚无同等级运行证据。macOS 原生候选窗仍需实机验证，Linux XIM 与交叉编译不能代替。

@@ -211,15 +211,33 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   RENDER LOOP IS REACTIVE (2026-10-12, render/cadence.rs): NO
   unconditional 16/50ms tick exists - idle CPU is ~4% vs ~38% before.
   Wakes: PTY reader-loop output/exit sends fire SessionOpts.wake ->
-  ctx.request_repaint_of(ROOT) (secondaries render inside the root
-  pass); ipc/server.rs accept wakes likewise; cadence::next_deadline
+  request_repaint_after_for(1ms, ROOT) (main.rs) - a ZERO-delay
+  request_repaint arms egui's outstanding=1 and every output burst
+  renders TWO passes (0.36 context.rs); the 1ms delay coalesces to one.
+  Secondaries render inside the root pass; ipc/server.rs accept wakes
+  likewise; cadence::next_deadline
   schedules ONLY the next real need (cursor blink edge - square wave,
   user-focused window only; blink-text edges; 50ms while a drag/resize
   gesture is live; pane retry/reconnect backoff; EXIT_GRACE). Frame
   snapshots are CACHED per Session (cache_valid; invalidate on pump,
   resize, theme change, selection/viewport mutations - vt-pane
   task.rs frame_cached/invalidate_frame, session_map::sync_frame) and
-  Frame.has_blink gates blink scheduling.
+  Frame.has_blink gates blink scheduling. TESSELLATION is cached per
+  PANE (2026-10-14, render/shape_cache.rs): Key = {frame_gen, rect,
+  cell, font_size, fill_alpha, cursor_alpha, blink_on,
+  pixels_per_point} - frame_gen is a vt-pane counter bumped on every
+  mutation (task.rs), so a spinner pane re-tessellates only ITSELF
+  while untouched panes replay cached shapes (Cache::paint /
+  end_frame once per frame; main.rs frame-scopes terminal_theme::sync
+  + pump_all + the cache end_frame in one block). blink_on only
+  enters the Key when fr.has_blink. 60Hz single-pane spinner measured
+  0.6% core on the deployed desktop (vs the 23% complaint). IME panel
+  chase (ime/x11.rs sync): the 16ms follow-up must run for the WHOLE
+  composition - the IME server re-docks its panel asynchronously
+  (every candidate update) and none of that wakes us; a bounded
+  verify loop passed dev timing but failed the release gate
+  (input-method/index.md). Outside composition repair early-returns
+  with zero X traffic.
 - cell backgrounds paint as MERGED runs (render/bg_runs/ since 2026-09-23 split: row.rs classify, merge.rs interval-absorb, rect.rs bleed; 2026-09-22):
   one rect_filled PER CELL feathered a seam lattice (1/255/column at the
   cell pitch, vertical AND row boundaries) across every ANSI-bg region,

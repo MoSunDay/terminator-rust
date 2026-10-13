@@ -108,3 +108,17 @@ hard-won facts behind these checks.
   Note: the migrated session's instance runs on migrate.sock until the
   next login; autostart launches on the default ipc.sock (stale socket
   files are reclaimed by the next start).
+- perf/IME release e966a758 (2026-10-14, live on 192.168.31.196):
+  same --keep-running + migration recipe as above (old 027f6b67 pid
+  160851 owned migrate.sock; new instance on migrate2.sock; `migrate 2`
+  moved 2 panes at once - a tab anchor carries its whole tab - then
+  `migrate 4`; the three opencode zsh children 1220562/1227468/2747556
+  kept their PIDs; old SIGTERMed by pid). Landing measurements on the
+  real desktop: idle 20ms/5s (~0.4% core), 60Hz spinner (date +%N loop
+  via ctl send in the scratch tab) 30ms/5s = 0.6% core - vs the 23%
+  complaint that started the workstream. The IME panel-chase fix
+  (whole-composition 16ms loop + idempotent decide_move latch) was
+  caught by verify-release.sh itself: M2 "panel follows insertion row"
+  failed ONLY on the packed release binary (dev timing won the async
+  race), so treat the release gate as the acceptance authority for
+  timing-sensitive checks.
