@@ -8,7 +8,7 @@ use remote::PaneKind;
 
 use crate::actions;
 use crate::input::{ime, mouse, pointer, resize};
-use crate::render::{cadence, colors, dropzone, grid, preedit, tokens};
+use crate::render::{cadence, colors, dropzone, grid, preedit, shape_cache, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W};
 use crate::ui::chrome;
@@ -80,13 +80,6 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let m = chrome::metrics(font_size);
     let cell = grid::measure_cells(&ctx, font_size);
 
-    // Lifecycle bookkeeping.
-    crate::terminal_theme::sync(&mut d.sess, &pal, d.st.settings.bg_color);
-    // Panes whose program emitted a desktop notification (OSC 9/777)
-    // join the IPC-sourced attention set for the tab badge.
-    for pane in session_map::pump_all(&mut d.sess) {
-        d.ui.notices.insert(pane);
-    }
     for session in d.sess.map.values_mut() {
         // Announced -> active while tmux owns the mouse; leaving that mode
         // invalidates the negotiated private copy key for subsequent programs.
@@ -117,8 +110,6 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         actions::do_new_tab(&mut d.st, &mut d.sess, PaneKind::Local, &mut d.dirty);
     }
     actions::ensure_sessions(&d.st, &mut d.sess);
-    // New panes must receive theme defaults before their first output is parsed.
-    crate::terminal_theme::sync(&mut d.sess, &pal, d.st.settings.bg_color);
     // A gone shell closes its own pane (after EXIT_GRACE); closing the
     // last pane of THIS window removes it mid-pass - stop rendering then
     // rather than drawing the next window's tree into this viewport.
@@ -134,6 +125,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         sess,
         ui: uist,
         dirty,
+        shapes,
         ..
     } = d;
     // The window-close dialog is open: its backdrop blocks egui WIDGET
@@ -226,6 +218,14 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 // borrow until the end of this arm.
                 let vp_pinned = vt_pane::viewport::pinned(s);
                 let vp_geo = vt_pane::viewport::geometry(s);
+                // Shape-cache key input, read BEFORE `fr` pins the session
+                // borrow for the rest of this arm (a shared read under the
+                // outstanding `&mut` reborrow does not compile): the gen
+                // covers the frame-level pump in main.rs plus every prior
+                // invalidation. Bytes racing this pass bump the gen, and
+                // the reader wake schedules the follow-up frame, so a hit
+                // replays at most one frame of stale content.
+                let fgen = vt_pane::task::frame_gen(s);
                 let fr = session_map::sync_frame(s, content.width(), content.height(), cell);
                 let text = st.win().and_then(|w| w.ui.ime.clone());
                 let composing =
@@ -235,23 +235,42 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 cursor_blink =
                     user_focused && Some(pane) == focused && fr.cursor.visible && !composing;
                 let shown = preedit::placement::preview(fr, composing, span);
-                grid::draw_frame(
-                    &painter,
-                    content,
-                    &grid::DrawArgs {
-                        fr: &shown,
-                        pal: &pal,
+                let args = grid::DrawArgs {
+                    fr: &shown,
+                    pal: &pal,
+                    cell,
+                    font_size,
+                    cursor_alpha: if Some(pane) == focused && !composing {
+                        cursor_a
+                    } else {
+                        0.0
+                    },
+                    blink_on,
+                    fill_alpha,
+                };
+                if composing {
+                    // The preedit overlay varies with composition text, which the VT
+                    // frame generation does not track: paint uncached.
+                    grid::draw_frame(&painter, content, &args);
+                } else {
+                    let key = shape_cache::Key {
+                        frame_gen: fgen,
+                        rect: content,
                         cell,
                         font_size,
-                        cursor_alpha: if Some(pane) == focused && !composing {
-                            cursor_a
-                        } else {
-                            0.0
-                        },
-                        blink_on,
                         fill_alpha,
-                    },
-                );
+                        cursor_alpha: args.cursor_alpha,
+                        // Blink flips only matter to frames that carry
+                        // blink-attribute text; a pane without any must
+                        // not rebuild on every 0.5s text-blink edge
+                        // (output is blink_on-independent there).
+                        blink_on: blink_on && fr.has_blink,
+                        pixels_per_point: ctx.pixels_per_point(),
+                    };
+                    shapes.paint(&ctx, &painter, pane, key, |ctx| {
+                        grid::frame_shapes(ctx, content, &args)
+                    });
+                }
                 // Scrollback review indicator over the grid, right edge.
                 if Some(pane) == focused && !vp_pinned {
                     if let Some(geo) = vp_geo {
@@ -473,10 +492,15 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // output and IPC requests waking the loop on demand. Secondary
     // viewports render inside the root pass, so waking ROOT refreshes
     // every window.
+    // A live gesture needs time-driven slices (pane-move dwell, tab
+    // reorder follow, divider and border-resize polls). A border HOVER
+    // does not: egui changes the cursor through its own wake, and
+    // treating a parked pointer as interaction burned 20fps forever.
     let interacting = dragging
         || pane_drag.is_some()
-        || edge.is_some()
-        || st.win().is_some_and(|w| w.ui.tab_drag.is_some());
+        || st
+            .win()
+            .is_some_and(|w| w.ui.edge.is_some() || w.ui.tab_drag.is_some() || w.ui.drag.is_some());
     let needs = cadence::Needs {
         cursor_blink,
         blink_text,

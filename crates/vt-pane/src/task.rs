@@ -121,6 +121,9 @@ pub struct Session {
     /// an idle frame costs no ghostty traversal + allocation churn.
     pub(crate) cache: Frame,
     pub(crate) cache_valid: bool,
+    /// Bumped on every frame-cache invalidation so render-side shape
+    /// caches can key on it.
+    frame_gen: u64,
     /// Current cell pixel size, shared with the size-query effect.
     cell_px: CellPx,
     /// Set by the desktop-notification effect (OSC 9/777); drained once
@@ -257,6 +260,7 @@ fn assemble(
         exit: None,
         cache: Frame::default(),
         cache_valid: false,
+        frame_gen: 0,
         cell_px,
         notice,
         clipboard,
@@ -532,7 +536,7 @@ pub fn pump(sess: &mut Session) -> Result<()> {
         }
     }
     if touched {
-        sess.cache_valid = false;
+        invalidate_frame(sess);
     }
     Ok(())
 }
@@ -576,6 +580,13 @@ pub fn frame_cached(sess: &mut Session) -> &Frame {
 /// Drop the cached snapshot; the next [`frame_cached`] rebuilds it.
 pub fn invalidate_frame(sess: &mut Session) {
     sess.cache_valid = false;
+    sess.frame_gen += 1;
+}
+
+/// Current frame-cache generation: changes whenever something visibly
+/// invalidated the snapshot, so render-side caches can key on it.
+pub fn frame_gen(sess: &Session) -> u64 {
+    sess.frame_gen
 }
 
 /// Resize terminal + pty window. `cell_{w,h}_px` are font cell metrics.

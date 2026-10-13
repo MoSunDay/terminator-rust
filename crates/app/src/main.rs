@@ -44,11 +44,18 @@ impl Terminator {
         // The render loop is reactive (no repaint tick), so pty output and
         // IPC requests must wake it from their threads. Secondary
         // viewports render inside the root pass, so waking ROOT refreshes
-        // every window. `request_repaint` is thread-safe and coalesces.
+        // every window. egui 0.36's `request_repaint_after` with a ZERO
+        // delay arms `outstanding = 1`, so the pass starter re-fires the
+        // callback and every pty output burst renders TWICE; a non-zero
+        // delay (1ms) is still effectively immediate but pays for a
+        // single pass.
         let mut d = data(st, registry);
         let wake_ctx = cc.egui_ctx.clone();
         d.sess.wake = Some(Arc::new(move || {
-            wake_ctx.request_repaint_of(egui::ViewportId::ROOT)
+            wake_ctx.request_repaint_after_for(
+                std::time::Duration::from_millis(1),
+                egui::ViewportId::ROOT,
+            )
         }));
         Self {
             data: d,
@@ -90,6 +97,15 @@ impl eframe::App for Terminator {
         }
 
         // Root window: a plain render pass into the root viewport.
+        // Frame-scoped bookkeeping, NOT per window pass (W windows used to
+        // mean W pumps and theme syncs per frame): keep VT colors aligned
+        // with the painted theme, then drain every session's pty output
+        // once, before any pass renders a frame snapshot.
+        let pal = render::colors::palette_of(&theme);
+        terminal_theme::sync(&mut self.data.sess, &pal, self.data.st.settings.bg_color);
+        for pane in session_map::pump_all(&mut self.data.sess) {
+            self.data.ui.notices.insert(pane);
+        }
         windows::render(ui, &mut self.data, 0);
         ui::inspector::show(&ctx, &mut self.data, 0);
         // Registered AFTER the inspector so the modal sits on top of it.
@@ -100,6 +116,10 @@ impl eframe::App for Terminator {
         // pass inside windows::render). Removal shrinks the list; the loop
         // re-checks the slot so no window is skipped.
         windows::render_secondaries(&ctx, &mut self.data);
+        // Panes spawned by this frame's ensure_sessions get their theme
+        // defaults before the next frame's pump parses their first output.
+        terminal_theme::sync(&mut self.data.sess, &pal, self.data.st.settings.bg_color);
+        self.data.shapes.end_frame();
         self.data.st.active = self.data.st.focus;
 
         self.save_if_dirty();
