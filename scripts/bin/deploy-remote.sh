@@ -289,7 +289,7 @@ stage_smoke() {
     step "6/6 smoke: terminator-ctl list + capture"
     local list_out pane_id cap
     # A KEPT instance may listen on a non-default socket name (the .196 box
-    # runs migrate3.sock, see agents/perf/index.md): every snippet below
+    # ran migrate3.sock until the 2026-10-17 live cutover): every snippet below
     # prefers the running app's own TERMINATOR_SOCK (from /proc/<pid>/environ)
     # so the smoke reaches the live app instead of a stale ipc.sock - the
     # kept instance is exactly the case --keep-running promises to probe.
