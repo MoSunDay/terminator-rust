@@ -78,6 +78,16 @@ pub fn request_soon_single_pass(ctx: &egui::Context) {
     ctx.request_repaint_after_for(SOON_SINGLE_PASS, egui::ViewportId::ROOT);
 }
 
+/// Clamp a wake delay so a due (ZERO) deadline still yields a
+/// SINGLE-pass wake: egui 0.36 arms the double pass only for exactly
+/// ZERO, while `predicted_dt` is subtracted from any non-zero delay, so
+/// mapping a same-frame deadline to [`SOON_SINGLE_PASS`] keeps the
+/// latency without the extra pass. A safety net, not a substitute for
+/// consuming deadlines.
+pub fn wake_delay(wait: Duration) -> Duration {
+    wait.max(SOON_SINGLE_PASS)
+}
+
 /// Seconds until the next on/off edge of a duty-cycle square wave whose
 /// clock reads `t` (seconds since process start).
 fn next_edge(t: f32, period: f32, on: f32) -> Duration {
@@ -248,5 +258,26 @@ mod tests {
             Duration::from_millis(1)
         );
         assert!(!SOON_SINGLE_PASS.is_zero());
+    }
+
+    #[test]
+    fn output_wake_with_floor_off_is_a_single_immediate_pass() {
+        // `TERMINATOR_FRAME_FLOOR_MS=0` = floor off: no coalescing
+        // window - one immediate pass, never the zero-delay double pass.
+        assert_eq!(
+            output_wake_paced(Duration::ZERO, Duration::from_millis(16), Duration::ZERO),
+            SOON_SINGLE_PASS
+        );
+    }
+
+    #[test]
+    fn wake_delay_clamps_only_due_deadlines() {
+        // A same-frame (due) deadline stays a single-pass wake.
+        assert_eq!(wake_delay(Duration::ZERO), SOON_SINGLE_PASS);
+        // Real waits pass through untouched.
+        assert_eq!(
+            wake_delay(Duration::from_millis(50)),
+            Duration::from_millis(50)
+        );
     }
 }

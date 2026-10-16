@@ -212,7 +212,7 @@ echo "idle: avg=${idle_avg}% max1s=${idle_max1s}% frames=${idle_frames} maxfps=$
 float_le "$idle_frames" "$IDLE_MAX_FPS" \
     || fail "S1 idle: ${idle_frames} frame-stats line(s) in ${IDLE_SAMPLE_S}s (want fps == ${IDLE_MAX_FPS}, last: $(last_stats)). Frames come from cadence deadlines: while the user-focused pane's cursor blinks the loop schedules every blink edge (render/tokens.rs cursor_alpha ignores TERMINATOR_NO_MOTION, screen.rs cursor_blink). Fix that or set IDLE_MAX_FPS to the observed steady rate."
 float_lt "$idle_max1s" "$IDLE_MAX1S_PCT" \
-    || fail "S1 idle: max1s=${idle_max1s}% >= ${IDLE_MAX1S_PCT}% (avg=${idle_avg}%, frames=${idle_frames}, backend=$IDLE_GPU_BACKEND, top: $(top_threads "$J")). Probe the app's own threads first (cpu-sample --top-threads): the loop must show 0 jiffies. A nonzero floor with 0 frames is the host (GPU driver) - re-run with the default IDLE_GPU_BACKEND=gl, or raise IDLE_MAX1S_PCT on a documented-floors host."
+    || fail "S1 idle: max1s=${idle_max1s}% >= ${IDLE_MAX1S_PCT}% (avg=${idle_avg}%, frames=${idle_frames}, backend=$IDLE_GPU_BACKEND, top: $(top_threads "$J")). Probe the app's own threads first (cpu-sample --top-threads): the loop must show 0 jiffies. TWO causes look alike at this resolution: one 10ms jiffy in the window IS exactly 1.0% (a cold release bundle pays page-in + font parsing; re-run once before investigating, or raise IDLE_SETTLE_S), and a nonzero floor with 0 frames is the host (GPU driver) - re-run with the default IDLE_GPU_BACKEND=gl, or raise IDLE_MAX1S_PCT on a documented-floors host."
 
 # --- S1b: floor probe with the cursor pinned (recorded) -------------------
 

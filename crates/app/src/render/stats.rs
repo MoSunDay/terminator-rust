@@ -15,7 +15,10 @@
 //! between output-driven frames caps the loop at ~60fps, coalescing
 //! bursts of pty output into one frame and leaving headroom on
 //! high-refresh displays and Xvfb where the natural cadence would be
-//! much faster than the pump can usefully drain.
+//! much faster than the pump can usefully drain. `0` disables the floor:
+//! `cadence::output_wake_paced` then returns `SOON_SINGLE_PASS` - one
+//! immediate pass per output burst, no coalescing window (and never the
+//! zero-delay double pass).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -77,13 +80,14 @@ pub fn report_due(now_ms: u64, window_ms: u64) -> bool {
     now_ms.saturating_sub(window_ms) >= REPORT_INTERVAL_MS
 }
 
-/// `TERMINATOR_FRAME_FLOOR_MS` -> milliseconds. Unparseable, zero or
-/// absurd (> [`MAX_FLOOR_MS`]) values fall back to [`DEFAULT_FLOOR_MS`].
+/// `TERMINATOR_FRAME_FLOOR_MS` -> milliseconds. `0` passes through and
+/// DISABLES the floor; unparseable, negative/non-integer or absurd
+/// (> [`MAX_FLOOR_MS`]) values fall back to [`DEFAULT_FLOOR_MS`].
 pub fn parse_floor_ms(s: &str) -> u64 {
     s.trim()
         .parse::<u64>()
         .ok()
-        .filter(|v| (1..=MAX_FLOOR_MS).contains(v))
+        .filter(|v| *v <= MAX_FLOOR_MS)
         .unwrap_or(DEFAULT_FLOOR_MS)
 }
 
@@ -103,7 +107,9 @@ pub fn enabled() -> bool {
     *ENABLED.get_or_init(|| std::env::var("TERMINATOR_FRAME_STATS").is_ok_and(|v| v == "1"))
 }
 
-/// The output pacing floor as a duration (see module docs).
+/// The output pacing floor as a duration (see module docs). `0` means
+/// OFF: [`crate::render::cadence::output_wake_paced`] then returns
+/// `SOON_SINGLE_PASS` (one immediate pass, no coalescing wait).
 pub fn output_floor() -> Duration {
     static FLOOR_MS: OnceLock<u64> = OnceLock::new();
     let ms = *FLOOR_MS.get_or_init(|| {
@@ -166,10 +172,12 @@ mod tests {
         assert_eq!(parse_floor_ms("1"), 1);
         assert_eq!(parse_floor_ms("1000"), MAX_FLOOR_MS);
         assert_eq!(parse_floor_ms(" 20 "), 20);
+        // 0 = floor off; trim applies here too.
+        assert_eq!(parse_floor_ms("0"), 0);
+        assert_eq!(parse_floor_ms(" 0 "), 0);
         // Unset is handled by the caller; bad values map to the default.
         assert_eq!(parse_floor_ms(""), DEFAULT_FLOOR_MS);
         assert_eq!(parse_floor_ms("abc"), DEFAULT_FLOOR_MS);
-        assert_eq!(parse_floor_ms("0"), DEFAULT_FLOOR_MS);
         assert_eq!(parse_floor_ms("-3"), DEFAULT_FLOOR_MS);
         assert_eq!(parse_floor_ms("3.5"), DEFAULT_FLOOR_MS);
         assert_eq!(parse_floor_ms("5000"), DEFAULT_FLOOR_MS);
