@@ -288,9 +288,20 @@ REMOTE
 stage_smoke() {
     step "6/6 smoke: terminator-ctl list + capture"
     local list_out pane_id cap
-    list_out=$(run_user "$OPT_ROOT" "$RUNTIME_DIR" <<'REMOTE'
-root=$1; rt=$2
+    # A KEPT instance may listen on a non-default socket name (the .196 box
+    # runs migrate3.sock, see agents/perf/index.md): every snippet below
+    # prefers the running app's own TERMINATOR_SOCK (from /proc/<pid>/environ)
+    # so the smoke reaches the live app instead of a stale ipc.sock - the
+    # kept instance is exactly the case --keep-running promises to probe.
+    list_out=$(run_user "$OPT_ROOT" "$RUNTIME_DIR" "$KEPT" <<'REMOTE'
+root=$1; rt=$2; keep=${3:-0}
 export XDG_RUNTIME_DIR="$rt"
+if [ "$keep" = "1" ]; then
+    for p in $(pgrep -x terminator-rust); do
+        s=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^TERMINATOR_SOCK=//p' | head -n1)
+        [ -n "$s" ] && { export TERMINATOR_SOCK="$s"; break; }
+    done
+fi
 ctl="$root/current/bin/terminator-ctl"
 for _ in $(seq 1 40); do
     out=$("$ctl" list 2>/dev/null || true)
@@ -305,18 +316,30 @@ exit 1
 REMOTE
     ) || fail "terminator-ctl list failed (see output above)"
     printf '%s\n' "$list_out"
-    pane_id=$(run_user "$OPT_ROOT" "$RUNTIME_DIR" <<'REMOTE'
-root=$1; rt=$2
+    pane_id=$(run_user "$OPT_ROOT" "$RUNTIME_DIR" "$KEPT" <<'REMOTE'
+root=$1; rt=$2; keep=${3:-0}
 export XDG_RUNTIME_DIR="$rt"
+if [ "$keep" = "1" ]; then
+    for p in $(pgrep -x terminator-rust); do
+        s=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^TERMINATOR_SOCK=//p' | head -n1)
+        [ -n "$s" ] && { export TERMINATOR_SOCK="$s"; break; }
+    done
+fi
 "$root/current/bin/terminator-ctl" list --json \
     | grep -o '"id": *[0-9]\+' | head -n1 | grep -o '[0-9]\+'
 REMOTE
     ) || fail "could not extract a pane id from 'list --json'"
     [ -n "$pane_id" ] || fail "empty pane id from 'list --json'"
     echo "first pane id: $pane_id"
-    cap=$(run_user "$OPT_ROOT" "$RUNTIME_DIR" "$pane_id" <<'REMOTE'
-root=$1; rt=$2; pane=$3
+    cap=$(run_user "$OPT_ROOT" "$RUNTIME_DIR" "$pane_id" "$KEPT" <<'REMOTE'
+root=$1; rt=$2; pane=$3; keep=${4:-0}
 export XDG_RUNTIME_DIR="$rt"
+if [ "$keep" = "1" ]; then
+    for p in $(pgrep -x terminator-rust); do
+        s=$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | sed -n 's/^TERMINATOR_SOCK=//p' | head -n1)
+        [ -n "$s" ] && { export TERMINATOR_SOCK="$s"; break; }
+    done
+fi
 for _ in $(seq 1 40); do
     out=$("$root/current/bin/terminator-ctl" capture "$pane" 2>/dev/null || true)
     if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then

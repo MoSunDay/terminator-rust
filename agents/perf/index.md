@@ -147,13 +147,42 @@ IME M1–M7），`deploy-remote.sh --no-build --keep-running` + migrate2.sock �
   `instances`），远端一律用 `/opt/terminator-rust/current/bin/terminator-ctl`；
   本次迁移（29015a79，见 agents/verified-end-to-end.md）的实例跑在 `migrate3.sock`
   上，下次登录 autostart 回到 ipc.sock
-  （stale 套接字由下次 start 回收）。
+  （stale 套接字由下次 start 回收）；2026-10-17 装入 `current` = 65728655
+  （`--keep-running`，未重启运行实例）。
 
 - 交接后一度看到 25fps / 5.2% avg，追查结论**不是回归**：两个用户 ssh agent
   pane 在跑各 ~10Hz 的 spinner（真实活动输出，合并唤醒 25fps），`ctl capture`
   逐 pane 两两 diff 即可定位输出源；`pass_avg≈0.35ms` 说明每帧仍很便宜。
   测真机 idle 前必须先清自己的压测残留循环——本次交接现场就有一个忘停的
   `while :; printf "spin %s\r"` pane 混在采样里。
+
+## 本轮修复后的 release 包 gate（65728655，2026-10-17 凌晨）
+`pack-release.sh` + `bash verify-release.sh` **一次全绿**（新增的 S1 首窗超线自动
+重采生效：本机实测第一窗 1.0%（冷 bundle 1 jiffy = 恰在门槛）→ 第二窗 0.0%
+通过，冷启动不再需要人工重跑）。同一 release 二进制上 `e2e-idle-cpu.sh` 实测：
+
+| 场景 | 数字 | 判定 |
+| --- | --- | --- |
+| S1 空转 | avg 0.0% / max1s 0.0% / 帧 0 | tier1 断言通过 |
+| S1b 光标钉住 | 0.0% / 0.0% / 帧 0 | tier2 记录 |
+| WAKE（`ctl send` 回声） | ~11ms | tier1 通过 |
+| S7 重命名编辑器 | 0.0% / 0.0% / 帧 0，提交且无按键泄漏 | tier1 runaway 通过 |
+| S2 60Hz spinner | 50.0fps（<= 65） | tier1 断言通过 |
+| S13 40k 行 `cat` | 15.6fps、longest_pass 0.00s | tier1 fps 通过；CPU 仅记录 |
+
+- 同源码的 debug 构建这次反而跑出 `longest_pass=16.24s`（release 0.00s），再次
+  印证该自旋随构建布局出现/消失（见上文 fast-fill 段），非本轮改动引入。
+- 部署：`deploy-remote.sh --no-build --keep-running`，`current` ->
+  `releases/65728655…`（prev `29015a79…`，回滚入口由安装器 journal 保证）。
+  首次运行步骤 6 冒烟 FAIL：保留实例在 `migrate3.sock`，而 smoke 只认默认
+  `ipc.sock`；已修 `stage_smoke`（从 `/proc/<pid>/environ` 读运行实例自己的
+  `TERMINATOR_SOCK`），重跑 1–6 步全绿 `PASS (kept-running=1)`。运行实例
+  944047 仍是 29015a79 的镜像（`--keep-running` 语义），下次 autostart/启动生效。
+- 冒烟 `ctl list` 只见 pane 2/3：原 pane 5（707327）的 shell 已退出，pane 由
+  dead-pane 自动清理移除（pane 2/3 的 zsh 699347/700805 仍存活）。
+- 修复内容（e908f61）：`cursor_blink` 改为 fold（后画的非焦点 pane 不再清掉焦点
+  pane 的 blink 需求）、`ThemeSyncKey` 改存 palette 值（同名 bg_color/transparency
+  变更不再早退）、`bank_snapshot` 抽出 + 新增 pty 测试、gate 加 `app_alive` 探活。
 
 ## 后续路线
 - P1–P4 已落地并发布（闩锁 / 真节流 / 固定开销 / 脏行快照），数字见上两表。
