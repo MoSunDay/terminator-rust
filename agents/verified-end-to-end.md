@@ -166,8 +166,8 @@ hard-won facts behind these checks.
   `Palette` 值 + `render_palette_moved` 兜底（bg_color/transparency 同名变更
   不再早退复用旧快照）、`vt-pane` 抽出 `bank_snapshot` 并新增 pty 测试
   (`src/tests/snapshot_policy.rs`)、`e2e-idle-cpu.sh` 每段采样后加 `app_alive`
-  探活 + S1 首窗超线自动重采一次取更优窗口（本次实测第一窗 1.0% -> 第二窗
-  0.0% 通过；1 jiffy = 1.0% 恰为门槛，冷 bundle 不再需要人工重跑）。
+  探活 + S1 首窗超线自动重采一次取更优窗口（首窗被偶发 jiffy 抬高时降低
+  冷启动假阳性概率；两窗都 ≥ 门槛 = 真回归/真失败，fps 断言仍是整段单次判定）。
   部署 `deploy-remote.sh --no-build --keep-running`: 首次运行步骤 6 冒烟 FAIL
   （保留实例在 migrate3.sock，smoke 只认默认 ipc.sock）→ 已在 `stage_smoke` 里
   改为按运行实例的 `TERMINATOR_SOCK`（读 /proc/<pid>/environ）寻址，重跑步骤

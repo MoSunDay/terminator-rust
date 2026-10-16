@@ -83,7 +83,7 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | --- | --- | --- |
 | `IDLE_GPU_BACKEND` | `gl` | 整个沙箱 run 用软件后端（llvmpipe；`WGPU_BACKEND` 写进 app 启动 env，S1 之外的阶段也跑它）：宿主 NVIDIA Vulkan 驱动线程 `[vkps] Update` 有 ~0.3-0.4% 单核、**零帧**的常驻地板，会把应用自身成本埋在噪声里；`native` 测真实驱动。判定"我们代码是否为 0"用 `gl`，报告真机成本用 `native` |
 | `IDLE_SAMPLE_S` | 8 | S1 窗口秒数 |
-| `IDLE_SETTLE_S` | 6 | setup（`ctl list`/`capture`）流量与首帧 GL 光栅抖动之后的静默期；缺它时一个 10ms jiffy 就会顶到 max1s 1.0%。10ms jiffy = 1.0% 正好是门槛：冷启动的 release 包（25MB 二进制 + 17MB 字体页入/解析）实测偶发 1 jiffy，verify-release 首跑红、重跑绿即属此列（2026-10-16 记录）；持续 ≥2 jiffy 才是真回归。S1 现在把首窗抬高时**自动重采一次并取更优窗口**（fps 断言仍是整段单次判定），因此 1 jiffy 冷启动不再需要人工重跑；两个窗口都 ≥ 门槛才是真回归 |
+| `IDLE_SETTLE_S` | 6 | setup（`ctl list`/`capture`）流量与首帧 GL 光栅抖动之后的静默期；缺它时一个 10ms jiffy 就会顶到 max1s 1.0%。10ms jiffy = 1.0% 正好是门槛：冷启动的 release 包（25MB 二进制 + 17MB 字体页入/解析）实测偶发 1 jiffy，verify-release 首跑红、重跑绿即属此列（2026-10-16 记录）；持续 ≥2 jiffy 才是真回归。S1 现在把首窗抬高时**自动重采一次并取更优窗口**（fps 断言仍是整段单次判定），把偶发 jiffy 的冷启动假阳性概率降下来；两个窗口都 ≥ 门槛才是真回归/真失败 |
 | `IDLE_MAX1S_PCT` | 1.0 | S1 门槛（% 单核） |
 | `IDLE_MAX_FPS` | 0 | S1 帧数上限（帧必须是 0 才叫空闲） |
 | `S7_SAMPLE_S` / `S7_MAX1S_PCT` | 5 / 50 | S7 重命名编辑器窗口与 runaway 兜底 |
@@ -157,9 +157,9 @@ IME M1–M7），`deploy-remote.sh --no-build --keep-running` + migrate2.sock �
   `while :; printf "spin %s\r"` pane 混在采样里。
 
 ## 本轮修复后的 release 包 gate（65728655，2026-10-17 凌晨）
-`pack-release.sh` + `bash verify-release.sh` **一次全绿**（新增的 S1 首窗超线自动
-重采生效：本机实测第一窗 1.0%（冷 bundle 1 jiffy = 恰在门槛）→ 第二窗 0.0%
-通过，冷启动不再需要人工重跑）。同一 release 二进制上 `e2e-idle-cpu.sh` 实测：
+`pack-release.sh` + `bash verify-release.sh` **一次全绿**（S1 首窗被偶发 jiffy
+抬高时自动重采一次、取更优窗口：降低冷启动假阳性概率；两个窗口都 ≥ 门槛才是
+真回归/真失败，重试不吞帧）。同一 release 二进制上 `e2e-idle-cpu.sh` 实测：
 
 | 场景 | 数字 | 判定 |
 | --- | --- | --- |
