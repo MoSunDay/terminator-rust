@@ -61,6 +61,16 @@ pub fn sync(ctx: &Context, theme_name: &str, font_size: f32, uist: &mut UiState)
     style.visuals.menu_corner_radius = CornerRadius::same(tokens::R_MD);
     style.visuals.selection.bg_fill = accent.gamma_multiply(0.25);
     style.visuals.selection.stroke = Stroke::NONE;
+    // NO_MOTION pins the TextEdit caret too: egui blinks it by calling
+    // `request_repaint_after_secs` at every edge (text_selection/
+    // visuals.rs), i.e. a focused rename/Settings editor re-entered the
+    // render loop 2-6x/s with NOTHING else to draw (measured: 1490 of
+    // 1501 frame causes with a held-open pane rename editor; the pass is
+    // ~1.3ms, but on a software rasterizer each frame costs ~100ms of
+    // CPU across llvmpipe workers). blink=false still PAINTS the caret,
+    // solid, which is the flag's end-state contract - the pane cursor
+    // keeps its own square-wave blink (render/tokens.rs CURSOR_ON_S).
+    style.visuals.text_cursor.blink = tokens::motion_enabled();
 
     // egui Separators paint with the noninteractive bg_stroke.
     style.visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, line);

@@ -75,6 +75,12 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 /// moment schedulable - `render::cadence` computes the exact wakeup
 /// instead of re-rendering continuously (a soft sine never rests).
 pub fn cursor_alpha(t: f32) -> f32 {
+    // NO_MOTION pins the blink to its end state (visible): pixel-scraping
+    // e2e runs and `cadence::next_deadline` (which skips the edge when
+    // motion is off) then agree on a static cursor.
+    if !motion_enabled() {
+        return 1.0;
+    }
     if t.rem_euclid(CURSOR_PERIOD_S) < CURSOR_ON_S {
         1.0
     } else {
