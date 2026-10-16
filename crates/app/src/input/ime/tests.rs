@@ -1,4 +1,5 @@
 use super::*;
+use std::time::{Duration, Instant};
 
 fn rect() -> Rect {
     Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(8.0, 16.0))
@@ -179,4 +180,142 @@ fn consecutive_compositions_follow_both_immediate_and_delayed_echo() {
         let out = platform_ime_output(true, fallback, false).expect("fallback stays enabled");
         assert!(!out.should_interrupt_composition);
     }
+}
+
+#[test]
+fn preedit_arms_and_empty_preedit_disarms_the_editor_latch() {
+    assert_eq!(
+        editor_latch(false, Some("ni"), false, false, false),
+        (true, false)
+    );
+    // Steady-state frames while composing hold the latch.
+    assert_eq!(editor_latch(true, None, false, false, false), (true, false));
+    // The empty preedit is the backend's "composition cancelled" signal.
+    assert_eq!(
+        editor_latch(true, Some(""), false, false, false),
+        (false, false)
+    );
+    // Idle and unarmed stays off.
+    assert_eq!(
+        editor_latch(false, None, false, false, false),
+        (false, false)
+    );
+}
+
+#[test]
+fn disabled_clears_the_editor_latch_and_its_grace() {
+    // Disabled disarms immediately and beats a running grace...
+    assert_eq!(editor_latch(false, None, false, true, true), (false, false));
+    // ...and a commit + preedit in the same frame.
+    assert_eq!(
+        editor_latch(true, Some("ni"), true, true, true),
+        (false, false)
+    );
+}
+
+#[test]
+#[allow(deprecated)] // ImeEvent::Disabled is deprecated upstream but still an input to the fold
+fn a_disabled_event_clears_the_editor_latch_through_the_event_stream() {
+    use crate::state::window_ui;
+    use egui::{Event, ImeEvent, RawInput};
+    let mut w = window_ui();
+    w.ime_editor_composing = true;
+    w.ime_editor_grace = Some(Instant::now() + EDITOR_GRACE);
+    let ctx = Context::default();
+    ctx.begin_pass(RawInput {
+        events: vec![Event::Ime(ImeEvent::Disabled)],
+        ..Default::default()
+    });
+    assert!(!update_editor_latch(&ctx, &mut w, Instant::now()));
+    ctx.end_pass().textures_delta.clear();
+    assert!(!w.ime_editor_composing);
+    assert!(w.ime_editor_grace.is_none());
+}
+
+#[test]
+fn the_editor_latch_re_arms_after_a_commit() {
+    let (armed, grace) = editor_latch(true, None, true, false, false);
+    assert!(!armed, "commit ends the composition");
+    assert!(grace, "commit keeps the chase through the grace");
+    // The next composition's first preedit arms again (grace retired).
+    let (armed, grace) = editor_latch(false, Some("h"), false, false, true);
+    assert!(armed);
+    assert!(!grace);
+    assert!(armed || grace);
+}
+
+#[test]
+fn empty_preedit_within_a_grace_keeps_the_grace_running() {
+    // X11 backends often emit the composition-ended empty preedit right
+    // after the commit; the panel dismissal may still be in flight.
+    let (armed, grace) = editor_latch(false, Some(""), false, false, true);
+    assert!(!armed);
+    assert!(grace, "a running post-commit grace is not cut short");
+}
+
+#[test]
+fn a_focused_editor_without_composition_keeps_the_chase_idle() {
+    use crate::state::window_ui;
+    use egui::RawInput;
+    let mut w = window_ui();
+    let ctx = Context::default();
+    ctx.begin_pass(RawInput::default());
+    assert!(!update_editor_latch(&ctx, &mut w, Instant::now()));
+    ctx.end_pass().textures_delta.clear();
+    assert!(
+        !w.ime_editor_composing,
+        "a merely focused editor must never arm the latch"
+    );
+    assert!(w.ime_editor_grace.is_none());
+}
+
+#[test]
+fn commit_keeps_effective_composing_true_until_the_grace_deadline() {
+    use crate::state::window_ui;
+    use egui::{Event, ImeEvent, RawInput};
+
+    let t0 = Instant::now();
+    let mut w = window_ui();
+    let ctx = Context::default();
+    // A composing frame arms the latch (chase on).
+    ctx.begin_pass(RawInput {
+        events: vec![Event::Ime(ImeEvent::Preedit {
+            text: "ni".into(),
+            active_range_chars: None,
+        })],
+        ..Default::default()
+    });
+    assert!(update_editor_latch(&ctx, &mut w, t0));
+    ctx.end_pass().textures_delta.clear();
+    assert!(w.ime_editor_composing);
+    assert!(w.ime_editor_grace.is_none());
+    // The commit frame disarms the latch but keeps composing effective.
+    let t1 = t0 + Duration::from_millis(50);
+    ctx.begin_pass(RawInput {
+        events: vec![Event::Ime(ImeEvent::Commit("你".into()))],
+        ..Default::default()
+    });
+    assert!(
+        update_editor_latch(&ctx, &mut w, t1),
+        "the grace keeps the chase on past the commit"
+    );
+    ctx.end_pass().textures_delta.clear();
+    assert!(!w.ime_editor_composing);
+    assert_eq!(w.ime_editor_grace, Some(t1 + EDITOR_GRACE));
+    // A silent frame INSIDE the grace still counts as composing...
+    ctx.begin_pass(RawInput::default());
+    assert!(update_editor_latch(
+        &ctx,
+        &mut w,
+        t1 + Duration::from_millis(100)
+    ));
+    ctx.end_pass().textures_delta.clear();
+    assert!(!w.ime_editor_composing);
+    assert!(w.ime_editor_grace.is_some());
+    // ...while the deadline itself stops it and clears the grace.
+    ctx.begin_pass(RawInput::default());
+    assert!(!update_editor_latch(&ctx, &mut w, t1 + EDITOR_GRACE));
+    ctx.end_pass().textures_delta.clear();
+    assert!(!w.ime_editor_composing);
+    assert!(w.ime_editor_grace.is_none());
 }

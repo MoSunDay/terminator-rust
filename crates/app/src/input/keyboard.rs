@@ -317,6 +317,10 @@ pub fn handle(
             Event::Ime(ImeEvent::Preedit { text, .. }) => {
                 // An empty preedit is the composition-ended signal on X11.
                 if let Some(w) = st.win_mut() {
+                    // Handling a pane composition proves no editor is
+                    // composing: drop any stale editor latch/grace so the
+                    // editor chase cannot keep running for this window.
+                    crate::input::ime::clear_editor_latch(&mut w.ui);
                     w.ui.ime = if text.is_empty() {
                         None
                     } else {
@@ -330,6 +334,7 @@ pub fn handle(
                 // text) nor bracketed paste. Plain text: no shortcut
                 // routing, no scroll intercept.
                 if let Some(w) = st.win_mut() {
+                    crate::input::ime::clear_editor_latch(&mut w.ui);
                     w.ui.ime = None;
                 }
                 if let Some(p) = focused {

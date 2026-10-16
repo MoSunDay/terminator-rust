@@ -5,6 +5,7 @@
 //! orchestrations live in `actions`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
 
 use layout_tree::{new_tree, split_pane, Axis, LayoutTree, PaneId};
 use remote::{PaneKind, RemoteTarget};
@@ -257,6 +258,18 @@ pub struct WindowUi {
     /// including a delayed echo of the previous commit. Idle hidden-cursor
     /// frames clear it because the platform IME is already disabled.
     pub ime_anchor: Option<egui::Rect>,
+    /// Editor IME composition latch: true while a focused TextEdit's
+    /// composition (a NON-EMPTY preedit) is in flight. Only a live
+    /// composition may engage the platform IME chase - a merely focused
+    /// rename/Settings editor must keep the platform side idle (no
+    /// 16ms repaint loop, no X round-trips). Folded per frame by
+    /// `input::ime` from this window's `Event::Ime` stream.
+    pub ime_editor_composing: bool,
+    /// Deadline until which the platform chase stays on AFTER a Commit:
+    /// the IME server dismisses its candidate panel asynchronously, so
+    /// its last repositioning can land past the commit event. `None` =
+    /// no grace (latch off, and the deadline passed or was cleared).
+    pub ime_editor_grace: Option<Instant>,
     /// Chip-strip horizontal scroll offset (px); 0 while the tabs fit.
     pub tab_scroll: f32,
     /// Active tab when the scroll was last auto-followed (keep the active
@@ -321,6 +334,8 @@ pub fn window_ui() -> WindowUi {
         ime_pane: None,
         ime_last_pane: None,
         ime_anchor: None,
+        ime_editor_composing: false,
+        ime_editor_grace: None,
         tab_scroll: 0.0,
         tab_scroll_tab: 0,
         close_dialog: None,
