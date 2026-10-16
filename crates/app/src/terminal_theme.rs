@@ -6,6 +6,8 @@ use libghostty_vt::{
 };
 use theme::{Palette, Rgb};
 
+use crate::session_map::{SessionMap, ThemeSyncKey};
+
 fn rgb(c: Rgb) -> RgbColor {
     RgbColor {
         r: c.r,
@@ -48,14 +50,44 @@ pub fn apply(
     Ok(changed)
 }
 
-pub fn sync(sessions: &mut crate::session_map::SessionMap, palette: &Palette, bg: Option<Rgb>) {
+pub fn sync(sessions: &mut SessionMap, palette: &Palette, bg: Option<Rgb>) {
+    // O(1) fast path: the previous call already applied exactly this
+    // palette + background to every session that exists NOW (the session
+    // generation covers spawns/adoptions/removals), so there is nothing a
+    // re-apply could change. Both per-frame calls used to rebuild a
+    // 256-slot palette per session even when nothing moved.
+    if key_matches(sessions, palette, bg) {
+        return;
+    }
+    // A terminal that rejected the palette keeps the stale key, so the
+    // next call retries it instead of banking the failure.
+    let mut failed = false;
     for session in sessions.map.values_mut() {
         match apply(&mut session.term, palette, bg) {
             Ok(true) => vt_pane::task::invalidate_frame(session),
             Ok(false) => {}
-            Err(error) => log::warn!("terminal theme: {error}"),
+            Err(error) => {
+                failed = true;
+                log::warn!("terminal theme: {error}");
+            }
         }
     }
+    if !failed {
+        let gen = sessions.session_gen;
+        sessions.theme_sync = Some(ThemeSyncKey {
+            palette: palette.name.clone(),
+            bg,
+            gen,
+        });
+    }
+}
+
+/// True when the last [`sync`] already covered this palette, background and
+/// session generation: no session can be missing the current theme.
+fn key_matches(sessions: &SessionMap, palette: &Palette, bg: Option<Rgb>) -> bool {
+    sessions.theme_sync.as_ref().is_some_and(|key| {
+        key.gen == sessions.session_gen && key.bg == bg && key.palette == palette.name
+    })
 }
 
 #[cfg(test)]
@@ -105,6 +137,84 @@ mod tests {
                 g: 205,
                 b: 239
             }
+        );
+    }
+
+    #[test]
+    fn sync_key_only_matches_the_palette_bg_and_session_generation_it_banked() {
+        let mut sessions = crate::session_map::session_map();
+        let palette = theme::builtin::dracula();
+        let bg = Some(Rgb { r: 1, g: 2, b: 3 });
+        assert!(!key_matches(&sessions, &palette, bg), "nothing synced yet");
+        sync(&mut sessions, &palette, bg);
+        assert!(key_matches(&sessions, &palette, bg), "the sync banked it");
+        // A different palette, a different effective background, or a
+        // session entering/leaving the map re-arms the sync.
+        assert!(!key_matches(
+            &sessions,
+            &theme::builtin::kanagawa_wave(),
+            bg
+        ));
+        assert!(!key_matches(&sessions, &palette, None));
+        assert!(!key_matches(
+            &sessions,
+            &palette,
+            Some(Rgb { r: 1, g: 2, b: 4 })
+        ));
+        sessions.session_gen += 1;
+        assert!(!key_matches(&sessions, &palette, bg), "generation moved");
+        // Re-syncing under the new generation banks it again.
+        sync(&mut sessions, &palette, bg);
+        assert!(key_matches(&sessions, &palette, bg));
+    }
+
+    /// A short-lived real session (skips on a host without a usable pty).
+    fn test_session() -> Option<vt_pane::Session> {
+        let opts = vt_pane::SessionOpts::command(10, 3, vec!["true".into()]);
+        match vt_pane::task::spawn_session(&opts) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!("skip: {e}");
+                None
+            }
+        }
+    }
+
+    #[test]
+    fn sync_themes_a_session_spawned_after_the_first_sync() {
+        let mut sessions = crate::session_map::session_map();
+        let palette = theme::builtin::dracula();
+        let fg = rgb(palette.foreground);
+        let Some(first) = test_session() else { return };
+        crate::session_map::note_spawned(&mut sessions, 1, first);
+        sync(&mut sessions, &palette, None);
+        assert!(key_matches(&sessions, &palette, None), "first sync banked");
+        assert_eq!(
+            sessions
+                .map
+                .get(&1)
+                .expect("session")
+                .term
+                .default_fg_color()
+                .unwrap(),
+            Some(fg)
+        );
+        // A session spawned after that sync must still get the palette:
+        // the generation in the key re-arms it (an over-eager memo would
+        // leave the new terminal on the engine defaults).
+        let Some(second) = test_session() else { return };
+        crate::session_map::note_spawned(&mut sessions, 2, second);
+        assert!(!key_matches(&sessions, &palette, None), "spawn re-arms");
+        sync(&mut sessions, &palette, None);
+        assert_eq!(
+            sessions
+                .map
+                .get(&2)
+                .expect("session")
+                .term
+                .default_fg_color()
+                .unwrap(),
+            Some(fg)
         );
     }
 }

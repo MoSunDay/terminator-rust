@@ -80,26 +80,47 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     let m = chrome::metrics(font_size);
     let cell = grid::measure_cells(&ctx, font_size);
 
-    for session in d.sess.map.values_mut() {
-        // Announced -> active while tmux owns the mouse; leaving that mode
-        // invalidates the negotiated private copy key for subsequent programs.
-        use std::sync::atomic::Ordering;
-        match (
-            session.copy_transport.load(Ordering::Acquire),
-            vt_pane::mouse::is_mouse_tracking(session),
-        ) {
-            (1, true) => session.copy_transport.store(2, Ordering::Release),
-            (2, false) => session.copy_transport.store(0, Ordering::Release),
-            _ => {}
-        }
+    // Per-frame session bookkeeping: (a) the tmux copy-transport state
+    // machine and (b) OSC 52 clipboard drains into `ctx.copy_text`.
+    //
+    // Both are GLOBAL, so the ROOT pass alone owns them: every window
+    // renders (root + one immediate viewport per secondary) but this loop
+    // walks EVERY session - not just the root window's - so one pass
+    // covers all windows, while running it per window cost
+    // windows x sessions. `ctx.copy_text` addresses the CURRENT viewport's
+    // platform output, which eframe applies for the root and for every
+    // immediate viewport alike, so the root pass reaches the same OS
+    // clipboard. Nothing after the root pass can create a pending copy:
+    // pty bytes enter a terminal in `pump_all` and in the ipc drain
+    // (main.rs), both of which run before the root pass, and the later
+    // passes only render.
+    if ui.ctx().viewport_id() == egui::ViewportId::ROOT {
+        for session in d.sess.map.values_mut() {
+            use std::sync::atomic::Ordering;
+            // Announced -> active while tmux owns the mouse; leaving that
+            // mode invalidates the negotiated private copy key for
+            // subsequent programs. Read the atomic FIRST: `is_mouse_tracking`
+            // is an FFI query into the terminal, and from the idle state
+            // (every pane that is not a managed tmux) no transition can be
+            // taken, so the answer would be discarded anyway.
+            let transport = session.copy_transport.load(Ordering::Acquire);
+            let next = match transport {
+                1 if vt_pane::mouse::is_mouse_tracking(session) => 2,
+                2 if !vt_pane::mouse::is_mouse_tracking(session) => 0,
+                other => other,
+            };
+            if next != transport {
+                session.copy_transport.store(next, Ordering::Release);
+            }
 
-        if let Some(text) = session
-            .clipboard
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
-            ctx.copy_text(text);
+            if let Some(text) = session
+                .clipboard
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+            {
+                ctx.copy_text(text);
+            }
         }
     }
     actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
@@ -169,7 +190,9 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     } else {
         1.0
     };
-    let blink_on = frame_time.rem_euclid(1.0) < 0.5;
+    // NO_MOTION pins the blink phase too (see the `needs` comment at the
+    // end of this function).
+    let blink_on = !tokens::motion_enabled() || frame_time.rem_euclid(1.0) < 0.5;
     // Collected during the pane loop to schedule the next wakeup (see
     // cadence): which frames need blink edges at all.
     let mut blink_text = false;
@@ -218,22 +241,31 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 // borrow until the end of this arm.
                 let vp_pinned = vt_pane::viewport::pinned(s);
                 let vp_geo = vt_pane::viewport::geometry(s);
-                // Shape-cache key input, read BEFORE `fr` pins the session
-                // borrow for the rest of this arm (a shared read under the
-                // outstanding `&mut` reborrow does not compile): the gen
-                // covers the frame-level pump in main.rs plus every prior
-                // invalidation. Bytes racing this pass bump the gen, and
-                // the reader wake schedules the follow-up frame, so a hit
-                // replays at most one frame of stale content.
-                let fgen = vt_pane::task::frame_gen(s);
-                let fr = session_map::sync_frame(s, content.width(), content.height(), cell);
+                // One call, one borrow: `sync_frame` resizes if the pane's
+                // grid moved and hands back the snapshot TOGETHER with the
+                // generation it was built at. Reading the generation before
+                // it (or pumping inside it) keyed the shape cache one
+                // invalidation behind the painted frame, so every output
+                // burst tessellated twice. Bytes racing this pass bump the
+                // gen in `pump_all` next frame, and the reader wake
+                // schedules that frame, so a hit replays at most one frame
+                // of stale content.
+                let sync = session_map::sync_frame(s, content.width(), content.height(), cell);
+                let fgen = sync.gen;
+                let fr = sync.frame;
                 let text = st.win().and_then(|w| w.ui.ime.clone());
                 let composing =
                     Some(pane) == focused && text.as_deref().is_some_and(|t| !t.is_empty());
                 let span = preedit::first_span(ui.ctx(), text.as_deref(), cell, font_size);
                 blink_text |= fr.has_blink;
-                cursor_blink =
-                    user_focused && Some(pane) == focused && fr.cursor.visible && !composing;
+                // NO_MOTION pins the blink (tokens::cursor_alpha), so no
+                // future edge is ever needed - scheduling one kept an
+                // otherwise idle window repainting at 2fps.
+                cursor_blink = tokens::motion_enabled()
+                    && user_focused
+                    && Some(pane) == focused
+                    && fr.cursor.visible
+                    && !composing;
                 let shown = preedit::placement::preview(fr, composing, span);
                 let args = grid::DrawArgs {
                     fr: &shown,
@@ -503,7 +535,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             .is_some_and(|w| w.ui.edge.is_some() || w.ui.tab_drag.is_some() || w.ui.drag.is_some());
     let needs = cadence::Needs {
         cursor_blink,
-        blink_text,
+        // Same pin: blink-attribute text renders pinned-on under NO_MOTION.
+        blink_text: blink_text && tokens::motion_enabled(),
         interacting,
     };
     if let Some(wait) = cadence::next_deadline(Instant::now(), frame_time, sess, needs) {

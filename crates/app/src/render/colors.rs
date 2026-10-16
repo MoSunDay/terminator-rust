@@ -110,7 +110,34 @@ pub fn fallback_palette() -> Palette {
 }
 
 /// Resolve the active palette by theme name (falls back to the first builtin).
+///
+/// Memoized: one frame resolves the theme 5-8 times (screen, tab strip,
+/// panes, inspector, close dialog, style sync) and each miss re-ran
+/// `builtin_by_name`'s lowercasing plus a fresh `Palette`. The single-slot
+/// memo is keyed by the REQUESTED name (so `""` and an unknown name keep
+/// their own entries even though both resolve to the first builtin), and
+/// the palette is cloned out: callers can never mutate the cached value.
 pub fn palette_of(name: &str) -> Palette {
+    PALETTE_MEMO.with(|memo| {
+        let mut slot = memo.borrow_mut();
+        if let Some((key, pal)) = slot.as_ref() {
+            if key == name {
+                return pal.clone();
+            }
+        }
+        let pal = resolve_palette(name);
+        *slot = Some((name.to_owned(), pal.clone()));
+        pal
+    })
+}
+
+thread_local! {
+    /// Single-slot [`palette_of`] memo; see there.
+    static PALETTE_MEMO: std::cell::RefCell<Option<(String, Palette)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn resolve_palette(name: &str) -> Palette {
     builtin_by_name(name)
         .or_else(|| BUILTIN_NAMES.first().and_then(|n| builtin_by_name(n)))
         .unwrap_or_else(fallback_palette)
@@ -265,6 +292,21 @@ mod tests {
             palette_of("no-such-theme").name,
             palette_of(BUILTIN_NAMES[0]).name
         );
+    }
+
+    #[test]
+    fn palette_memo_serves_repeat_lookups_without_sharing_mutations() {
+        let first = palette_of("dracula");
+        let mut second = palette_of("dracula");
+        assert_eq!(first, second, "same name, same palette");
+        // The cached palette must not be handed out by reference: mutating
+        // a caller's copy cannot change what the next lookup returns.
+        second.background = Rgb { r: 1, g: 2, b: 3 };
+        assert_ne!(palette_of("dracula").background, second.background);
+        // A new name still resolves through the real builtin table, and
+        // the two fallback names keep their own (equal) entries.
+        assert_ne!(palette_of("tokyo-night").name, first.name);
+        assert_eq!(palette_of("").name, palette_of("also-unknown").name);
     }
 
     #[test]

@@ -15,10 +15,28 @@ use vt_pane::{task as vtask, Frame as VtFrame, Session, SessionOpts, Wake};
 
 use crate::render::colors;
 use crate::state::{compute_grid, CellSize, PaneMeta};
+use theme::Rgb;
 
 /// Terminal size used at spawn time; resized to the real pane on first frame.
 pub const START_COLS: u16 = 80;
 pub const START_ROWS: u16 = 24;
+
+/// Change-detection key of the last [`crate::terminal_theme::sync`] run
+/// (stored in [`SessionMap::theme_sync`]). Equal key = every session that
+/// exists NOW already carries exactly this palette + effective background,
+/// so the sync can return without touching a single terminal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeSyncKey {
+    /// Resolved palette identity (`Palette::name`, e.g. "Dracula"). The
+    /// builtin palettes are pure functions of their name, so the resolved
+    /// name identifies the whole 16-color table.
+    pub palette: String,
+    /// Effective background override the palette was applied with
+    /// (settings `bg_color`, `None` = the palette's own background).
+    pub bg: Option<Rgb>,
+    /// [`SessionMap::session_gen`] when that run happened.
+    pub gen: u64,
+}
 
 pub struct SessionMap {
     pub map: HashMap<PaneId, Session>,
@@ -40,6 +58,18 @@ pub struct SessionMap {
     /// When the pane's current session was spawned (a healthy run resets
     /// the backoff ladder).
     pub spawned_at: HashMap<PaneId, Instant>,
+    /// Bumped whenever a session ENTERS or LEAVES `map` (the three
+    /// production mutation points are `note_spawned`, `terminate` and
+    /// `detach`; tests that insert straight into `map` bypass it, which
+    /// only costs them a re-apply). Every other `map` access mutates a
+    /// session in place and cannot change which sessions need a theme.
+    pub session_gen: u64,
+    /// Key of the last [`crate::terminal_theme::sync`] run (palette + bg +
+    /// session generation), or `None` before the first one. The sync runs
+    /// twice per frame - once before the window passes, once after a pass
+    /// may have spawned sessions - and rebuilding a 256-slot palette per
+    /// session per call is pure overhead once nothing moved.
+    pub theme_sync: Option<ThemeSyncKey>,
 }
 
 /// Wait after a failed spawn before retrying (stops per-frame fork storms).
@@ -58,7 +88,15 @@ pub fn session_map() -> SessionMap {
         reconnect_at: HashMap::new(),
         reconnect_n: HashMap::new(),
         spawned_at: HashMap::new(),
+        session_gen: 0,
+        theme_sync: None,
     }
+}
+
+/// Note that a session entered or left [`SessionMap::map`]: the theme sync
+/// key must not survive it (the new session still needs its palette).
+fn bump_session_gen(sess: &mut SessionMap) {
+    sess.session_gen = sess.session_gen.wrapping_add(1);
 }
 
 /// True while the pane's post-failure backoff window is still running.
@@ -78,6 +116,7 @@ pub fn terminate(sess: &mut SessionMap, id: PaneId) {
     sess.retry_at.remove(&id);
     sess.exited_seen.remove(&id);
     sess.reconnect_at.remove(&id);
+    bump_session_gen(sess);
 }
 
 /// How long `detach` waits for the reader thread to close the master fd.
@@ -100,6 +139,7 @@ pub fn detach(sess: &mut SessionMap, id: PaneId) {
     sess.retry_at.remove(&id);
     sess.exited_seen.remove(&id);
     sess.reconnect_at.remove(&id);
+    bump_session_gen(sess);
 }
 
 /// Options for ADOPTING an existing session rather than spawning one:
@@ -128,6 +168,7 @@ pub fn note_spawned(sess: &mut SessionMap, id: PaneId, s: Session) {
     sess.exited_seen.remove(&id);
     sess.reconnect_at.remove(&id);
     sess.spawned_at.insert(id, Instant::now());
+    bump_session_gen(sess);
 }
 
 fn local_plan() -> SpawnPlan {
@@ -208,13 +249,31 @@ pub fn pump_all(sess: &mut SessionMap) -> Vec<PaneId> {
     noticed
 }
 
-/// Pump one session, resize the terminal to the content area if needed and
-/// return the render snapshot (cached between changes - see
-/// `vtask::frame_cached` - so idle frames cost no snapshot churn).
-pub fn sync_frame(sess: &mut Session, w: f32, h: f32, cell: CellSize) -> &VtFrame {
-    if let Err(e) = vtask::pump(sess) {
-        warn!("pump: {e}");
-    }
+/// One pane's per-frame render input: the render snapshot plus the
+/// frame-cache generation it was built at (see [`sync_frame`]).
+pub struct FrameSync<'a> {
+    /// [`vtask::frame_gen`] covering `frame`. Render-side shape caches key
+    /// on it, so it must be read in the SAME call that hands out the
+    /// snapshot - a key read before a later resize/invalidation would be
+    /// one generation behind the painted content.
+    pub gen: u64,
+    /// Terminal snapshot, cached between changes (`vtask::frame_cached`).
+    pub frame: &'a VtFrame,
+}
+
+/// Resize the terminal to the content area if needed and return the render
+/// snapshot (cached between changes - see `vtask::frame_cached` - so idle
+/// frames cost no snapshot churn) together with the generation covering it.
+///
+/// Does NOT pump: [`pump_all`] drains every session's pty ONCE per frame
+/// before any render pass (main.rs), and the ipc drain - which also pumps a
+/// captured pane - runs there too, so pumping here re-drained nothing while
+/// invalidating the snapshot mid-frame: every output burst then tessellated
+/// twice (the pass painted the fresh snapshot under a stale generation, the
+/// next pass rebuilt the same shapes under the new one). A session spawned
+/// after this frame's pump gets its first bytes in the next frame's
+/// `pump_all`, which its reader wake already schedules.
+pub fn sync_frame(sess: &mut Session, w: f32, h: f32, cell: CellSize) -> FrameSync<'_> {
     let (cols, rows) = compute_grid(w, h, cell.w, cell.h);
     let stale_grid = {
         let cur = vtask::frame_cached(sess);
@@ -226,7 +285,13 @@ pub fn sync_frame(sess: &mut Session, w: f32, h: f32, cell: CellSize) -> &VtFram
         }
         vtask::invalidate_frame(sess);
     }
-    vtask::frame_cached(sess)
+    // Read the generation AFTER the resize above bumped it (a rebuild by
+    // `frame_cached` does not move it), so key and snapshot agree.
+    let gen = vtask::frame_gen(sess);
+    FrameSync {
+        gen,
+        frame: vtask::frame_cached(sess),
+    }
 }
 
 /// OSC 0/2 title of a pane's session ("" when absent).
@@ -330,7 +395,14 @@ mod tests {
             h_px: 16,
         };
         let f = sync_frame(&mut sess, 160.0, 80.0, cell);
-        assert_eq!((f.cols, f.rows), (20, 5));
+        assert_eq!((f.frame.cols, f.frame.rows), (20, 5));
+        let f_gen = f.gen;
+        // The returned generation covers the snapshot: a resize just
+        // invalidated it, and the next call (nothing moved) reports the
+        // same generation with the same grid.
+        let again = sync_frame(&mut sess, 160.0, 80.0, cell);
+        assert_eq!((again.frame.cols, again.frame.rows), (20, 5));
+        assert_eq!(again.gen, f_gen, "unchanged pane must not re-bump the gen");
     }
 
     #[test]

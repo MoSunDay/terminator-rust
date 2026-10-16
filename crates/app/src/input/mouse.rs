@@ -118,33 +118,40 @@ pub fn divider_interaction(ui: &mut Ui, st: &mut AppState, area: Rect, dirty: &m
     let WindowState { tree, ui: wui, .. } = w;
     let drag = &mut wui.drag;
     let tab_idx = tree.active_tab;
-    let Some(tab) = tree.tabs.get(tab_idx) else {
+    if tree.tabs.get(tab_idx).is_none() {
         *drag = None;
         return false;
-    };
-    let tab_cloned = tab.clone();
+    }
     let lt_area = crate::render::grid::lt_rect(area);
 
     if let Some(d) = drag.as_mut() {
+        // Copy the drag target out of the reborrow first: the divider
+        // lookup then only needs `tabs` SHARED and releases it before the
+        // ratio write below takes it mutably. Cloning the whole active tab
+        // every frame was what unlinking those two borrows used to cost.
+        let (d_tab, d_pane, d_level) = (d.tab, d.pane, d.level);
         let down = ui.input(|i| i.pointer.any_down());
         let pos = ui.input(|i| i.pointer.hover_pos());
-        if down {
-            if let Some(pos) = pos {
-                if let Some(hit) = dividers(&tab_cloned, lt_area, gap)
+        let hit = if down {
+            pos.and_then(|pos| {
+                let tab = tree.tabs.get(tab_idx)?;
+                dividers(tab, lt_area, gap)
                     .into_iter()
-                    .find(|h| h.pane == d.pane && h.level == d.level)
+                    .find(|h| h.pane == d_pane && h.level == d_level)
                     .or_else(|| {
-                        find_divider(&tab_cloned, lt_area, gap, pos, 32.0)
-                            .filter(|h| h.pane == d.pane && h.level == d.level)
+                        find_divider(tab, lt_area, gap, pos, 32.0)
+                            .filter(|h| h.pane == d_pane && h.level == d_level)
                     })
-                {
-                    let ratio = drag_ratio(&hit, pos, gap);
-                    if let Some(t) = tree.tabs.get_mut(d.tab) {
-                        if set_ratio_at_level(&mut t.root, d.pane, d.level, ratio) {
-                            *dirty = true;
-                            return true;
-                        }
-                    }
+            })
+        } else {
+            None
+        };
+        if let (Some(hit), Some(pos)) = (hit, pos) {
+            let ratio = drag_ratio(&hit, pos, gap);
+            if let Some(t) = tree.tabs.get_mut(d_tab) {
+                if set_ratio_at_level(&mut t.root, d_pane, d_level, ratio) {
+                    *dirty = true;
+                    return true;
                 }
             }
         }
@@ -154,7 +161,11 @@ pub fn divider_interaction(ui: &mut Ui, st: &mut AppState, area: Rect, dirty: &m
     let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else {
         return false;
     };
-    let Some(hit) = find_divider(&tab_cloned, lt_area, gap, pos, DIVIDER_TOL) else {
+    let Some(hit) = tree
+        .tabs
+        .get(tab_idx)
+        .and_then(|tab| find_divider(tab, lt_area, gap, pos, DIVIDER_TOL))
+    else {
         return false;
     };
     ui.ctx().set_cursor_icon(match hit.axis {
