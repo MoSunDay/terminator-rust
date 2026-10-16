@@ -5,6 +5,8 @@
 
 use egui::{pos2, Id, Pos2, Rect, Sense, Ui};
 
+use crate::render::cadence;
+
 use super::gesture::{moves_origin, resized_rect, Gesture};
 use super::hit::{cursor_for, CORNER, EDGE};
 
@@ -139,9 +141,13 @@ pub fn strips(ui: &mut Ui, win_id: u64, win: Rect, gesture: &mut Option<Gesture>
     // While a gesture is live, drive it from the X server's ground
     // truth instead of events: the WM can break the pointer grab under
     // a per-frame resize (seen on openbox), freezing egui's pointer and
-    // swallowing the release. Polling needs repaints to keep coming.
+    // swallowing the release. Polling needs repaints to keep coming:
+    // single-pass still-immediate (egui subtracts predicted_dt from the
+    // 1ms request -> zero delay), without the double pass a zero-delay
+    // `request_repaint()` arms; ROOT also covers a gesture on a
+    // secondary window (windows render inside the root pass).
     if gesture.is_some() {
-        ui.ctx().request_repaint();
+        cadence::request_soon_single_pass(ui.ctx());
         if let (Some(g), Some(p)) = (gesture.as_ref(), polled) {
             let ppp = ui.input(|i| i.pixels_per_point()).max(0.01);
             let now = pos2(p.x / ppp, p.y / ppp);

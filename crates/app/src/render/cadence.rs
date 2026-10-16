@@ -37,6 +37,47 @@ pub struct Needs {
     pub interacting: bool,
 }
 
+/// Pseudo-immediate single-pass wake: NON-ZERO at the
+/// `request_repaint_after_for` call site, so egui 0.36 does NOT arm the
+/// zero-delay double pass - context.rs only arms `outstanding = 1` for
+/// `delay == Duration::ZERO` ("Each request results in two repaints,
+/// just to give some things time to settle"); for non-zero delays "we
+/// only repaint once". egui then subtracts the viewport's `predicted_dt`
+/// (~16.7ms) AFTER that decision, so this saturates to an immediate
+/// single pass: one frame, right away, no wasted second pass.
+pub const SOON_SINGLE_PASS: Duration = Duration::from_millis(1);
+
+/// Wake delay for pty output: pace frames to at most one per `floor`
+/// (`elapsed` = time since the last frame started, `predicted_dt` =
+/// egui's estimate of one frame).
+///
+/// - `elapsed >= floor`: the floor already passed, so wake with
+///   [`SOON_SINGLE_PASS`] - one immediate pass, no double pass.
+/// - otherwise: wait the REMAINDER of the floor plus `predicted_dt`,
+///   because egui subtracts `predicted_dt` from the requested delay
+///   before scheduling (context.rs `request_repaint_after`: "Make it
+///   less likely we over-shoot the target"). The subtraction lands the
+///   real wake ~`floor - elapsed` from now, and the sum is never zero,
+///   so this stays a single-pass REAL wait - capping the loop at
+///   ~1/floor (60fps at the 16ms default) instead of one frame per
+///   output chunk.
+pub fn output_wake_paced(elapsed: Duration, predicted_dt: Duration, floor: Duration) -> Duration {
+    if elapsed >= floor {
+        SOON_SINGLE_PASS
+    } else {
+        floor - elapsed + predicted_dt
+    }
+}
+
+/// Ask for a ROOT repaint "as soon as possible, but single-pass": a
+/// [`SOON_SINGLE_PASS`] delay instead of a zero-delay
+/// `request_repaint()` (which egui turns into TWO passes). Secondary
+/// viewports render inside the root pass, so waking ROOT refreshes every
+/// window.
+pub fn request_soon_single_pass(ctx: &egui::Context) {
+    ctx.request_repaint_after_for(SOON_SINGLE_PASS, egui::ViewportId::ROOT);
+}
+
 /// Seconds until the next on/off edge of a duty-cycle square wave whose
 /// clock reads `t` (seconds since process start).
 fn next_edge(t: f32, period: f32, on: f32) -> Duration {
@@ -168,5 +209,44 @@ mod tests {
         sess.retry_at.insert(7, now - Duration::from_secs(1));
         let d = next_deadline(now, 0.0, &sess, Needs::default()).expect("some deadline");
         assert_eq!(d, Duration::ZERO);
+    }
+
+    #[test]
+    fn output_wake_waits_out_the_floor() {
+        let floor = Duration::from_millis(16);
+        let pred = Duration::from_micros(16_670); // 1/60s, egui's default
+                                                  // A frame just rendered: the requested delay adds predicted_dt
+                                                  // back on top of the remaining floor, because egui subtracts it.
+        assert_eq!(
+            output_wake_paced(Duration::ZERO, pred, floor),
+            Duration::from_micros(32_670)
+        );
+        // egui's real default prediction (1/60s), from mid-floor: ~28.67ms.
+        let pred60 = Duration::from_secs_f64(1.0 / 60.0);
+        let d = output_wake_paced(Duration::from_millis(4), pred60, floor);
+        let ms = d.as_secs_f64() * 1e3;
+        assert!(
+            (ms - 28.67).abs() < 0.01,
+            "mid-floor delay {ms}ms ~= 28.67ms"
+        );
+        // A real wait: never zero, so egui never arms the double pass.
+        assert!(!d.is_zero());
+    }
+
+    #[test]
+    fn output_wake_is_immediate_once_the_floor_elapsed() {
+        let floor = Duration::from_millis(16);
+        let pred = Duration::from_millis(17);
+        // At, past and long past the floor: one pseudo-immediate pass.
+        assert_eq!(output_wake_paced(floor, pred, floor), SOON_SINGLE_PASS);
+        assert_eq!(
+            output_wake_paced(Duration::from_millis(20), pred, floor),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            output_wake_paced(Duration::from_secs(5), pred, floor),
+            Duration::from_millis(1)
+        );
+        assert!(!SOON_SINGLE_PASS.is_zero());
     }
 }
