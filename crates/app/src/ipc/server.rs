@@ -13,7 +13,7 @@
 //! parts before the [`Command`] crosses to the UI thread.
 
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -36,8 +36,14 @@ const RECV_CHUNK: usize = 64 * 1024;
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the listener waits for the UI thread to answer a request.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
-/// Accept-poll cadence; the stop flag is checked at the same rate.
+/// Error backoff after a failed `accept` (a genuine error, not a wakeup).
 const POLL: Duration = Duration::from_millis(50);
+/// `poll(2)` timeout of the idle accept wait: the stop flag is re-checked
+/// once per second instead of every 50 ms, which removes the last busy
+/// loop from the listener thread (~0.2% of a core on the sandbox host).
+/// A pending connection wakes `poll` immediately, so request latency is
+/// unchanged.
+const IDLE_POLL_MS: libc::c_int = 1000;
 
 /// One client request plus the channel its answer goes back on. Migration
 /// attachments ride along: `fds` (one adopted PTY per depth-first leaf)
@@ -168,12 +174,35 @@ pub(crate) fn start_at(path: PathBuf, ctx: &egui::Context) -> Option<Ipc> {
     })
 }
 
-/// Accept loop: parks on `WouldBlock` in 50 ms slices so `Drop` can stop it.
+/// Park the listener thread until `listener` has a pending connection or
+/// the idle timeout elapses (the only stop-flag re-check of an idle app).
+fn wait_readable(listener: &UnixListener, timeout_ms: libc::c_int) {
+    let mut pfd = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // Safety: one initialized `pollfd`; the kernel only writes `revents`.
+    let rc = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
+    if rc < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            warn!("ipc: poll: {err}");
+            thread::sleep(POLL);
+        }
+    }
+}
+
+/// Accept loop: blocks in `poll(2)` (listener stays non-blocking, so
+/// `accept` never sleeps) — an idle app pays one syscall per second and
+/// `Drop` wakes it with a throwaway connect.
 fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>, ctx: egui::Context) {
     while !stop.load(Ordering::Relaxed) {
+        wait_readable(&listener, IDLE_POLL_MS);
         match listener.accept() {
             Ok((stream, _)) => serve(stream, &tx, &ctx),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(POLL),
+            // Spurious readiness: the next `poll` re-arms the wait.
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(e) => {
                 warn!("ipc: accept: {e}");
                 thread::sleep(POLL);
@@ -324,7 +353,9 @@ pub fn drain(ipc: &mut Ipc, data: &mut crate::state::Data) {
 impl Drop for Ipc {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        // The accept loop re-checks the flag every 50 ms, so join returns.
+        // Wake the poll (best-effort: the 1 s timeout would end it anyway);
+        // the throwaway connection is never served — the loop sees `stop`.
+        let _ = UnixStream::connect(&self.sock);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
