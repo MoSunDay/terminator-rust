@@ -136,3 +136,23 @@ hard-won facts behind these checks.
   TERMINATOR_FRAME_FLOOR_MS=16 的上限 ~62.5fps）。`seq 1 40000` 的
   16s 主线程自旋与 /tmp/base 基线逐秒同形（RSS 恒定、自行恢复）=
   vendored ghostty 既有问题，非本次回归。
+- perf 二次修复 release 29015a79 (2026-10-16 晚, live on 192.168.31.196):
+  pack + `bash verify-release.sh` 全绿（第 2 次运行；第 1 次冷 bundle 的 S1
+  偶发 max1s=1.0% = 恰 1 个 jiffy，重跑即绿，门内已注明）。修复四处评审
+  问题: floor 解析 0=关 (render/stats.rs)、frame_cached Err 保持 cache 不变式
+  (vt-pane/src/task.rs)、close_exited 对 keep-alive pane 停止 exited_seen 的
+  零延迟唤醒自旋 (exit_closable, actions/mod.rs)、wake_delay 抬到
+  SOON_SINGLE_PASS (render/cadence.rs)；另有 ipc 事件驱动 accept。
+  落地: `deploy-remote.sh --no-build --keep-running` 装 29015a79（current ->
+  releases/29015a79…，prev 45452f15；步骤 1-5 OK；步骤 6 冒烟按预期失败——
+  运行实例在 migrate3.sock 而非默认 socket）。新实例 pid 944047 起在
+  migrate3.sock，`ctl migrate` 分批: pane 3 携整 tab 迁 2 pane、pane 1 迁 1、
+  pane 4 已随 tab 走（"no pane with id 4" 属预期）。旧实例 892992 未用
+  SIGTERM: 最后 pane 被 `exit` 后按"用户关掉最后一个 pane"走 quitting 路径
+  自行退出（该语义同时得到一次真机验证）。四个 shell 子进程 699347/700805/
+  707327/893008 PID 全保留；我的压测残留 pane（893008，含一个忘停的
+  `while :; printf spin` 循环）已 Ctrl+C + `exit` 清掉。最终: 单进程 944047 =
+  releases/29015a79…/bin/terminator-rust，pane 2/3（用户 agent 会话）+
+  pane 5（本会话），state.json 1 window/2 tabs。采样教训见
+  agents/perf/index.md（交接现场的 25fps 来自用户两个 pane 的真实 spinner
+  输出，不是空转回归）。
