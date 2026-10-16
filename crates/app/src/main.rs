@@ -13,12 +13,32 @@ mod terminal_theme;
 mod ui;
 mod windows;
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use egui::ViewportBuilder;
 use log::warn;
 
 use crate::state::{data, fresh_keep_prefs, fresh_state, AppState, Data};
+
+/// Monotonic process origin shared by every pacing measurement.
+static PROCESS_START: OnceLock<Instant> = OnceLock::new();
+/// Start of the last ROOT pass, in ms since [`PROCESS_START`].
+static LAST_FRAME_MS: AtomicU64 = AtomicU64::new(0);
+/// egui's `predicted_dt` (microseconds), refreshed at the start of every
+/// root pass; pre-seeded with the fallback so an early wake paces sanely.
+static PREDICTED_DT_US: AtomicU64 = AtomicU64::new(render::stats::PREDICTED_DT_FALLBACK_US);
+
+/// The process-start instant (first use wins).
+fn process_start() -> &'static Instant {
+    PROCESS_START.get_or_init(Instant::now)
+}
+
+/// Milliseconds since [`process_start`].
+fn since_start_ms() -> u64 {
+    process_start().elapsed().as_millis().min(u64::MAX as u128) as u64
+}
 
 struct Terminator {
     data: Data,
@@ -44,18 +64,32 @@ impl Terminator {
         // The render loop is reactive (no repaint tick), so pty output and
         // IPC requests must wake it from their threads. Secondary
         // viewports render inside the root pass, so waking ROOT refreshes
-        // every window. egui 0.36's `request_repaint_after` with a ZERO
-        // delay arms `outstanding = 1`, so the pass starter re-fires the
-        // callback and every pty output burst renders TWICE; a non-zero
-        // delay (1ms) is still effectively immediate but pays for a
-        // single pass.
+        // every window. egui 0.36 `request_repaint_after`: a delay of
+        // exactly ZERO arms `outstanding = 1`, which makes the pass
+        // starter fire the callback again - every pty output burst would
+        // render TWICE; a NON-ZERO delay repaints once. `predicted_dt`
+        // (~16.7ms) is subtracted from the delay AFTER that decision, so
+        // the old fixed 1ms actually saturated to zero: immediate, single
+        // pass, and no coalescing whatsoever. A delay ABOVE predicted_dt
+        // is a REAL wait, so cadence::output_wake_paced waits out the
+        // pacing floor (TERMINATOR_FRAME_FLOOR_MS, default 16ms ~ 60fps)
+        // since the last frame before asking again - batches of output
+        // chunks coalesce into one frame instead of one frame each, with
+        // headroom left on high-refresh displays and Xvfb.
         let mut d = data(st, registry);
         let wake_ctx = cc.egui_ctx.clone();
         d.sess.wake = Some(Arc::new(move || {
-            wake_ctx.request_repaint_after_for(
-                std::time::Duration::from_millis(1),
-                egui::ViewportId::ROOT,
-            )
+            // Time since the last root pass started, ms-quantized (fine
+            // for a 16ms floor; see the statics above).
+            let since_last_frame = Duration::from_millis(since_start_ms())
+                .saturating_sub(Duration::from_millis(LAST_FRAME_MS.load(Ordering::Relaxed)));
+            let predicted = Duration::from_micros(PREDICTED_DT_US.load(Ordering::Relaxed).max(1));
+            let delay = render::cadence::output_wake_paced(
+                since_last_frame,
+                predicted,
+                render::stats::output_floor(),
+            );
+            wake_ctx.request_repaint_after_for(delay, egui::ViewportId::ROOT)
         }));
         Self {
             data: d,
@@ -77,7 +111,17 @@ impl Terminator {
 
 impl eframe::App for Terminator {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Frame instrumentation anchors: `t0` times the WHOLE root pass
+        // (every window renders inside it) and only surfaces with
+        // TERMINATOR_FRAME_STATS=1; the two atomics feed the pty wake
+        // pacing (last pass start + egui's frame-time prediction).
+        let t0 = Instant::now();
         let ctx = ui.ctx().clone();
+        LAST_FRAME_MS.store(since_start_ms(), Ordering::Relaxed);
+        PREDICTED_DT_US.store(
+            render::stats::predicted_dt_us(ctx.input(|i| i.predicted_dt)),
+            Ordering::Relaxed,
+        );
         // Keep the WM max-size constraint glued to the real GPU limit
         // (root viewport; secondaries guard inside their own pass).
         render::surface_guard::apply(&ctx);
@@ -131,6 +175,11 @@ impl eframe::App for Terminator {
         if self.data.ui.quitting {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+
+        // Single exit point (this function has no early returns - keep it
+        // that way): the pass duration reaches the frame-stats gate last,
+        // after everything measurable rendered.
+        render::stats::record(t0.elapsed());
     }
 
     /// Transparent clear: the window is borderless and the panel fills are
