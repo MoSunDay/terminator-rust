@@ -135,8 +135,15 @@ IME M1–M7），`deploy-remote.sh --no-build --keep-running` + migrate2.sock �
   idle 不受影响。.196 的刷新率未知 → 默认保持 16ms/60fps。
 - 运维注记：目标机 `/usr/local/bin/terminator-ctl` 仍是 9 月 6 日旧构建（无
   `instances`），远端一律用 `/opt/terminator-rust/current/bin/terminator-ctl`；
-  本次迁移的实例跑在 `migrate2.sock` 上，下次登录 autostart 回到 ipc.sock
+  本次迁移（29015a79，见 agents/verified-end-to-end.md）的实例跑在 `migrate3.sock`
+  上，下次登录 autostart 回到 ipc.sock
   （stale 套接字由下次 start 回收）。
+
+- 交接后一度看到 25fps / 5.2% avg，追查结论**不是回归**：两个用户 ssh agent
+  pane 在跑各 ~10Hz 的 spinner（真实活动输出，合并唤醒 25fps），`ctl capture`
+  逐 pane 两两 diff 即可定位输出源；`pass_avg≈0.35ms` 说明每帧仍很便宜。
+  测真机 idle 前必须先清自己的压测残留循环——本次交接现场就有一个忘停的
+  `while :; printf "spin %s\r"` pane 混在采样里。
 
 ## 后续路线
 - P1–P4 已落地并发布（闩锁 / 真节流 / 固定开销 / 脏行快照），数字见上两表。
