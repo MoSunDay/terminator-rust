@@ -156,3 +156,22 @@ hard-won facts behind these checks.
   pane 5（本会话），state.json 1 window/2 tabs。采样教训见
   agents/perf/index.md（交接现场的 25fps 来自用户两个 pane 的真实 spinner
   输出，不是空转回归）。
+- perf 评审收尾 release 65728655 (2026-10-17 凌晨, current on 192.168.31.196):
+  `pack-release.sh` + `bash verify-release.sh` **一次全绿**；release 包上
+  `e2e-idle-cpu.sh` PASS（S1 0.0%/0 帧、S1b 0.0%、WAKE 11ms、S7 0.0% 且重命名
+  提交无泄漏、S2 50.0fps、S13 15.6fps / longest_pass 0.00s，数字表见
+  agents/perf/index.md）。修复四处评审发现: `render/screen.rs` 的
+  `cursor_blink` 由逐 pane 赋值改 `fold_cursor_blink` 折叠（后画的非焦点 pane
+  不再清掉焦点 pane 的 blink 需求，回归测试已加）、`ThemeSyncKey.palette` 改存
+  `Palette` 值 + `render_palette_moved` 兜底（bg_color/transparency 同名变更
+  不再早退复用旧快照）、`vt-pane` 抽出 `bank_snapshot` 并新增 pty 测试
+  (`src/tests/snapshot_policy.rs`)、`e2e-idle-cpu.sh` 每段采样后加 `app_alive`
+  探活 + S1 首窗超线自动重采一次取更优窗口（本次实测第一窗 1.0% -> 第二窗
+  0.0% 通过；1 jiffy = 1.0% 恰为门槛，冷 bundle 不再需要人工重跑）。
+  部署 `deploy-remote.sh --no-build --keep-running`: 首次运行步骤 6 冒烟 FAIL
+  （保留实例在 migrate3.sock，smoke 只认默认 ipc.sock）→ 已在 `stage_smoke` 里
+  改为按运行实例的 `TERMINATOR_SOCK`（读 /proc/<pid>/environ）寻址，重跑步骤
+  1-6 全绿 `PASS (kept-running=1)`；`current` -> releases/65728655…，prev
+  29015a79…；运行实例 944047 继续跑 29015a79 镜像（--keep-running 语义），
+  下次 autostart/启动生效。冒烟 `ctl list` 只见 pane 2/3 —— 原 pane 5(707327)
+  的 shell 已退出、pane 经 dead-pane 自动清理移除（699347/700805 仍存活）。
