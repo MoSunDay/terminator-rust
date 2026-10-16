@@ -145,10 +145,10 @@ IME M1–M7），`deploy-remote.sh --no-build --keep-running` + migrate2.sock �
   idle 不受影响。.196 的刷新率未知 → 默认保持 16ms/60fps。
 - 运维注记：目标机 `/usr/local/bin/terminator-ctl` 仍是 9 月 6 日旧构建（无
   `instances`），远端一律用 `/opt/terminator-rust/current/bin/terminator-ctl`；
-  本次迁移（29015a79，见 agents/verified-end-to-end.md）的实例跑在 `migrate3.sock`
-  上，下次登录 autostart 回到 ipc.sock
-  （stale 套接字由下次 start 回收）；2026-10-17 装入 `current` = 65728655
-  （`--keep-running`，未重启运行实例）。
+  29015a79 起运行实例曾跑在 `migrate3.sock`（stale 套接字由下次 start 回收）；
+  2026-10-17 装入 `current` = 65728655 后当日凌晨已实况切换（见
+  agents/verified-end-to-end.md）：运行实例 1052149 = 65728655 镜像 + 默认
+  `ipc.sock`，migrate3.sock 随旧实例 SIGTERM 一并删除。
 
 - 交接后一度看到 25fps / 5.2% avg，追查结论**不是回归**：两个用户 ssh agent
   pane 在跑各 ~10Hz 的 spinner（真实活动输出，合并唤醒 25fps），`ctl capture`
@@ -177,7 +177,8 @@ IME M1–M7），`deploy-remote.sh --no-build --keep-running` + migrate2.sock �
   首次运行步骤 6 冒烟 FAIL：保留实例在 `migrate3.sock`，而 smoke 只认默认
   `ipc.sock`；已修 `stage_smoke`（从 `/proc/<pid>/environ` 读运行实例自己的
   `TERMINATOR_SOCK`），重跑 1–6 步全绿 `PASS (kept-running=1)`。运行实例
-  944047 仍是 29015a79 的镜像（`--keep-running` 语义），下次 autostart/启动生效。
+  944047 当时仍是 29015a79 的镜像（`--keep-running` 语义）——当日凌晨实况切换至
+  65728655（pid 1052149）。
 - 冒烟 `ctl list` 只见 pane 2/3：原 pane 5（707327）的 shell 已退出，pane 由
   dead-pane 自动清理移除（pane 2/3 的 zsh 699347/700805 仍存活）。
 - 修复内容（e908f61）：`cursor_blink` 改为 fold（后画的非焦点 pane 不再清掉焦点

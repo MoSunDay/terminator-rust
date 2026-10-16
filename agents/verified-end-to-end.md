@@ -172,6 +172,17 @@ hard-won facts behind these checks.
   （保留实例在 migrate3.sock，smoke 只认默认 ipc.sock）→ 已在 `stage_smoke` 里
   改为按运行实例的 `TERMINATOR_SOCK`（读 /proc/<pid>/environ）寻址，重跑步骤
   1-6 全绿 `PASS (kept-running=1)`；`current` -> releases/65728655…，prev
-  29015a79…；运行实例 944047 继续跑 29015a79 镜像（--keep-running 语义），
-  下次 autostart/启动生效。冒烟 `ctl list` 只见 pane 2/3 —— 原 pane 5(707327)
+  29015a79…；运行实例 944047 当时继续跑 29015a79 镜像（--keep-running 语义），
+  当日凌晨即被实况切换取代（见下条）。冒烟 `ctl list` 只见 pane 2/3 —— 原 pane 5(707327)
   的 shell 已退出、pane 经 dead-pane 自动清理移除（699347/700805 仍存活）。
+- 实况切换 65728655 (2026-10-17 凌晨, live cutover on 192.168.31.196):
+  新实例 pid 1052149 起在 65728655 镜像 + 默认 ipc.sock；种子 pane 1 以
+  `ctl send 1 --text $'exit\n'` 退出、由 close_exited 自动清理（EXIT_GRACE）。
+  `ctl migrate 2 --to <new ipc.sock>` 把 pane 2/3 整 tab 迁入新实例：ssh 子进程
+  701574 (`ssh root@node02`, 父 700805) / 704284 (`ssh root@node04`, 父 699347)
+  原 PID 存活，旧屏 TUI 内容随快照回放可见；旧→新 TabOffer 解析无碍
+  （ipc-proto 与两侧 migrate handler 均早于旧构建）。迁移后旧实例只剩
+  drop_empty_window 回填的新 tab（pane 6），SIGTERM 944047 + 删残留
+  migrate3.sock；终态单进程/单窗口（wid 18874373 = pid 1052149）、`ctl list`
+  = pane 2/3、共享日志无 error/panic/warn。新实例未设 TERMINATOR_SOCK →
+  下次 `--keep-running` 的 stage_smoke /proc 探测落回默认 socket（兜底天然可达）。
