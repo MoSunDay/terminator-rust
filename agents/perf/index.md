@@ -64,8 +64,8 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 - `TERMINATOR_FRAME_STATS=1`：开启后每秒向 stderr 写一行
   `frame-stats frames=<n> fps=<fps:.1> pass_avg_us=<avg:.0> pass_max_us=<max>`（crates/app/src/render/stats.rs）；
   未开启时零开销。fps 是"根窗口 pass"的频率，含第二窗口在根 pass 内的渲染。
-- `TERMINATOR_FRAME_FLOOR_MS`（默认 16）：输出驱动帧的最小间隔（真节流），0 = 关闭，上限 1000；
-  未设置时按 16ms ≈ 60fps。
+- `TERMINATOR_FRAME_FLOOR_MS`（默认 16）：输出驱动帧的最小间隔（真节流），上限 1000；
+  未设置时按 16ms ≈ 60fps。`0` = 关闭节流：不等待，仍是单遍立即唤醒（输出块**不做合并**）。
 - 与像素 e2e 的 `TERMINATOR_NO_MOTION`/`TERMINATOR_OPAQUE` 无关，测量场景不要设这两个。
 
 ### e2e 采样开关（`scripts/bin/e2e-idle-cpu.sh`）
@@ -73,7 +73,7 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | --- | --- | --- |
 | `IDLE_GPU_BACKEND` | `gl` | S1 用软件后端（llvmpipe）取样：宿主 NVIDIA Vulkan 驱动线程 `[vkps] Update` 有 ~0.3-0.4% 单核、**零帧**的常驻地板，会把应用自身成本埋在噪声里；`native` 测真实驱动。判定"我们代码是否为 0"用 `gl`，报告真机成本用 `native` |
 | `IDLE_SAMPLE_S` | 8 | S1 窗口秒数 |
-| `IDLE_SETTLE_S` | 6 | setup（`ctl list`/`capture`）流量与首帧 GL 光栅抖动之后的静默期；缺它时一个 10ms jiffy 就会顶到 max1s 1.0% |
+| `IDLE_SETTLE_S` | 6 | setup（`ctl list`/`capture`）流量与首帧 GL 光栅抖动之后的静默期；缺它时一个 10ms jiffy 就会顶到 max1s 1.0%。10ms jiffy = 1.0% 正好是门槛：冷启动的 release 包（25MB 二进制 + 17MB 字体页入/解析）实测偶发 1 jiffy，verify-release 首跑红、重跑绿即属此列（2026-10-16 记录）；持续 ≥2 jiffy 才是真回归 |
 | `IDLE_MAX1S_PCT` | 1.0 | S1 门槛（% 单核） |
 | `IDLE_MAX_FPS` | 0 | S1 帧数上限（帧必须是 0 才叫空闲） |
 | `S7_SAMPLE_S` / `S7_MAX1S_PCT` | 5 / 50 | S7 重命名编辑器窗口与 runaway 兜底 |

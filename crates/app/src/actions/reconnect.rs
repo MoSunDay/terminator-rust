@@ -174,6 +174,10 @@ mod tests {
             st.panes.contains_key(&1),
             "disconnect pane is kept for reattachment"
         );
+        assert!(
+            !sess.exited_seen.contains_key(&1),
+            "keep-alive pane holds no grace deadline (the backoff is the wake)"
+        );
     }
 
     #[test]

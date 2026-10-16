@@ -602,14 +602,22 @@ pub fn frame_cached(sess: &mut Session) -> &Frame {
             &mut sess.cache,
             full,
         );
-        if let Err(e) = built {
-            log::warn!("frame snapshot: {e}");
-            // The frame may be half-updated: drop it (an empty grid forces
-            // the next rebuild back onto the full path).
-            sess.cache = Frame::default();
+        match built {
+            Ok(()) => {
+                sess.cache_valid = true;
+                sess.cache_full = false;
+            }
+            Err(e) => {
+                log::warn!("frame snapshot: {e}");
+                // The frame may be half-updated: drop it AND keep the
+                // cache invalid, so the next call rebuilds on the FULL
+                // path (a "valid" cache would replay the half-built frame
+                // forever - its generation never changes).
+                sess.cache = Frame::default();
+                sess.cache_valid = false;
+                sess.cache_full = true;
+            }
         }
-        sess.cache_valid = true;
-        sess.cache_full = false;
     }
     &sess.cache
 }

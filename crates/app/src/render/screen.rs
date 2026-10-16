@@ -540,6 +540,6 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         interacting,
     };
     if let Some(wait) = cadence::next_deadline(Instant::now(), frame_time, sess, needs) {
-        ctx.request_repaint_after_for(wait, egui::ViewportId::ROOT);
+        ctx.request_repaint_after_for(cadence::wake_delay(wait), egui::ViewportId::ROOT);
     }
 }

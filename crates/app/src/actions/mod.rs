@@ -316,25 +316,26 @@ pub fn auto_degrade(st: &mut AppState, sess: &mut SessionMap, dirty: &mut bool) 
 
 /// A pane whose session finished and whose exit has been visible for at
 /// least [`session_map::EXIT_GRACE`]. Pure predicate for [`close_exited`].
-/// Remote connection drops are exempt: [`reconnect`] keeps those panes
-/// and reattaches them instead. Exit 42 is exempt only while
-/// [`auto_degrade`] still owns it (remote, not yet degraded); a local or
-/// already-degraded shell exiting 42 is just a dead shell.
 fn exit_ripe(st: &AppState, sess: &SessionMap, id: &PaneId, now: Instant) -> bool {
-    let exited = match sess.map.get(id) {
+    let closable = match sess.map.get(id) {
         // alive, auto_degrade owns the exit-42 marker of a non-degraded
         // remote pane, reconnect::pump owns remote connection-drop exits
-        Some(s) => s.exit.is_some_and(|e| {
-            (e != EXIT_NO_KEEPER || !pane_degradable(st, id)) && !pane_disconnected(st, id, e)
-        }),
+        Some(s) => s.exit.is_some_and(|e| exit_closable(st, id, e)),
         // spawn-backoff candidate, not a corpse
         None => false,
     };
-    exited
+    closable
         && sess
             .exited_seen
             .get(id)
             .is_some_and(|seen| now.duration_since(*seen) >= session_map::EXIT_GRACE)
+}
+
+/// True when an exit may auto-close its pane: [`pane_degradable`] exit-42
+/// panes wait for [`auto_degrade`] and remote connection drops wait for
+/// [`reconnect`]; everything else is a dead shell.
+fn exit_closable(st: &AppState, id: &PaneId, code: i32) -> bool {
+    (code != EXIT_NO_KEEPER || !pane_degradable(st, id)) && !pane_disconnected(st, id, code)
 }
 
 /// True when the pane is remote and not yet degraded: `auto_degrade`
@@ -361,8 +362,21 @@ fn pane_disconnected(st: &AppState, id: &PaneId, code: i32) -> bool {
 pub fn close_exited(st: &mut AppState, sess: &mut SessionMap, ui: &mut UiState, dirty: &mut bool) {
     let now = Instant::now();
     for (id, s) in sess.map.iter() {
-        if s.exit.is_some() && !sess.exited_seen.contains_key(id) {
-            sess.exited_seen.insert(*id, now);
+        let Some(code) = s.exit else {
+            continue;
+        };
+        if exit_closable(st, id, code) {
+            sess.exited_seen.entry(*id).or_insert(now);
+        } else {
+            // Keep-alive pane (waiting for `reconnect`/`auto_degrade`):
+            // never hold a grace deadline. `cadence::next_deadline` maps
+            // an overdue `exited_seen` (entry + EXIT_GRACE) to a
+            // Duration::ZERO wake, so leaving/creating one would re-arm a
+            // zero-delay repaint EVERY pass for as long as the pane waits
+            // = a busy render loop. Its own wake source is
+            // `reconnect_at`/`retry_at` (non-zero backoffs), so no wake
+            // is lost.
+            sess.exited_seen.remove(id);
         }
     }
     let prev_active = st.active;
@@ -701,6 +715,32 @@ mod close_exited_tests {
         close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
         assert!(st.panes.contains_key(&1), "degrade path owns exit 42");
         assert!(sess.map.contains_key(&1));
+        assert!(
+            !sess.exited_seen.contains_key(&1),
+            "keep-alive pane holds no grace deadline (zero-delay wake spin)"
+        );
+    }
+
+    /// Keep-alive panes (remote connection drop waiting for `reconnect`)
+    /// are kept AND must not hold an `exited_seen` entry.
+    #[test]
+    fn disconnect_pane_is_kept_without_a_grace_deadline() {
+        let (mut st, mut sess, mut ui) = split_state();
+        let mut dirty = false;
+        if let Some(m) = st.panes.get_mut(&1) {
+            m.kind = remote_kind();
+        }
+        ripen(&mut sess, 1, remote::EXIT_SSH_FAIL);
+        close_exited(&mut st, &mut sess, &mut ui, &mut dirty);
+        assert!(
+            st.panes.contains_key(&1),
+            "disconnect pane is kept for reattachment"
+        );
+        assert!(sess.map.contains_key(&1));
+        assert!(
+            !sess.exited_seen.contains_key(&1),
+            "no overdue grace -> no Duration::ZERO cadence wake"
+        );
     }
 
     /// Exit 42 from anything auto_degrade can NOT act on (local shell,
