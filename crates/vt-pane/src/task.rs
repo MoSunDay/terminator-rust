@@ -10,13 +10,13 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use libghostty_vt::key::{Action, Encoder as KeyEncoder, Event as KeyEvent, Mods};
-use libghostty_vt::render::{CellIterator, RenderState, RowIterator};
+use libghostty_vt::render::{CellIterator, Dirty, RenderState, RowIterator};
 use libghostty_vt::terminal::Mode;
 use libghostty_vt::Terminal;
 
 use crate::effects::{self, CellPx, NoticeFlag};
 use crate::pty::{self, PtyHandle};
-use crate::term::{snapshot_frame, Frame};
+use crate::term::{snapshot_frame, snapshot_frame_into, Frame};
 
 /// Events delivered by the pty reader thread.
 #[derive(Debug)]
@@ -121,6 +121,12 @@ pub struct Session {
     /// an idle frame costs no ghostty traversal + allocation churn.
     pub(crate) cache: Frame,
     pub(crate) cache_valid: bool,
+    /// The pending rebuild must re-read EVERY grid row: set by
+    /// [`invalidate_frame`] (selection / viewport / theme / resize edits
+    /// are invisible to the engine's per-row dirty flags) and cleared once
+    /// consumed. [`invalidate_frame_rows`] leaves it alone so an
+    /// output-driven rebuild patches only the rows the engine reports.
+    pub(crate) cache_full: bool,
     /// Bumped on every frame-cache invalidation so render-side shape
     /// caches can key on it.
     frame_gen: u64,
@@ -260,6 +266,7 @@ fn assemble(
         exit: None,
         cache: Frame::default(),
         cache_valid: false,
+        cache_full: false,
         frame_gen: 0,
         cell_px,
         notice,
@@ -536,7 +543,10 @@ pub fn pump(sess: &mut Session) -> Result<()> {
         }
     }
     if touched {
-        invalidate_frame(sess);
+        // Output only: the engine's dirty-row tracking covers exactly what
+        // a single line of output can change, so the next rebuild patches
+        // a handful of rows instead of re-reading the whole grid.
+        invalidate_frame_rows(sess);
     }
     Ok(())
 }
@@ -550,35 +560,75 @@ pub fn take_notice(sess: &mut Session) -> bool {
 }
 
 /// Snapshot the current terminal state into plain render data.
+///
+/// UNCACHED: always re-reads the whole grid. The pass also CONSUMES the
+/// engine's dirty layers, so whatever they still held when it started can
+/// never be reported again - a cached frame that predates those changes
+/// would silently stay stale (rendering would never redraw that row
+/// again). Drop the cache in that case; when the layers were already
+/// clean the cached grid is still in sync and survives untouched (the
+/// common `ctl` probe on an idle pane).
 pub fn frame(sess: &mut Session) -> Result<Frame> {
-    snapshot_frame(
+    let pending = !matches!(sess.render_state.update(&sess.term)?.dirty()?, Dirty::Clean);
+    let frame = snapshot_frame(
         &mut sess.term,
         &mut sess.render_state,
         &mut sess.row_it,
         &mut sess.cell_it,
-    )
+    )?;
+    if pending {
+        invalidate_frame(sess);
+    }
+    Ok(frame)
 }
 
 /// The render snapshot, cached: rebuilt only after something visibly
 /// changed (pty bytes via [`pump`], [`resize`], selection/viewport edits
 /// or a theme sync invalidating via [`invalidate_frame`]). Rendering
 /// paths use this; `frame` stays the uncached fresh snapshot.
+///
+/// PERF: when only PTY output invalidated the cache, the rebuild goes
+/// through the engine's dirty-row tracking and patches just the rows that
+/// changed (a 10k-cell pane then costs a few hundred FFI calls instead of
+/// ~50k), reusing the cached grid's cells and strings in place.
 pub fn frame_cached(sess: &mut Session) -> &Frame {
     if !sess.cache_valid {
-        match frame(sess) {
-            Ok(f) => sess.cache = f,
-            Err(e) => {
-                log::warn!("frame snapshot: {e}");
-                sess.cache = Frame::default();
-            }
+        let full = sess.cache_full;
+        let built = snapshot_frame_into(
+            &mut sess.term,
+            &mut sess.render_state,
+            &mut sess.row_it,
+            &mut sess.cell_it,
+            &mut sess.cache,
+            full,
+        );
+        if let Err(e) = built {
+            log::warn!("frame snapshot: {e}");
+            // The frame may be half-updated: drop it (an empty grid forces
+            // the next rebuild back onto the full path).
+            sess.cache = Frame::default();
         }
         sess.cache_valid = true;
+        sess.cache_full = false;
     }
     &sess.cache
 }
 
-/// Drop the cached snapshot; the next [`frame_cached`] rebuilds it.
+/// Drop the cached snapshot and make the next rebuild re-read EVERY grid
+/// row. Used whenever the change is invisible to the engine's per-row
+/// dirty flags: selection edits, viewport scrolling, palette/theme swaps
+/// and resizes.
 pub fn invalidate_frame(sess: &mut Session) {
+    sess.cache_valid = false;
+    sess.cache_full = true;
+    sess.frame_gen += 1;
+}
+
+/// Drop the cached snapshot after PTY output. The engine marks the rows
+/// its content touched, so the rebuild patches only those (see
+/// [`frame_cached`]); a pending full invalidation stays pending, because
+/// row patching must never be trusted for a change it cannot see.
+pub fn invalidate_frame_rows(sess: &mut Session) {
     sess.cache_valid = false;
     sess.frame_gen += 1;
 }
@@ -601,7 +651,9 @@ pub fn resize(
         return Ok(());
     }
     sess.term.resize(cols, rows, cell_w_px, cell_h_px)?;
-    sess.cache_valid = false;
+    // A resize reshapes the grid and can reflow every row: never trust the
+    // row-wise patch path for it.
+    invalidate_frame(sess);
     // Keep the size-query effect answering with live geometry.
     *sess.cell_px.lock().unwrap_or_else(|e| e.into_inner()) = (cell_w_px, cell_h_px);
     pty::pty_resize(sess.handle.master_fd, cols, rows)
