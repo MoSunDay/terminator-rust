@@ -122,3 +122,17 @@ hard-won facts behind these checks.
   failed ONLY on the packed release binary (dev timing won the async
   race), so treat the release gate as the acceptance authority for
   timing-sensitive checks.
+- CPU 重优化 release 45452f15 (2026-10-16, live on 192.168.31.196):
+  pack + verify-release.sh 全绿（新增 idle 门: S1 0.0% max1s / 0 帧、S1b
+  常驻探针、ctl send->capture wake 18ms、S7 重命名编辑器 caret 闩锁、
+  S2 51.5fps、S13 0.9fps; IME M1-M7 在打包二进制上通过 - 与 e966a758
+  同样的"release 才是时间敏感检查的裁决者"教训）。落地走
+  deploy-remote.sh --no-build --keep-running + migrate2.sock 分批迁移
+  （pane 3 后 pane 1 连整个 tab 的 2 个 pane），三个 shell 子进程
+  699347/700805/707327 PID 保留，旧实例 699333 按 PID SIGTERM。
+  真机数字: focus+motion 静止时主线程 0.00%（残余 ~1.5%/s 全在宿主
+  NVIDIA [vkps] 驱动线程、零帧; WGPU_BACKEND=gl 下 0 jiffy）; 60Hz
+  spinner 旧构建 23.2% avg/26% max1s -> 新 16.7%（58.5fps，
+  TERMINATOR_FRAME_FLOOR_MS=16 的上限 ~62.5fps）。`seq 1 40000` 的
+  16s 主线程自旋与 /tmp/base 基线逐秒同形（RSS 恒定、自行恢复）=
+  vendored ghostty 既有问题，非本次回归。

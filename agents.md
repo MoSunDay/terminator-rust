@@ -211,9 +211,10 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   RENDER LOOP IS REACTIVE (2026-10-12, render/cadence.rs): NO
   unconditional 16/50ms tick exists - idle CPU is ~4% vs ~38% before.
   Wakes: PTY reader-loop output/exit sends fire SessionOpts.wake ->
-  request_repaint_after_for(1ms, ROOT) (main.rs) - a ZERO-delay
-  request_repaint arms egui's outstanding=1 and every output burst
-  renders TWO passes (0.36 context.rs); the 1ms delay coalesces to one.
+  request_repaint_after_for(1ms, ROOT) (main.rs): a ZERO-delay request
+  arms egui's outstanding=1 -> TWO passes per output burst (0.36
+  context.rs); ANY non-zero delay subtracts predicted_dt ("1ms" =
+  effectively immediate/single pass, NOT a coalescing window).
   Secondaries render inside the root pass; ipc/server.rs accept wakes
   likewise; cadence::next_deadline
   schedules ONLY the next real need (cursor blink edge - square wave,
@@ -238,6 +239,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   verify loop passed dev timing but failed the release gate
   (input-method/index.md). Outside composition repair early-returns
   with zero X traffic.
+- CPU 测量口径 / 场景矩阵 / 帧率开关 / 2026-10-16 发布 45452f15 真机数字（idle 地板=宿主驱动线程，动画成本≈帧数×0.25ms）: [agents/perf/index.md](agents/perf/index.md).
 - cell backgrounds paint as MERGED runs (render/bg_runs/ since 2026-09-23 split: row.rs classify, merge.rs interval-absorb, rect.rs bleed; 2026-09-22):
   one rect_filled PER CELL feathered a seam lattice (1/255/column at the
   cell pitch, vertical AND row boundaries) across every ANSI-bg region,
