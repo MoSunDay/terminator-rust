@@ -72,6 +72,23 @@ fn draw_viewport_bar(
     painter.rect_filled(bar, 2.0, thumb);
 }
 
+/// Fold one pane's cursor-blink demand into the window-wide flag.
+///
+/// The scan visits EVERY pane of the window: a later, unfocused pane must
+/// not be able to clear a blink decision already made for the focused one
+/// (the old assignment did exactly that, so an idle window with a sibling
+/// pane kept repainting at the blink rate forever).
+fn fold_cursor_blink(
+    acc: bool,
+    motion: bool,
+    user_focused: bool,
+    focused_here: bool,
+    cursor_visible: bool,
+    composing: bool,
+) -> bool {
+    acc || (motion && user_focused && focused_here && cursor_visible && !composing)
+}
+
 /// Render the whole terminal area into the central panel ui.
 pub fn screen(ui: &mut Ui, d: &mut Data) {
     let ctx = ui.ctx().clone();
@@ -261,11 +278,14 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 // NO_MOTION pins the blink (tokens::cursor_alpha), so no
                 // future edge is ever needed - scheduling one kept an
                 // otherwise idle window repainting at 2fps.
-                cursor_blink = tokens::motion_enabled()
-                    && user_focused
-                    && Some(pane) == focused
-                    && fr.cursor.visible
-                    && !composing;
+                cursor_blink = fold_cursor_blink(
+                    cursor_blink,
+                    tokens::motion_enabled(),
+                    user_focused,
+                    Some(pane) == focused,
+                    fr.cursor.visible,
+                    composing,
+                );
                 let shown = preedit::placement::preview(fr, composing, span);
                 let args = grid::DrawArgs {
                     fr: &shown,
@@ -541,5 +561,32 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     };
     if let Some(wait) = cadence::next_deadline(Instant::now(), frame_time, sess, needs) {
         ctx.request_repaint_after_for(cadence::wake_delay(wait), egui::ViewportId::ROOT);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fold_cursor_blink;
+
+    #[test]
+    fn focused_pane_demands_blink() {
+        assert!(fold_cursor_blink(false, true, true, true, true, false));
+    }
+
+    #[test]
+    fn later_unfocused_pane_cannot_clear_the_blink() {
+        // Regression: the per-pane assignment let a sibling pane reset the
+        // flag, scheduling no next cursor edge at all.
+        assert!(fold_cursor_blink(true, true, true, false, true, false));
+        assert!(fold_cursor_blink(true, false, false, false, false, false));
+    }
+
+    #[test]
+    fn suppression_inputs_hold_the_fold_at_false() {
+        assert!(!fold_cursor_blink(false, true, true, true, true, true));
+        assert!(!fold_cursor_blink(false, true, false, true, true, false));
+        assert!(!fold_cursor_blink(false, true, true, false, true, false));
+        assert!(!fold_cursor_blink(false, true, true, true, false, false));
+        assert!(!fold_cursor_blink(false, false, true, true, true, false));
     }
 }

@@ -602,24 +602,30 @@ pub fn frame_cached(sess: &mut Session) -> &Frame {
             &mut sess.cache,
             full,
         );
-        match built {
-            Ok(()) => {
-                sess.cache_valid = true;
-                sess.cache_full = false;
-            }
-            Err(e) => {
-                log::warn!("frame snapshot: {e}");
-                // The frame may be half-updated: drop it AND keep the
-                // cache invalid, so the next call rebuilds on the FULL
-                // path (a "valid" cache would replay the half-built frame
-                // forever - its generation never changes).
-                sess.cache = Frame::default();
-                sess.cache_valid = false;
-                sess.cache_full = true;
-            }
-        }
+        bank_snapshot(sess, built);
     }
     &sess.cache
+}
+
+/// Bank a `snapshot_frame_into` outcome into the cache policy: success
+/// publishes the frame, failure keeps the cache invalid for a FULL rebuild.
+pub(crate) fn bank_snapshot(sess: &mut Session, built: Result<()>) {
+    match built {
+        Ok(()) => {
+            sess.cache_valid = true;
+            sess.cache_full = false;
+        }
+        Err(e) => {
+            log::warn!("frame snapshot: {e}");
+            // The frame may be half-updated: drop it AND keep the
+            // cache invalid, so the next call rebuilds on the FULL
+            // path (a "valid" cache would replay the half-built frame
+            // forever - its generation never changes).
+            sess.cache = Frame::default();
+            sess.cache_valid = false;
+            sess.cache_full = true;
+        }
+    }
 }
 
 /// Drop the cached snapshot and make the next rebuild re-read EVERY grid

@@ -15,7 +15,7 @@ use vt_pane::{task as vtask, Frame as VtFrame, Session, SessionOpts, Wake};
 
 use crate::render::colors;
 use crate::state::{compute_grid, CellSize, PaneMeta};
-use theme::Rgb;
+use theme::{Palette, Rgb};
 
 /// Terminal size used at spawn time; resized to the real pane on first frame.
 pub const START_COLS: u16 = 80;
@@ -25,12 +25,13 @@ pub const START_ROWS: u16 = 24;
 /// (stored in [`SessionMap::theme_sync`]). Equal key = every session that
 /// exists NOW already carries exactly this palette + effective background,
 /// so the sync can return without touching a single terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ThemeSyncKey {
-    /// Resolved palette identity (`Palette::name`, e.g. "Dracula"). The
-    /// builtin palettes are pure functions of their name, so the resolved
-    /// name identifies the whole 16-color table.
-    pub palette: String,
+    /// The resolved palette as a VALUE (no `Eq`: Palette derives only
+    /// PartialEq). A name-keyed memo missed `bg_color`/transparency edits
+    /// that keep the theme name while moving the resolved table, so the
+    /// sync returned early and stale render snapshots were replayed.
+    pub palette: Palette,
     /// Effective background override the palette was applied with
     /// (settings `bg_color`, `None` = the palette's own background).
     pub bg: Option<Rgb>,

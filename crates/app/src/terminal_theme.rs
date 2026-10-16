@@ -65,6 +65,18 @@ pub fn sync(sessions: &mut SessionMap, palette: &Palette, bg: Option<Rgb>) {
     for session in sessions.map.values_mut() {
         match apply(&mut session.term, palette, bg) {
             Ok(true) => vt_pane::task::invalidate_frame(session),
+            // `apply` says "nothing moved" for this terminal, but the
+            // CACHE may predate a palette-value move (e.g. a session that
+            // was adopted already carrying the new table): invalidate the
+            // snapshot whenever the banked value itself moved.
+            Ok(false)
+                if sessions
+                    .theme_sync
+                    .as_ref()
+                    .is_some_and(|key| render_palette_moved(key, palette, bg)) =>
+            {
+                vt_pane::task::invalidate_frame(session)
+            }
             Ok(false) => {}
             Err(error) => {
                 failed = true;
@@ -75,19 +87,28 @@ pub fn sync(sessions: &mut SessionMap, palette: &Palette, bg: Option<Rgb>) {
     if !failed {
         let gen = sessions.session_gen;
         sessions.theme_sync = Some(ThemeSyncKey {
-            palette: palette.name.clone(),
+            palette: palette.clone(),
             bg,
             gen,
         });
     }
 }
 
-/// True when the last [`sync`] already covered this palette, background and
-/// session generation: no session can be missing the current theme.
+/// True when the last [`sync`] already covered this palette VALUE, background
+/// and session generation: no session can be missing the current theme.
 fn key_matches(sessions: &SessionMap, palette: &Palette, bg: Option<Rgb>) -> bool {
     sessions.theme_sync.as_ref().is_some_and(|key| {
-        key.gen == sessions.session_gen && key.bg == bg && key.palette == palette.name
+        key.gen == sessions.session_gen && key.bg == bg && key.palette == *palette
     })
+}
+
+/// True when the move from the banked key to `palette`/`bg` touched
+/// something a cached render snapshot already baked in (its default/cursor
+/// colors, or any cell color resolved through the engine's 256-table).
+/// A generation-only difference (a spawn/adopt) stays false: the existing
+/// caches are still correct and do not need a rebuild.
+fn render_palette_moved(prev: &ThemeSyncKey, palette: &Palette, bg: Option<Rgb>) -> bool {
+    prev.bg != bg || prev.palette != *palette
 }
 
 #[cfg(test)]
@@ -216,5 +237,52 @@ mod tests {
                 .unwrap(),
             Some(fg)
         );
+    }
+
+    /// The change key must compare palette VALUES, not names: a
+    /// `bg_color`/transparency edit keeps the theme name while moving the
+    /// resolved table, and the old name-keyed memo silently replayed stale
+    /// render snapshots (default/cursor/cell colors built under the
+    /// previous table).
+    #[test]
+    fn palette_value_move_rearms_sync_and_invalidates_frames() {
+        let mut sessions = crate::session_map::session_map();
+        let palette = theme::builtin::dracula();
+        let Some(sess) = test_session() else { return };
+        crate::session_map::note_spawned(&mut sessions, 1, sess);
+        sync(&mut sessions, &palette, None);
+        assert!(key_matches(&sessions, &palette, None), "first sync banked");
+        // Same name, same bg, one resolved color moved.
+        let mut moved = palette.clone();
+        moved.background = Rgb { r: 1, g: 2, b: 3 };
+        assert!(!key_matches(&sessions, &moved, None), "value move re-arms");
+        let before = vt_pane::task::frame_gen(sessions.map.get(&1).expect("session"));
+        sync(&mut sessions, &moved, None);
+        assert!(key_matches(&sessions, &moved, None), "second sync banked");
+        let after = vt_pane::task::frame_gen(sessions.map.get(&1).expect("session"));
+        assert!(after > before, "palette move invalidated the cached frame");
+    }
+
+    #[test]
+    fn render_palette_moved_sees_values_not_generations() {
+        let palette = theme::builtin::dracula();
+        let key = ThemeSyncKey {
+            palette: palette.clone(),
+            bg: None,
+            gen: 7,
+        };
+        assert!(!render_palette_moved(&key, &palette, None));
+        assert!(render_palette_moved(
+            &key,
+            &palette,
+            Some(Rgb { r: 0, g: 0, b: 0 })
+        ));
+        let mut moved = palette.clone();
+        moved.cursor = Rgb { r: 9, g: 8, b: 7 };
+        assert!(render_palette_moved(&key, &moved, None));
+        // A pure generation bump (spawn/adopt) keeps old caches usable.
+        let mut same = key.clone();
+        same.gen = 8;
+        assert!(!render_palette_moved(&same, &palette, None));
     }
 }

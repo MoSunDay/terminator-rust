@@ -796,3 +796,4 @@ fn pty_does_not_inherit_parent_no_color() {
         assert_eq!(row_text(&frame, 0), override_value.unwrap_or("unset"));
     }
 }
+mod snapshot_policy;
