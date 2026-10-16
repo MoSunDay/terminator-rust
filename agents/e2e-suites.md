@@ -32,11 +32,17 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
   hang）。2026-10-12 重钉色板：SGR 41/44/45 现经 dracula 预置色板解析
   （255,85,85 / 189,147,249 / 255,121,198），256-cube 208 橙不变；
   旧钉的 ghostty 默认色（204,102,102 等）是 2026-09-27 色板同步之前的值
-- idle CPU e2e（`e2e-idle-cpu.sh`）：空闲 5s utime+stime 门槛
-  （≤100 ticks，旧恒定 16/50ms tick 构建实测 190 = 正确 FAIL）、
-  ctl send→capture 标记往返 ≤2000ms（唤醒路径，实测 52ms）、
-  busy `cat` 阶段仅信息输出；TERMINATOR_OPAQUE=1、故意不设
-  TERMINATOR_NO_MOTION（悬停/光标动画必须仍被 reactive 循环驱动）
+- idle CPU e2e（`e2e-idle-cpu.sh`）：S1 空闲 1s 桶 PEAK <1% 单核
+  （默认 `IDLE_GPU_BACKEND=gl` —— 宿主 NVIDIA Vulkan 驱动线程
+  `[vkps] Update` 有 ~0.3-0.4%/核 的零帧地板，会掩蔽应用自身成本；
+  `native` 用来测真实驱动）、S1b 常驻探针门、wake 往返 ≤2000ms
+  （实测 19ms）、S7 重命名编辑器：期间 frames==0 + 回车提交
+  （egui TextEdit 的 caret blink 已在 ui/style.rs 钉住）、
+  S2 spinner / S13 busy 的 fps 门（≤65；TERMINATOR_FRAME_FLOOR_MS
+  默认 16 ≈ 62.5fps，pass 统计见 render/stats.rs）；`IDLE_SETTLE_S=6`
+  在采样前隔离 setup 的 ctl traffic 与首帧 GL 抖动。走 `e2e_sandbox`
+  → TERMINATOR_OPAQUE=1 + TERMINATOR_NO_MOTION=1（S1/S7 必须是
+  帧静止态；悬停/光标动画的驱动另有 perf 用例覆盖）
 - mouse/key e2e（`e2e-mouse-key.sh`）：裸 Ctrl+C 的 ^C 回显、跨 pane 拖拽
   SGR 投递到按下者、Shift+PageUp/End 翻页、Ctrl+C 真打断前台任务
 - multi-window e2e（`e2e-windows.sh`）：Ctrl+Shift+N 真开第二个 X 窗口、
