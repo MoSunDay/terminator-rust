@@ -4,7 +4,7 @@
 //! channel as [`Command`]s and are serviced on the UI thread by [`drain`],
 //! which sends the response back over the per-request reply channel. The
 //! render loop is reactive (no repaint tick), so the listener wakes the
-//! UI with `egui::Context::request_repaint` the moment a request is
+//! UI with a single-pass root repaint request the moment a request is
 //! accepted: `drain` runs on the very next frame.
 //!
 //! Migration requests carry more than a line: the sender attaches one
@@ -215,8 +215,10 @@ fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>, ct
 /// response back as one JSON line.
 fn serve(stream: UnixStream, tx: &Sender<Command>, ctx: &egui::Context) {
     // Wake the reactive render loop: without a repaint tick, `drain` on
-    // the UI thread would otherwise wait for the next input event.
-    ctx.request_repaint_of(egui::ViewportId::ROOT);
+    // the UI thread would otherwise wait for the next input event. The
+    // SOON single-pass wake avoids egui's zero-delay double pass, and
+    // request_root_after hidden-clamps it while minimized.
+    crate::render::cadence::request_root_after(ctx, crate::render::cadence::SOON_SINGLE_PASS);
     // Accepted sockets may inherit non-blocking mode; blocking + timeouts
     // is what a request/response exchange wants.
     let _ = stream.set_nonblocking(false);

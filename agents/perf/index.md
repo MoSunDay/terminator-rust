@@ -190,3 +190,20 @@ IME M1–M7），`deploy-remote.sh --no-build --keep-running` + migrate2.sock �
 - 矩阵里仍标"未实现"（tier3）的 S5/S6/S9/S10/S12 留给本地 e2e 扩展，不影响本轮 tier1 契约。
 - 大输出 scrollback 后的稳态残余（1–7%/s）与 `seq 1 40000` 的 16s 主线程停顿
   属 vendored ghostty 既有族，单独跟踪，不混入本轮改动。
+
+## 最小化忙等与焦点降档（2026-10-22 修复）
+根因（真机 2880x1920@120Hz、DPI144、2x 缩放，release 65728655）：窗口
+unmapped 后 wgpu present 不再阻塞 vblank——1ms SOON 链唯一真实的刹车；
+同时长帧距使 predicted_dt 膨胀，短延迟请求被减成"立即"，链条退化为
+近忙等（实测最小化 ~70% 单核，可见时 ~40%，Xorg/xfwm4/panel 跟着烧）。
+修复（render/cadence.rs）：`request_root_after` 统一 ROOT 请求入口 =
+`wake_delay`（单 pass 钳）→ `HIDDEN_HEARTBEAT`（500ms）钳；`observe`
+每帧记录 `viewport().minimized/focused`；非聚焦输出 floor 抬到
+max(floor, 50ms)（`TERMINATOR_FRAME_FLOOR_MS=0` 仍为显式关闭）；ipc 的
+零延迟双 pass 顺带改 SOON 单 pass。心跳同时保住：pty 排水、
+reconnect/backoff 到点、restore 检测（viewport 状态只在 pass 内刷新）。
+ROOT pacing 管辖 secondary（secondary 在 root pass 内渲染）：root 最小化
+而 secondary 可见时按心跳流式——罕见，替代方案是烧一整核。
+真机 release 实测（60Hz 输出流）：未聚焦 26fps/~4%、聚焦 53fps/~8%、
+最小化 2fps/~0.4%（旧构建最小化 70%）；空闲可见 0.8%，
+`pass_avg_us` ~150-200。

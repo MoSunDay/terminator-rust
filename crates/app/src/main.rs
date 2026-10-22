@@ -87,9 +87,12 @@ impl Terminator {
             let delay = render::cadence::output_wake_paced(
                 since_last_frame,
                 predicted,
-                render::stats::output_floor(),
+                // Unfocused windows stream at the higher floor; hidden
+                // ones additionally collapse onto the heartbeat inside
+                // request_root_after.
+                render::cadence::pacing_floor(render::stats::output_floor()),
             );
-            wake_ctx.request_repaint_after_for(delay, egui::ViewportId::ROOT)
+            render::cadence::request_root_after(&wake_ctx, delay)
         }));
         Self {
             data: d,
@@ -122,6 +125,11 @@ impl eframe::App for Terminator {
             render::stats::predicted_dt_us(ctx.input(|i| i.predicted_dt)),
             Ordering::Relaxed,
         );
+        // Root viewport focus/minimized drive the wake-path pacing floors
+        // (unfocused floor, hidden heartbeat); refresh before any pump of
+        // this frame can schedule the next one.
+        let (focused, minimized) = ctx.input(|i| (i.viewport().focused, i.viewport().minimized));
+        render::cadence::observe(focused, minimized);
         // Keep the WM max-size constraint glued to the real GPU limit
         // (root viewport; secondaries guard inside their own pass).
         render::surface_guard::apply(&ctx);

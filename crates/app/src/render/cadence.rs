@@ -7,8 +7,19 @@
 //! needs one, no repaint is requested at all and eframe sleeps until
 //! input, a pty-reader wake (`SessionOpts::wake`) or an IPC request
 //! arrives.
+//!
+//! Two throughput brakes sit on top of those deadlines. While the root
+//! viewport is MINIMIZED, the surface is unmapped and `present` no
+//! longer blocks on vblank - the only real brake the 1ms
+//! [`SOON_SINGLE_PASS`] chain ever had - so every root repaint request
+//! collapses to a slow heartbeat ([`HIDDEN_HEARTBEAT`]) instead of
+//! spinning the loop flat out. And an UNFOCUSED window paces pty
+//! output at a higher floor ([`UNFOCUSED_FLOOR`]): nobody reads a
+//! background tail at 60fps, and at 2x scale every frame is a full
+//! 5760x3840 raster.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use layout_tree::PaneId;
@@ -24,6 +35,22 @@ pub const TEXT_BLINK_ON_S: f32 = 0.5;
 /// resize), keep frames coming so purely time-driven steps (dwell
 /// switching) advance even with a still pointer.
 const INTERACT_SLICE: Duration = Duration::from_millis(50);
+
+/// Root repaint heartbeat while the root viewport is minimized: too
+/// slow to burn CPU (2 passes/s vs the ~70%-of-a-core unmapped spin it
+/// fixes), fast enough to keep the multiplexer alive - pty channels
+/// drain (they are unbounded mpsc, but memory is not), reconnect and
+/// backoff deadlines still fire, and the loop notices the restore,
+/// because viewport state only refreshes inside a pass. ROOT pacing
+/// governs secondary windows too (they render in the root pass): a
+/// minimized root with a visible secondary streams at the heartbeat -
+/// rare, and the alternative burned a full core.
+pub const HIDDEN_HEARTBEAT: Duration = Duration::from_millis(500);
+
+/// Output pacing floor for an unfocused root window (20fps): raised
+/// only, never lowered - an explicit `TERMINATOR_FRAME_FLOOR_MS`
+/// (including `0` = OFF) always wins over focus.
+const UNFOCUSED_FLOOR: Duration = Duration::from_millis(50);
 
 /// What the current pass still needs a future frame for.
 #[derive(Debug, Default, Clone, Copy)]
@@ -69,13 +96,69 @@ pub fn output_wake_paced(elapsed: Duration, predicted_dt: Duration, floor: Durat
     }
 }
 
+/// Root viewport minimized, refreshed once per root pass (`main.rs`).
+/// Defaults false: until the first pass runs, requests pace as visible.
+static HIDDEN: AtomicBool = AtomicBool::new(false);
+/// Root viewport focus, refreshed once per root pass. Defaults true:
+/// bias toward latency while the state is unknown.
+static FOCUSED: AtomicBool = AtomicBool::new(true);
+
+/// Record the root viewport's pacing-relevant state (once per root
+/// pass). Takes the raw `Option<bool>` viewport fields; a missing
+/// observation keeps the latency-biased default.
+pub fn observe(focused: Option<bool>, minimized: Option<bool>) {
+    FOCUSED.store(focused.unwrap_or(true), Ordering::Relaxed);
+    HIDDEN.store(minimized.unwrap_or(false), Ordering::Relaxed);
+}
+
+/// Whether the root viewport is currently minimized/hidden.
+pub fn hidden() -> bool {
+    HIDDEN.load(Ordering::Relaxed)
+}
+
+/// Output pacing floor for the current focus state. A zero floor
+/// (explicit OFF) passes through untouched.
+pub fn pacing_floor(base: Duration) -> Duration {
+    floor_for(FOCUSED.load(Ordering::Relaxed), base)
+}
+
+/// Pure core of [`pacing_floor`]: focused passes every floor through;
+/// unfocused raises the floor to [`UNFOCUSED_FLOOR`], never lowers it.
+fn floor_for(focused: bool, base: Duration) -> Duration {
+    if focused || base.is_zero() {
+        base
+    } else {
+        base.max(UNFOCUSED_FLOOR)
+    }
+}
+
+/// Clamp a root repaint delay by the hidden heartbeat (pure core of
+/// [`request_root_after`]): hidden requests shorter than the heartbeat
+/// collapse onto it; longer waits (blink edges, backoff) pass through.
+fn hidden_clamp(delay: Duration, hidden: bool) -> Duration {
+    if hidden {
+        delay.max(HIDDEN_HEARTBEAT)
+    } else {
+        delay
+    }
+}
+
+/// Request a ROOT repaint after `delay`, hidden-aware: the delay first
+/// keeps single-pass semantics ([`wake_delay`]), then - while
+/// minimized - collapses to the [`HIDDEN_HEARTBEAT`] cadence so the
+/// unmapped surface cannot spin the loop without its vblank brake.
+pub fn request_root_after(ctx: &egui::Context, delay: Duration) {
+    let delay = hidden_clamp(wake_delay(delay), HIDDEN.load(Ordering::Relaxed));
+    ctx.request_repaint_after_for(delay, egui::ViewportId::ROOT);
+}
+
 /// Ask for a ROOT repaint "as soon as possible, but single-pass": a
 /// [`SOON_SINGLE_PASS`] delay instead of a zero-delay
 /// `request_repaint()` (which egui turns into TWO passes). Secondary
 /// viewports render inside the root pass, so waking ROOT refreshes every
 /// window.
 pub fn request_soon_single_pass(ctx: &egui::Context) {
-    ctx.request_repaint_after_for(SOON_SINGLE_PASS, egui::ViewportId::ROOT);
+    request_root_after(ctx, SOON_SINGLE_PASS);
 }
 
 /// Clamp a wake delay so a due (ZERO) deadline still yields a
@@ -267,6 +350,42 @@ mod tests {
         assert_eq!(
             output_wake_paced(Duration::ZERO, Duration::from_millis(16), Duration::ZERO),
             SOON_SINGLE_PASS
+        );
+    }
+
+    #[test]
+    fn hidden_clamp_collapses_short_requests_onto_the_heartbeat() {
+        let beat = HIDDEN_HEARTBEAT;
+        // Hidden: anything shorter than the heartbeat collapses onto it,
+        // including the pseudo-immediate single-pass wake.
+        assert_eq!(hidden_clamp(Duration::ZERO, true), beat);
+        assert_eq!(hidden_clamp(SOON_SINGLE_PASS, true), beat);
+        assert_eq!(hidden_clamp(Duration::from_millis(50), true), beat);
+        // Longer waits (blink edges, backoff) are never shortened.
+        assert_eq!(
+            hidden_clamp(Duration::from_secs(2), true),
+            Duration::from_secs(2)
+        );
+        // Visible: untouched.
+        assert_eq!(hidden_clamp(Duration::ZERO, false), Duration::ZERO);
+        assert_eq!(hidden_clamp(SOON_SINGLE_PASS, false), SOON_SINGLE_PASS);
+    }
+
+    #[test]
+    fn unfocused_floor_is_raised_never_lowered() {
+        // Focused: every floor (incl. explicit OFF) passes through.
+        assert_eq!(floor_for(true, Duration::ZERO), Duration::ZERO);
+        assert_eq!(
+            floor_for(true, Duration::from_millis(16)),
+            Duration::from_millis(16)
+        );
+        // Unfocused: raised to the 50ms floor, never lowered; explicit
+        // OFF stays off.
+        assert_eq!(floor_for(false, Duration::from_millis(16)), UNFOCUSED_FLOOR);
+        assert_eq!(floor_for(false, Duration::ZERO), Duration::ZERO);
+        assert_eq!(
+            floor_for(false, Duration::from_millis(80)),
+            Duration::from_millis(80)
         );
     }
 

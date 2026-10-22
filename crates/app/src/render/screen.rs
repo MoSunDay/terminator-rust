@@ -559,8 +559,15 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         blink_text: blink_text && tokens::motion_enabled(),
         interacting,
     };
-    if let Some(wait) = cadence::next_deadline(Instant::now(), frame_time, sess, needs) {
-        ctx.request_repaint_after_for(cadence::wake_delay(wait), egui::ViewportId::ROOT);
+    if cadence::hidden() {
+        // Minimized: individual deadlines stop mattering, but the loop
+        // must keep living at the heartbeat - drain ptys, fire
+        // reconnect/backoff, notice the restore (viewport state only
+        // refreshes inside a pass). request_root_after also clamps the
+        // pty/IPC wake paths while hidden.
+        cadence::request_root_after(&ctx, cadence::HIDDEN_HEARTBEAT);
+    } else if let Some(wait) = cadence::next_deadline(Instant::now(), frame_time, sess, needs) {
+        cadence::request_root_after(&ctx, cadence::wake_delay(wait));
     }
 }
 

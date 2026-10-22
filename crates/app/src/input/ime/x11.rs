@@ -218,7 +218,7 @@ pub fn sync(ctx: &Context, caret: Rect, composing: bool) {
             // each pass cheap: no XMoveWindow while genuinely in place).
             // Outside composition `repair` early-returns and no loop runs.
             if composing {
-                ctx.request_repaint_after(Duration::from_millis(16));
+                crate::render::cadence::request_root_after(ctx, Duration::from_millis(16));
             }
         }
     });

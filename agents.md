@@ -211,15 +211,16 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   RENDER LOOP IS REACTIVE (2026-10-12, render/cadence.rs): NO
   unconditional 16/50ms tick exists - idle CPU is ~4% vs ~38% before.
   Wakes: PTY reader-loop output/exit sends fire SessionOpts.wake ->
-  request_repaint_after_for(1ms, ROOT) (main.rs): a ZERO-delay request
+  request_root_after (main.rs; focus floor 16/50ms, hidden clamp): a ZERO-delay request
   arms egui's outstanding=1 -> TWO passes per output burst (0.36
   context.rs); ANY non-zero delay subtracts predicted_dt ("1ms" =
   effectively immediate/single pass, NOT a coalescing window).
-  Secondaries render inside the root pass; ipc/server.rs accept wakes
-  likewise; cadence::next_deadline
-  schedules ONLY the next real need (cursor blink edge - square wave,
-  user-focused window only; blink-text edges; 50ms while a drag/resize
-  gesture is live; pane retry/reconnect backoff; EXIT_GRACE). Frame
+  Secondaries render inside the root pass; ipc wakes likewise (now
+  single-pass); cadence::next_deadline
+  schedules ONLY the next real need (blink edges; 50ms live gesture;
+  retry/reconnect backoff; EXIT_GRACE); MINIMIZED root clamps every
+  request to a 500ms heartbeat, unfocused output floor 50ms (2026-10-22,
+  perf/index.md). Frame
   snapshots are CACHED per Session (cache_valid; invalidate on pump,
   resize, theme change, selection/viewport mutations - vt-pane
   task.rs frame_cached/invalidate_frame, session_map::sync_frame) and
