@@ -192,7 +192,15 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   the grab until the last release, and an owner pane vanishing mid-grab
   (tab switch / close) drops the whole grab so motion/wheel never target
   a zombie; buttonless 1003 hover motion stays unforwarded (batch-2
-  gap). app surface_px multiplies egui points by pixels_per_point
+  gap). A LIVE pane grab OUTRANKS the window edge resize strips
+  (screen.rs): otherwise a selection drag running into the border
+  freezes ~6pt short AND the in-strip release is swallowed -> phantom
+  grab keeps re-anchoring the selection to the bare pointer (the
+  "edge text is uncopyable" bug); pointer::clear_phantom_grab after
+  pointer::handle is belt-and-braces for any future gated frame
+  (release must be routed BEFORE the clear, the release frame's
+  any_down is already false). e2e: scripts/bin/e2e-edge-select.sh.
+- app surface_px multiplies egui points by pixels_per_point
   (vt-pane cell px are physical).
 - Xvfb initial pointer rests at the SCREEN CENTER - with a centered
   50/50 split that is exactly ON the gutter, so any pointer-state visual

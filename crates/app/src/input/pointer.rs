@@ -14,7 +14,7 @@ use log::warn;
 use vt_pane::{mouse as vmouse, Session};
 
 use crate::session_map::SessionMap;
-use crate::state::{AppState, WindowState};
+use crate::state::{AppState, WindowState, WindowUi};
 
 /// egui modifiers -> ghostty mods.
 fn gmods(m: &egui::Modifiers) -> GMods {
@@ -208,6 +208,20 @@ fn on_wheel(
     }
 }
 
+/// Release truth for a pane pointer grab. A frame whose raw routing was
+/// gated away (border strip, modal, ...) can drop the release event
+/// entirely; a grab left behind with no button down anywhere is a phantom
+/// that keeps extending the selection as the bare pointer moves, so clear
+/// it. Runs AFTER routing so this frame's own release still lands on the
+/// grab owner first.
+pub fn clear_phantom_grab(ui: &mut WindowUi, any_down: bool) {
+    if !any_down && ui.pointer_buttons != 0 {
+        ui.pointer_pane = None;
+        ui.pointer_buttons = 0;
+        ui.pointer_last = None;
+    }
+}
+
 /// One frame of raw pointer routing over the pane content rects.
 /// `dirty` marks persisted state changes (focus moves). Pointer-grab state
 /// lives in the ACTIVE window's UI (one input stream per OS window).
@@ -394,6 +408,28 @@ mod tests {
     use crate::state::fresh_state;
     use egui::{Modifiers, Pos2, RawInput};
     use vt_pane::{task as vtask, SessionOpts};
+
+    #[test]
+    fn phantom_grab_clears_only_with_no_button_down() {
+        let mut st = fresh_state();
+        let wui = &mut st.windows[0].ui;
+        wui.pointer_pane = Some(1);
+        wui.pointer_buttons = 0b11;
+        wui.pointer_last = Some(1);
+        // Buttons still down (live drag): the grab must survive.
+        clear_phantom_grab(wui, true);
+        assert_eq!(wui.pointer_pane, Some(1));
+        assert_eq!(wui.pointer_buttons, 0b11);
+        // A release dropped by a gated frame leaves buttons set while
+        // nothing is down: the phantom grab must clear.
+        clear_phantom_grab(wui, false);
+        assert_eq!(wui.pointer_pane, None);
+        assert_eq!(wui.pointer_buttons, 0);
+        assert_eq!(wui.pointer_last, None);
+        // No grab: a no-op.
+        clear_phantom_grab(wui, false);
+        assert_eq!(wui.pointer_buttons, 0);
+    }
 
     #[test]
     fn wheel_units_match_three_rows_per_notch() {

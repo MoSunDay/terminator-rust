@@ -56,6 +56,10 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
   标题栏 X 的直接关闭，并核对持久化 tab 与存活 pane 数量。
 - drag-and-drop e2e（`e2e-dragdrop.sh`）：tab 排序、Ctrl+拖 pane 头部
   5 区投放（含拖拽中 overlay 像素断言）、跨 tab chip-dwell 迁移
+- 边缘选区 e2e（`e2e-edge-select.sh`）：拖拽选区伸进窗口边缘 resize 条
+  （右缘 6pt / 右下角 14pt）仍要选到最后一列/最后一行，条内 release 必须
+  收 grab（被吞 = 幽灵 grab 让裸指针继续改选区，复制内容错误/为空）；
+  期望值直接取自 `ctl capture`，行号 3 位 + 内容匹配定位
 - empty-window restore e2e（`e2e-empty-restore.sh`）：`windows:[{tabs:[]}]`
   恢复到活 tab、退出自动关 pane 且持久化空 tabs
 - IME e2e（`e2e-ime.sh`）：真 XIM 链路（Xvfb + dbus + ibus + libpinyin）；
@@ -150,6 +154,21 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
   reorder persisted, D5 = plain header drag, D6/D7/D8 = cross-tab pane
   migration via chip dwell (edge/Center-swap/source-tab-close), D4 = alive
   + quit).
+- border-strip selection e2e: `scripts/bin/e2e-edge-select.sh` (Xvfb +
+  xdotool + xclip; numbered FULL-GRID-WIDTH rows, expectation taken from
+  `ctl capture` itself so cell geometry never enters the assert by hand).
+  A selection drag that runs INTO the window border resize strips (right
+  EDGE 6pt / bottom-right CORNER 14pt) must keep extending to the last
+  grid column/row and the release INSIDE the strip must end the grab:
+  pre-fix the strips swallowed motion+release (frozen endpoint near the
+  edge; the swallowed release stranded a PHANTOM grab that kept
+  re-anchoring the selection to the bare pointer -> wrong/empty copy).
+  A press INSIDE the strip still starts a window resize (intended).
+  Asserts: right-edge drag copies one full-width row minus the single
+  eaten press-column char (3-digit row numbering keeps l[1:] unique, so
+  the row is identified by content, not digit parsing); corner drag
+  copies every row down to the LAST grid row cell-exact. CI job
+  e2e-edge-select apt adds xclip.
 - empty-window restore e2e: `scripts/bin/e2e-empty-restore.sh`
   (Xvfb + xdotool; E1 = `windows:[{tabs:[]}]` restores a live tab,
   E2 = exit auto-closes + app quits persisting empty tabs, E3 = the

@@ -30,7 +30,10 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
 - input: key echo, ^C echo through the egui Copy-fold gate, Ctrl+Shift+E
   split, SGR press/release/motion + wheel byte-exact (less wheel =
   arrows x3), cross-pane drag RELEASE to the press-owner pane, drag-
-  select + Ctrl+Shift+C == xclip readback, Shift+drag escape hatch,
+  select + Ctrl+Shift+C == xclip readback, drag-select INTO the border
+  resize strips still selects the last column/row and the release inside
+  the strip ends the grab (edge-select suite; pre-fix copy was wrong/
+  empty from a phantom grab), Shift+drag escape hatch,
   Shift+PageUp/End scrollback paging + snap-back-on-typing, Ctrl+C
   interrupts a foreground job (pty signal reset verified)
 - notice bubble: `terminator-ctl notice` (NO args, any arg = usage error

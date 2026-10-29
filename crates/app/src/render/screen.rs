@@ -174,10 +174,19 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // routing stand down while the drop target is being picked.
     let pane_drag = st.win().and_then(|w| w.ui.pane_drag);
     // A border resize owns the pointer too: no divider/raw routing/pane
-    // clicks while the pointer is on a window edge strip.
-    let edge = ui
-        .input(|i| i.pointer.interact_pos())
-        .and_then(|p| resize::dir_at(area, p));
+    // clicks while the pointer is on a window edge strip. A live pane
+    // grab outranks the strips: the press already chose a pane, so a
+    // selection drag that runs into the border must keep extending to
+    // the border cell (text there is otherwise unselectable) and its
+    // release must be seen - a release swallowed by the strip would
+    // strand the grab and drag the selection with no button held.
+    let grab = st.win().is_some_and(|w| w.ui.pointer_pane.is_some());
+    let edge = if grab {
+        None
+    } else {
+        ui.input(|i| i.pointer.interact_pos())
+            .and_then(|p| resize::dir_at(area, p))
+    };
     let dragging = if pane_drag.is_some() || edge.is_some() || modal {
         false
     } else {
@@ -230,6 +239,13 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             .map(|(p, lt)| (*p, grid::egui_rect(content_rect(*lt, m.header_h))))
             .collect();
         pointer::handle(&ctx, &content_rects, st, sess, cell.h, dirty);
+    }
+    // Belt-and-braces release truth: any gated frame that dropped a
+    // release event must not leave a phantom grab behind (no button
+    // down anywhere = no drag in progress).
+    let any_down = ui.input(|i| i.pointer.any_down());
+    if let Some(w) = st.win_mut() {
+        pointer::clear_phantom_grab(&mut w.ui, any_down);
     }
 
     for &(pane, lt) in &rects {

@@ -671,6 +671,59 @@ mod mouse_tests {
     }
 
     #[test]
+    fn full_row_selection_with_scrollback_copies_everything() {
+        // Pins the engine side of the edge-copy complaint: after a
+        // spawn-time grid change (default grid -> real window size) and
+        // enough output to grow scrollback, a full-row selection still
+        // copies the entire row through the Formatter.
+        let cols = 133u16;
+        let rows = 36u16;
+        let line: String = format!("045{}", "EdgeSelectZq3".repeat(11));
+        let line: String = line.chars().take(cols as usize).collect(); // exactly cols
+        let dir = std::env::temp_dir().join("edge-sel-test");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path_arg = dir.join("pat").display().to_string();
+        std::fs::write(
+            dir.join("pat"),
+            format!("{}\n", vec![line.as_str(); 80].join("\n")),
+        )
+        .expect("pat file");
+        // Same spawn shape as the app: interactive shell at the default
+        // grid, then resize, then drive it by typing (the e2e used ctl send).
+        let opts = SessionOpts::local_shell(80, 24);
+        let mut s = match task::spawn_session(&opts) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skip: {e}");
+                return;
+            }
+        };
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        task::resize(&mut s, cols, rows, 9, 20).expect("resize");
+        let cmd = format!("cat {}\n", path_arg);
+        task::write(&s, cmd.as_bytes()).expect("write");
+        for _ in 0..200 {
+            let _ = task::pump(&mut s);
+            if let Ok(f) = task::frame(&mut s) {
+                if f.cells[0].iter().any(|c| c.text == "4") {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Press col 1 of viewport row 0, drag to the last column, release.
+        let (x0, x1) = (1.0 * 9.0, (cols as f32 - 1.0) * 9.0);
+        vmouse::select_press(&mut s, x0, 0.0).expect("press");
+        vmouse::select_drag(&mut s, x1, 0.0, false).expect("drag");
+        vmouse::select_release(&mut s, x1, 0.0).expect("release");
+        let text = vmouse::selection_text(&mut s).expect("text");
+        assert!(
+            text.contains("EdgeSelectZq3") && text.len() >= 130,
+            "truncated selection: {text:?}"
+        );
+    }
+
+    #[test]
     fn double_click_selects_word() {
         let opts = SessionOpts::command(
             40,
