@@ -111,7 +111,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // pty bytes enter a terminal in `pump_all` and in the ipc drain
     // (main.rs), both of which run before the root pass, and the later
     // passes only render.
-    if ui.ctx().viewport_id() == egui::ViewportId::ROOT {
+    let root = ui.ctx().viewport_id() == egui::ViewportId::ROOT;
+    if root {
         for session in d.sess.map.values_mut() {
             use std::sync::atomic::Ordering;
             // Announced -> active while tmux owns the mouse; leaving that
@@ -140,21 +141,36 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             }
         }
     }
-    actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
-    // Remote panes whose connection dropped are kept and reattached
-    // (before ensure_sessions, so a fired retry respawns this frame).
-    actions::reconnect::pump(&d.st, &mut d.sess);
+    // auto_degrade / reconnect::pump / ensure_sessions / close_exited
+    // are GLOBAL state walkers (all windows, all sessions) - root pass
+    // only, like the loop above; per-window passes used to pay them all
+    // again for identical results.
+    if root {
+        actions::auto_degrade(&mut d.st, &mut d.sess, &mut d.dirty);
+        // Remote panes whose connection dropped are kept and reattached
+        // (before ensure_sessions, so a fired retry respawns this frame).
+        actions::reconnect::pump(&d.st, &mut d.sess);
+    }
+    // Empty-window rescue stays per pass: each window's pass sees (and
+    // seeds) its own tree, and do_new_tab spawns its session directly.
     if d.st.win().is_some_and(|w| w.tree.tabs.is_empty()) && !d.ui.quitting {
         actions::do_new_tab(&mut d.st, &mut d.sess, PaneKind::Local, &mut d.dirty);
     }
-    actions::ensure_sessions(&d.st, &mut d.sess);
-    // A gone shell closes its own pane (after EXIT_GRACE); closing the
-    // last pane of THIS window removes it mid-pass - stop rendering then
-    // rather than drawing the next window's tree into this viewport.
+    // Guard identity for BOTH removal checks below: the frame-start
+    // close_exited (root only) and the per-pane dead-pane-close recheck
+    // in the pane loop (every pass - pointer routing is per-window).
     let win_id = d.st.win().map(|w| w.id);
-    actions::close_exited(&mut d.st, &mut d.sess, &mut d.ui, &mut d.dirty);
-    if d.st.win().map(|w| w.id) != win_id {
-        return;
+    if root {
+        actions::ensure_sessions(&d.st, &mut d.sess);
+        // A gone shell closes its own pane (after EXIT_GRACE); closing the
+        // last pane of THIS window removes it mid-pass - stop rendering
+        // then rather than drawing the next window's tree into this
+        // viewport. Secondary passes skip close_exited entirely: the
+        // root pass already ran it this frame.
+        actions::close_exited(&mut d.st, &mut d.sess, &mut d.ui, &mut d.dirty);
+        if d.st.win().map(|w| w.id) != win_id {
+            return;
+        }
     }
 
     let area = ui.available_rect_before_wrap();
@@ -187,10 +203,18 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
         ui.input(|i| i.pointer.interact_pos())
             .and_then(|p| resize::dir_at(area, p))
     };
+    // The active tab's divider list is computed ONCE per pass and shared
+    // by interaction and paint (previously the layout tree was re-walked
+    // for the hover probe, the drag re-find and the strip painter).
+    let divs: Vec<mouse::DividerHit> = st
+        .win()
+        .and_then(|w| w.tree.tabs.get(w.tree.active_tab))
+        .map(|tab| mouse::dividers(tab, grid::lt_rect(area), DIVIDER_W))
+        .unwrap_or_default();
     let dragging = if pane_drag.is_some() || edge.is_some() || modal {
         false
     } else {
-        mouse::divider_interaction(ui, st, area, dirty)
+        mouse::divider_interaction(ui, st, area, dirty, &divs)
     };
     if let Some(w) = st.win_mut() {
         w.tree.active_tab = w.tree.active_tab.min(w.tree.tabs.len().saturating_sub(1));
@@ -460,49 +484,46 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // Divider strips over the background (non-zoom only): a quiet chrome
     // field with a 2px rounded-cap grab handle in the middle. Geometry
     // and hit-testing live in mouse.rs; this is paint only.
-    if !st.win().is_some_and(|w| w.ui.zoom) {
-        if let Some(tabref) = st.win().and_then(|w| w.tree.tabs.get(tab)) {
-            let hover_key = ui.input(|i| i.pointer.hover_pos()).and_then(|p| {
-                mouse::find_divider(tabref, grid::lt_rect(area), DIVIDER_W, p, 2.0)
-                    .map(|h| (h.pane, h.level))
-            });
-            for h in mouse::dividers(tabref, grid::lt_rect(area), DIVIDER_W) {
-                let s = h.strip;
-                painter.rect_filled(
-                    s,
-                    0.0,
-                    colors::with_opacity(
-                        colors::to_c32(colors::chrome_bg(&pal)),
-                        st.settings.opacity,
-                    ),
-                );
-                // Handle brightens from the resting divider step to a
-                // clear hover step while the pointer is on the strip.
-                let resting = hover_key != Some((h.pane, h.level));
-                let handle_col = colors::mix(
-                    pal.background,
-                    pal.foreground,
-                    if resting { 0.13 } else { 0.22 },
-                );
-                let handle_col =
-                    colors::with_opacity(colors::to_c32(handle_col), st.settings.opacity);
-                // Tall strip = vertical split: the handle runs along y;
-                // otherwise it is a horizontal strip: along x.
-                let along = |len: f32| {
-                    if s.height() >= s.width() {
-                        Rect::from_center_size(s.center(), egui::vec2(2.0, len))
-                    } else {
-                        Rect::from_center_size(s.center(), egui::vec2(len, 2.0))
-                    }
-                };
-                let span = if s.height() >= s.width() {
-                    s.height()
+    if !st.win().is_some_and(|w| w.ui.zoom) && !divs.is_empty() {
+        let hover_key = ui.input(|i| i.pointer.hover_pos())
+            .and_then(|p| mouse::find_divider_in(&divs, p, 2.0))
+            .map(|h| (h.pane, h.level));
+        for h in &divs {
+            let s = h.strip;
+            painter.rect_filled(
+                s,
+                0.0,
+                colors::with_opacity(
+                    colors::to_c32(colors::chrome_bg(&pal)),
+                    st.settings.opacity,
+                ),
+            );
+            // Handle brightens from the resting divider step to a
+            // clear hover step while the pointer is on the strip.
+            let resting = hover_key != Some((h.pane, h.level));
+            let handle_col = colors::mix(
+                pal.background,
+                pal.foreground,
+                if resting { 0.13 } else { 0.22 },
+            );
+            let handle_col =
+                colors::with_opacity(colors::to_c32(handle_col), st.settings.opacity);
+            // Tall strip = vertical split: the handle runs along y;
+            // otherwise it is a horizontal strip: along x.
+            let along = |len: f32| {
+                if s.height() >= s.width() {
+                    Rect::from_center_size(s.center(), egui::vec2(2.0, len))
                 } else {
-                    s.width()
-                };
-                let handle = along((span * 0.35).clamp(8.0, 64.0));
-                painter.rect_filled(handle, 1.0, handle_col);
-            }
+                    Rect::from_center_size(s.center(), egui::vec2(len, 2.0))
+                }
+            };
+            let span = if s.height() >= s.width() {
+                s.height()
+            } else {
+                s.width()
+            };
+            let handle = along((span * 0.35).clamp(8.0, 64.0));
+            painter.rect_filled(handle, 1.0, handle_col);
         }
     }
 

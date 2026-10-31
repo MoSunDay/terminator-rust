@@ -80,9 +80,19 @@ pub fn dividers(tab: &Tab, area: LRect, gap: f32) -> Vec<DividerHit> {
 }
 
 /// Nearest divider under (or near) `pos`, within `tol` pixels.
+/// Production passes share the precomputed list (`find_divider_in`); the
+/// from-tree form stays for tests.
+#[cfg(test)]
 pub fn find_divider(tab: &Tab, area: LRect, gap: f32, pos: Pos2, tol: f32) -> Option<DividerHit> {
-    dividers(tab, area, gap)
-        .into_iter()
+    find_divider_in(&dividers(tab, area, gap), pos, tol)
+}
+
+/// Nearest divider under (or near) `pos` within `tol`, among already
+/// computed `divs` - the per-pass divider list is shared by interaction
+/// and paint, so hit tests no longer re-walk the layout tree.
+pub fn find_divider_in(divs: &[DividerHit], pos: Pos2, tol: f32) -> Option<DividerHit> {
+    divs
+        .iter()
         .filter(|d| {
             let grown = d.strip.expand(tol);
             grown.contains(pos)
@@ -91,6 +101,7 @@ pub fn find_divider(tab: &Tab, area: LRect, gap: f32, pos: Pos2, tol: f32) -> Op
             let c = d.strip.center();
             ((c.x - pos.x).abs() + (c.y - pos.y).abs()) as u64
         })
+        .copied()
 }
 
 /// Ratio implied by dragging a divider to `pos`.
@@ -108,7 +119,16 @@ pub fn drag_ratio(hit: &DividerHit, pos: Pos2, gap: f32) -> f32 {
 /// One frame of divider hover/drag handling. Returns true while a drag is
 /// active so callers can suppress pane interactions. Works on the ACTIVE
 /// window's tree; the drag state lives in that window's UI.
-pub fn divider_interaction(ui: &mut Ui, st: &mut AppState, area: Rect, dirty: &mut bool) -> bool {
+/// `divs` is the current window's ACTIVE tab divider list (screen
+/// coordinates), computed once per screen pass by the caller; a drag
+/// started on a non-active tab falls back to a local recompute.
+pub fn divider_interaction(
+    ui: &mut Ui,
+    st: &mut AppState,
+    area: Rect,
+    dirty: &mut bool,
+    divs: &[DividerHit],
+) -> bool {
     let gap = crate::state::DIVIDER_W;
     let wi = st.active_idx();
     let AppState { windows, .. } = st;
@@ -132,14 +152,25 @@ pub fn divider_interaction(ui: &mut Ui, st: &mut AppState, area: Rect, dirty: &m
         let (d_tab, d_pane, d_level) = (d.tab, d.pane, d.level);
         let down = ui.input(|i| i.pointer.any_down());
         let pos = ui.input(|i| i.pointer.hover_pos());
+        // The drag target may sit on a tab the user switched away from;
+        // only the active tab's list was precomputed, so re-walk that
+        // rare case on demand (Cow keeps the common path allocation-free).
+        let drag_divs: std::borrow::Cow<[DividerHit]> = if d_tab == tab_idx {
+            std::borrow::Cow::Borrowed(divs)
+        } else {
+            tree.tabs
+                .get(d_tab)
+                .map(|t| std::borrow::Cow::Owned(dividers(t, lt_area, gap)))
+                .unwrap_or_default()
+        };
         let hit = if down {
             pos.and_then(|pos| {
-                let tab = tree.tabs.get(tab_idx)?;
-                dividers(tab, lt_area, gap)
-                    .into_iter()
+                drag_divs
+                    .iter()
                     .find(|h| h.pane == d_pane && h.level == d_level)
+                    .copied()
                     .or_else(|| {
-                        find_divider(tab, lt_area, gap, pos, 32.0)
+                        find_divider_in(&drag_divs, pos, 32.0)
                             .filter(|h| h.pane == d_pane && h.level == d_level)
                     })
             })
@@ -161,11 +192,7 @@ pub fn divider_interaction(ui: &mut Ui, st: &mut AppState, area: Rect, dirty: &m
     let Some(pos) = ui.input(|i| i.pointer.hover_pos()) else {
         return false;
     };
-    let Some(hit) = tree
-        .tabs
-        .get(tab_idx)
-        .and_then(|tab| find_divider(tab, lt_area, gap, pos, DIVIDER_TOL))
-    else {
+    let Some(hit) = find_divider_in(divs, pos, DIVIDER_TOL) else {
         return false;
     };
     ui.ctx().set_cursor_icon(match hit.axis {

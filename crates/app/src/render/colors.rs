@@ -183,34 +183,91 @@ pub fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     }
 }
 
+/// The chrome color bundle: every chrome surface is a pure `mix` over
+/// the palette's background/foreground/block_highlight, so the whole set
+/// is computed once and memoized per (those three inputs). Callers still
+/// use the free functions below - they read the memoized bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Chrome {
+    /// Panel/window fill, one step above the theme bg.
+    pub bg: Rgb,
+    /// Hovered chrome (chips, icon buttons).
+    pub hover: Rgb,
+    /// Divider strips between panes.
+    pub divider: Rgb,
+    /// Hairline separators inside chrome (1px, quieter than divider).
+    pub hairline: Rgb,
+    /// Active tab chip fill (subtle accent tint).
+    pub tab_active: Rgb,
+    /// Focused pane header fill: same accent source as the active chip,
+    /// one step quieter so the chip still reads as "owning" the content.
+    pub focus_header: Rgb,
+    /// Dimmed chrome text (window title, inactive tab labels).
+    pub title_text: Rgb,
+}
+
+thread_local! {
+    static CHROME_MEMO: std::cell::RefCell<
+        Option<(((u8, u8, u8), (u8, u8, u8), (u8, u8, u8)), Chrome)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Memoized chrome bundle for `p` (single-slot: keyed on the three
+/// palette inputs the mixes depend on - the rest of `Palette` is
+/// irrelevant here). Paint touches these many times per frame; the mixes
+/// themselves are cheap but they were recomputed for every call site.
+pub fn chrome(p: &Palette) -> Chrome {
+    let key = (
+        (p.background.r, p.background.g, p.background.b),
+        (p.foreground.r, p.foreground.g, p.foreground.b),
+        (p.block_highlight.r, p.block_highlight.g, p.block_highlight.b),
+    );
+    if let Some(c) = CHROME_MEMO
+        .with(|m| m.borrow().filter(|(k, _)| *k == key).map(|(_, c)| c))
+    {
+        return c;
+    }
+    let c = Chrome {
+        bg: mix(p.background, p.foreground, 0.045),
+        hover: mix(p.background, p.foreground, 0.10),
+        divider: mix(p.background, p.foreground, 0.13),
+        hairline: mix(p.background, p.foreground, 0.09),
+        tab_active: mix(p.background, p.block_highlight, 0.18),
+        focus_header: mix(p.background, p.block_highlight, 0.10),
+        title_text: mix(p.foreground, p.background, 0.38),
+    };
+    CHROME_MEMO.with(|m| *m.borrow_mut() = Some((key, c)));
+    c
+}
+
 /// Chrome surface: panel/window fill, one step above the theme bg.
 pub fn chrome_bg(p: &Palette) -> Rgb {
-    mix(p.background, p.foreground, 0.045)
+    chrome(p).bg
 }
 /// Hovered chrome (chips, icon buttons).
 pub fn chrome_hover(p: &Palette) -> Rgb {
-    mix(p.background, p.foreground, 0.10)
+    chrome(p).hover
 }
 /// Divider strips between panes.
 pub fn divider(p: &Palette) -> Rgb {
-    mix(p.background, p.foreground, 0.13)
+    chrome(p).divider
 }
 /// Hairline separators inside chrome (1px, quieter than divider).
 pub fn hairline(p: &Palette) -> Rgb {
-    mix(p.background, p.foreground, 0.09)
+    chrome(p).hairline
 }
 /// Active tab chip fill (subtle accent tint).
 pub fn tab_active(p: &Palette) -> Rgb {
-    mix(p.background, p.block_highlight, 0.18)
+    chrome(p).tab_active
 }
 /// Focused pane header fill: same accent source as the active chip, one
 /// step quieter so the chip still reads as "owning" the content.
 pub fn focus_header(p: &Palette) -> Rgb {
-    mix(p.background, p.block_highlight, 0.10)
+    chrome(p).focus_header
 }
 /// Dimmed chrome text (window title, inactive tab labels).
 pub fn title_text(p: &Palette) -> Rgb {
-    mix(p.foreground, p.background, 0.38)
+    chrome(p).title_text
 }
 
 /// Apply the window opacity to a chrome/pane base fill. Text, selections

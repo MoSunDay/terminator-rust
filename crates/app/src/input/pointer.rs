@@ -233,10 +233,12 @@ pub fn handle(
     cell_h: f32,
     dirty: &mut bool,
 ) {
-    let events = ctx.input(|i| i.events.clone());
-    let any_down = ctx.input(|i| i.pointer.any_down());
-    let hover = ctx.input(|i| i.pointer.hover_pos());
-    let mods_now = ctx.input(|i| i.modifiers);
+    // One input read: pointer state + this frame's events, copied into a
+    // reused thread-local buffer (the old per-frame `events.clone()`
+    // malloc'd a fresh Vec per window pass, and mouse motion makes that
+    // Vec large; steady-state here is zero allocation).
+    let (any_down, hover, mods_now) =
+        ctx.input(|i| (i.pointer.any_down(), i.pointer.hover_pos(), i.modifiers));
     let ppp = ctx.pixels_per_point();
     let wi = st.active_idx();
     let AppState { windows, .. } = st;
@@ -244,7 +246,13 @@ pub fn handle(
         return;
     };
     let WindowState { tree, ui: wui, .. } = w;
-    for ev in events {
+    thread_local! {
+        static EVENTS: std::cell::RefCell<Vec<egui::Event>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let mut events = EVENTS.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    ctx.input(|i| events.extend_from_slice(&i.events));
+    for ev in events.drain(..) {
         match ev {
             Event::PointerButton {
                 pos,
@@ -399,6 +407,7 @@ pub fn handle(
             _ => {}
         }
     }
+    EVENTS.with(|b| *b.borrow_mut() = events);
 }
 
 #[cfg(test)]

@@ -400,19 +400,17 @@ pub fn fresh_keep_prefs(saved: AppState) -> AppState {
     st
 }
 
-/// All pane ids across all tabs of all windows, flat and unique.
+/// All pane ids across all tabs of all windows, flat, unique and sorted.
+/// Dedup via set (the old `Vec::contains` made this O(n^2) in pane count,
+/// and it runs every root pass).
 pub fn all_pane_ids(st: &AppState) -> Vec<PaneId> {
-    let mut out: Vec<PaneId> = Vec::new();
+    let mut set = std::collections::BTreeSet::new();
     for w in &st.windows {
         for tab in &w.tree.tabs {
-            for id in layout_tree::sorted_pane_ids(&tab.root) {
-                if !out.contains(&id) {
-                    out.push(id);
-                }
-            }
+            set.extend(layout_tree::sorted_pane_ids(&tab.root));
         }
     }
-    out
+    set.into_iter().collect()
 }
 
 /// Stable identity of a tab: its lowest pane id. Pane ids are unique,

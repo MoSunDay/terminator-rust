@@ -164,7 +164,14 @@ pub fn handle(
         // which works because this return does not remove input events.
         return;
     }
-    let events = ctx.input(|i| i.events.clone());
+    // Reused thread-local buffer: key event volume is low, but the old
+    // `events.clone()` still malloc'd a fresh Vec per window pass.
+    thread_local! {
+        static EVENTS: std::cell::RefCell<Vec<egui::Event>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let mut events = EVENTS.with(|b| std::mem::take(&mut *b.borrow_mut()));
+    ctx.input(|i| events.extend_from_slice(&i.events));
     // advance over ModifiersChanged marks; see the seeding note above
     let mut mods_at = mods_at_start;
     let alt_chars = alt_keyed_chars(&events);
@@ -176,7 +183,7 @@ pub fn handle(
         .win()
         .and_then(|w| w.tree.tabs.get(tab))
         .map(|t| t.focused);
-    for ev in events {
+    for ev in events.drain(..) {
         if let Event::ModifiersChanged(m) = ev {
             mods_at = m;
             continue;
@@ -350,6 +357,7 @@ pub fn handle(
             _ => {}
         }
     }
+    EVENTS.with(|b| *b.borrow_mut() = events);
 }
 
 #[cfg(test)]

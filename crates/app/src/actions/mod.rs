@@ -21,10 +21,11 @@ pub(crate) mod winops;
 /// Spawn sessions for every pane that lacks one; drop orphaned sessions.
 pub fn ensure_sessions(st: &AppState, sess: &mut SessionMap) {
     let ids = state::all_pane_ids(st);
+    let id_set: std::collections::HashSet<PaneId> = ids.iter().copied().collect();
     let stale: Vec<PaneId> = sess
         .map
         .keys()
-        .filter(|id| !ids.contains(id))
+        .filter(|id| !id_set.contains(id))
         .copied()
         .collect();
     for id in stale {
