@@ -227,3 +227,34 @@ gl 沙箱 release 实测（e2e-idle-cpu.sh 全 PASS，S1 0 帧保持）：
   （脏行 bump / 全失效全 bump / 新帧无 0 gen）。467 全绿；e2e-bg-seams 全绿
   （分层后像素等同）；e2e-cjk / e2e-edge-select 在本沙箱基线二进制同样失败
   （fontTools 缺失→已补、X 拖拽工具缺失），非回归。
+
+## M2 活动帧固定开销（2026-10-31，33c9ffa）
+背景：M1 后每个活动帧仍按"窗口 pass 次数"重复付帧级固定成本：
+events `Vec` clone ×2/pass（pointer+keyboard，鼠标移动时很大）、
+`dividers()` 树遍历 ×3/pass（hover 探测 / 拖拽重找 / 条带绘制）、
+`measure_cells` 每 pass 一次完整 galley 探测、chrome `mix` 每个绘制点
+重算、全局遍历器（auto_degrade/reconnect::pump/ensure_sessions/
+close_exited/all_pane_ids）随 secondary viewport 重复执行，
+`all_pane_ids` 本身 O(n²)（Vec::contains 去重）+ ensure_sessions 再 O(n²)。
+改动：事件线程本地复用缓冲（take/extend/drain/put-back，指针状态并入
+同一次 `ctx.input`）；全局遍历器 ROOT pass 独占（空窗 `do_new_tab`
+救援保持每 pass——它同步 spawn 会话，无 ensure_sessions 顺序依赖；
+pane 循环内的 `win_id` 复查保持每 pass——死 pane 点击会关窗）；
+`all_pane_ids` BTreeSet 去重 + ensure_sessions 本地 HashSet；
+`divs` 每 pass 算一次共享给交互与绘制（非活动 tab 上的拖拽 `Cow`
+回退重算）；chrome 七色单槽 memo（键=bg/fg/block_highlight 三色）；
+`measure_cells` 单槽 memo（字体启动时安装一次，结果恒定）。
+gl 沙箱 release 实测（e2e-idle-cpu 全 PASS，S1 0 帧保持；bg-seams 全绿；
+empty-restore/windows/mouse-key PASS；467 单测不变）：
+- 交错 A/B vs M1（各 3 轮）：单窗 spinner 整机持平（274.5% vs 274.6%，
+  pass_med ~185 vs ~183µs）；鼠标连续移动持平（~460% llvmpipe 主导，
+  pass_max_med 178-192 → 165-185µs 略降）；3 窗 × 5 pane spinner 环境
+  双峰（~9.1ms 与 ~12.3ms 两态随轮次换边），轮均 pass_med 10147 vs
+  10132µs 持平——宏观数仍被 llvmpipe 软光栅 + egui 0.36 全量重细分
+  掩盖（上游 mesh 缓存杠杆），本改动削减的是光栅便宜处的每 pass 固定功。
+- 顺带修好测量工装：/tmp/ab_spinner.sh 曾把 ctl list 表头当 pane id
+  （"ID"），旧"spinner" A/B 实测的是 ipc 唤醒重绘而非文字输出；多窗
+  工装改 `list --json` + 逐窗 `xdotool windowfocus` + 真键
+  （Ctrl+Shift+N/D/E），按唯一二进制路径定点管理 app PID。
+- e2e-cjk / e2e-edge-select / e2e-tab-close 在 M1 基线二进制同样失败
+  （沙箱无 WM：xdotool `windowactivate` 步骤），环境性，非回归。
