@@ -530,9 +530,9 @@ pub struct Data {
     pub sess: crate::session_map::SessionMap,
     pub ui: UiState,
     pub registry: Vec<RemoteTarget>,
-    /// Per-pane cached egui shape lists (see `render::shape_cache`):
+    /// Per-pane per-pane layered row/bg shape caches (see `render::row_cache`):
     /// an unchanged VT frame skips the whole grid-to-shape rebuild.
-    pub shapes: crate::render::shape_cache::Cache,
+    pub shapes: crate::render::row_cache::Cache,
     pub dirty: bool,
 }
 

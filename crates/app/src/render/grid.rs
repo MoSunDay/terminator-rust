@@ -110,142 +110,280 @@ pub fn draw_frame(painter: &Painter, rect: Rect, a: &DrawArgs<'_>) {
 /// trailing empty cell after them is skipped (per row: a row-final wide
 /// cell must not eat the next row's first cell).
 ///
-/// Shape-returning (not painting) so the per-pane shape cache can store
-/// and replay the output when nothing visibly changed.
-pub fn frame_shapes(ctx: &egui::Context, rect: Rect, a: &DrawArgs<'_>) -> Vec<egui::Shape> {
-    let fr = a.fr;
-    let pal = a.pal;
-    let cell = a.cell;
-    let font_size = a.font_size;
-    let cursor_alpha = a.cursor_alpha;
-    let fill_alpha = a.fill_alpha;
-    let mut out: Vec<egui::Shape> = Vec::new();
-    let bg = with_opacity(to_c32(vt_rgb(fr.default_bg)), fill_alpha);
-    // Cursor-block glyph ink uses the bg COLOR at full alpha: on glass the
-    // semi-transparent fill would render the glyph invisible.
-    let bg_ink = Color32::from_rgb(bg.r(), bg.g(), bg.b());
-    out.push(egui::Shape::rect_filled(rect, 0.0, bg));
-    let default_fg = to_c32(vt_rgb(fr.default_fg));
-    let cursor_col = fr
-        .cursor_color
-        .map(vt_rgb)
-        .map_or(to_c32(pal.cursor), to_c32);
-    // Soft blink: the block fades between the pane bg and the cursor
-    // color (alpha 1 = legacy solid block). Peak capped at 0.9 so even
-    // the fully-on block keeps a hint of the background under it.
-    let cursor_col = crate::render::tokens::lerp_color(bg, cursor_col, cursor_alpha.min(0.9));
-    let cursor_at = if cursor_alpha > 0.02
-        && fr.cursor.visible
-        && fr.cursor.x < fr.cols
-        && fr.cursor.y < fr.rows
+/// The cursor cell's grid position whenever the cell exists (cursor
+/// visible, in bounds), REGARDLESS of the blink alpha: the row cache
+/// always leaves this cell's ink to the overlay, so the alpha (blink
+/// edges) never moves the hole and never rebuilds a row.
+pub fn cursor_cell(fr: &VtFrame) -> Option<(u16, u16)> {
+    if fr.cursor.visible && fr.cursor.x < fr.cols && fr.cursor.y < fr.rows {
+        Some((fr.cursor.x, fr.cursor.y))
+    } else {
+        None
+    }
+}
+
+/// Where the cursor BLOCK paints this frame, if anywhere (alpha above
+/// the visibility floor): the on/off decision inside the overlay.
+pub fn cursor_at(fr: &VtFrame, cursor_alpha: f32) -> Option<(u16, u16)> {
+    if cursor_alpha > 0.02 && fr.cursor.visible && fr.cursor.x < fr.cols && fr.cursor.y < fr.rows
     {
         Some((fr.cursor.x, fr.cursor.y))
     } else {
         None
-    };
-    // Glass is uniform: the selection and explicit ANSI cell backgrounds
-    // keep their color but share the pane fill alpha, so the whole pane
-    // area sees through equally (ink stays opaque). bg_runs applies the
-    // alpha itself; pass the OPAQUE selection color.
-    let sel_opaque = to_c32(pal.selection_background);
-    let font = FontId::monospace(font_size);
-    let wide_font = FontId::monospace(cell.wide_size);
-    // Cell backgrounds as MERGED maximal rectangles: epaint feathers
-    // every rect edge, so one rect per cell leaves a lattice of faint
-    // seams in same-color regions; full-width/full-height runs also
-    // bleed into the pane's right/bottom remainder (the grid is
-    // floor(pane/cell) cells wide and tall).
-    for run in bg_runs::bg_runs(fr, default_fg, sel_opaque, fill_alpha) {
+    }
+}
+
+/// The pane's background layer: the effective pane fill plus the cell
+/// backgrounds as MERGED maximal rectangles (see [`crate::render::bg_runs`]:
+/// one feathered edge per region instead of a per-cell seam lattice).
+/// Cursor-free by construction, so a blink edge or cursor move never
+/// re-runs this walk. Keyed pane-level on the frame generation.
+pub(crate) fn bg_shapes(rect: Rect, a: &DrawArgs<'_>) -> Vec<egui::Shape> {
+    let fr = a.fr;
+    let bg = with_opacity(to_c32(vt_rgb(fr.default_bg)), a.fill_alpha);
+    let default_fg = to_c32(vt_rgb(fr.default_fg));
+    let sel_opaque = to_c32(a.pal.selection_background);
+    let mut out: Vec<egui::Shape> = Vec::with_capacity(8);
+    out.push(egui::Shape::rect_filled(rect, 0.0, bg));
+    for run in bg_runs::bg_runs(fr, default_fg, sel_opaque, a.fill_alpha) {
         out.push(egui::Shape::rect_filled(
-            bg_runs::run_rect(rect, &run, cell, fr.cols, fr.rows),
+            bg_runs::run_rect(rect, &run, a.cell, fr.cols, fr.rows),
             0.0,
             run.color,
         ));
     }
-    for (y, row) in fr.cells.iter().enumerate() {
-        let mut skip_tail = false;
-        for (x, cd) in row.iter().enumerate() {
-            if skip_tail {
-                // The tail of a wide pair: no glyph of its own (its
-                // background, if any, is covered by the merged runs).
-                skip_tail = false;
-                continue;
+    out
+}
+
+/// One row's ink layer: glyphs (bold adds a second half-point offset
+/// pass), underline and strikethrough. `hole == Some(x)` skips the
+/// cursor cell's ink entirely - the per-frame overlay owns that cell so
+/// the cursor can move and blink without rebuilding the row.
+///
+/// Wide cells span two columns and the trailing empty cell after them is
+/// skipped (per row: a row-final wide cell must not eat the next row's
+/// first cell).
+pub(crate) fn row_shapes(
+    ctx: &egui::Context,
+    rect: Rect,
+    y: usize,
+    hole: Option<u16>,
+    a: &DrawArgs<'_>,
+) -> Vec<egui::Shape> {
+    let fr = a.fr;
+    let cell = a.cell;
+    // Cursor-block glyph ink uses the bg COLOR at full alpha: on glass the
+    // semi-transparent fill would render the glyph invisible.
+    let bg = with_opacity(to_c32(vt_rgb(fr.default_bg)), a.fill_alpha);
+    let bg_ink = Color32::from_rgb(bg.r(), bg.g(), bg.b());
+    let default_fg = to_c32(vt_rgb(fr.default_fg));
+    let sel_opaque = to_c32(a.pal.selection_background);
+    let font = FontId::monospace(a.font_size);
+    let wide_font = FontId::monospace(cell.wide_size);
+    let mut out: Vec<egui::Shape> = Vec::new();
+    let Some(row) = fr.cells.get(y) else {
+        return out;
+    };
+    let mut skip_tail = false;
+    for (x, cd) in row.iter().enumerate() {
+        if skip_tail {
+            // The tail of a wide pair: no glyph of its own (its
+            // background, if any, is covered by the merged runs).
+            skip_tail = false;
+            continue;
+        }
+        let (ux, uy) = (x as u16, y as u16);
+        if ux >= fr.cols || uy >= fr.rows {
+            continue;
+        }
+        let span: u16 = if cd.wide { 2 } else { 1 };
+        let r = cell_rect(rect, ux, uy, cell, span);
+        let (base_fg, explicit_bg) = cell_colors(cd, default_fg, bg_ink);
+        let ink_bg = if cd.selected {
+            sel_opaque
+        } else {
+            explicit_bg.unwrap_or(bg_ink)
+        };
+        let fg = if cd.faint {
+            crate::render::tokens::lerp_color(base_fg, ink_bg, 0.5)
+        } else {
+            base_fg
+        };
+        let ink_visible = !cd.invisible && (!cd.blink || a.blink_on) && hole != Some(ux);
+        if ink_visible && !cd.text.is_empty() {
+            // Wide cells paint at the scaled size so the glyph fills
+            // exactly the two-cell span; narrow cells are unchanged.
+            let cell_font = if cd.wide { &wide_font } else { &font };
+            if let Some(shape) = super::ink::shape(
+                ctx,
+                Pos2::new(r.min.x, r.center().y),
+                cd.text.as_str(),
+                cell_font.clone(),
+                fg,
+                cd.italic,
+            ) {
+                out.push(shape);
             }
-            let (ux, uy) = (x as u16, y as u16);
-            if ux >= fr.cols || uy >= fr.rows {
-                continue;
-            }
-            let span: u16 = if cd.wide { 2 } else { 1 };
-            let r = cell_rect(rect, ux, uy, cell, span);
-            let (base_fg, explicit_bg) = cell_colors(cd, default_fg, bg_ink);
-            let ink_bg = if cd.selected {
-                sel_opaque
-            } else {
-                explicit_bg.unwrap_or(bg_ink)
-            };
-            let fg = if cd.faint {
-                crate::render::tokens::lerp_color(base_fg, ink_bg, 0.5)
-            } else {
-                base_fg
-            };
-            let is_cursor = cursor_at == Some((ux, uy));
-            if is_cursor {
-                out.push(egui::Shape::rect_filled(r, 2.0, cursor_col));
-            }
-            let ink_visible = !cd.invisible && (!cd.blink || a.blink_on);
-            if ink_visible && !cd.text.is_empty() {
-                // Cursor-block glyph ink: the cell's own effective bg at
-                // full alpha (contrast on colored cells), else the pane
-                // bg color - a semi-transparent fill would hide it on
-                // glass.
-                let glyph = if is_cursor {
-                    bg_runs::cursor_ink(cd, default_fg, sel_opaque, bg_ink)
-                } else {
-                    fg
-                };
-                // Wide cells paint at the scaled size so the glyph fills
-                // exactly the two-cell span; narrow cells are unchanged.
-                let cell_font = if cd.wide { &wide_font } else { &font };
+            if cd.bold {
                 if let Some(shape) = super::ink::shape(
                     ctx,
-                    Pos2::new(r.min.x, r.center().y),
+                    Pos2::new(r.min.x + 0.5, r.center().y),
                     cd.text.as_str(),
                     cell_font.clone(),
-                    glyph,
+                    fg,
                     cd.italic,
                 ) {
                     out.push(shape);
                 }
-                if cd.bold {
-                    if let Some(shape) = super::ink::shape(
-                        ctx,
-                        Pos2::new(r.min.x + 0.5, r.center().y),
-                        cd.text.as_str(),
-                        cell_font.clone(),
-                        glyph,
-                        cd.italic,
-                    ) {
-                        out.push(shape);
-                    }
-                }
             }
-            if ink_visible && cd.underline {
-                out.push(egui::Shape::line_segment(
-                    [r.left_bottom(), r.right_bottom()],
-                    Stroke::new(1.0, fg),
-                ));
-            }
-            if ink_visible && cd.strikethrough {
-                out.push(egui::Shape::line_segment(
-                    [r.left_center(), r.right_center()],
-                    Stroke::new(1.0, fg),
-                ));
-            }
-            if cd.wide {
-                skip_tail = true;
+        }
+        if ink_visible && cd.underline {
+            out.push(egui::Shape::line_segment(
+                [r.left_bottom(), r.right_bottom()],
+                Stroke::new(1.0, fg),
+            ));
+        }
+        if ink_visible && cd.strikethrough {
+            out.push(egui::Shape::line_segment(
+                [r.left_center(), r.right_center()],
+                Stroke::new(1.0, fg),
+            ));
+        }
+        if cd.wide {
+            skip_tail = true;
+        }
+    }
+    out
+}
+
+/// The per-frame cursor overlay: the block plus the cursor cell's ink in
+/// the cursor ink color (the cell's own effective bg at full alpha,
+/// else the pane bg color - see [`bg_runs::cursor_ink`]). At most a
+/// handful of shapes, rebuilt every paint: cursor moves and blink edges
+/// recolor it live without touching any cached row.
+pub(crate) fn cursor_shapes(
+    ctx: &egui::Context,
+    rect: Rect,
+    a: &DrawArgs<'_>,
+) -> Vec<egui::Shape> {
+    let fr = a.fr;
+    let Some((cx, cy)) = cursor_cell(fr) else {
+        return Vec::new();
+    };
+    let Some(row) = fr.cells.get(usize::from(cy)) else {
+        return Vec::new();
+    };
+    // Mirror the row walk: the tail of a wide pair paints nothing (the
+    // wide glyph owns the pair), cursor or not.
+    if cx > 0 && row.get(usize::from(cx) - 1).is_some_and(|c| c.wide) {
+        return Vec::new();
+    }
+    let Some(cd) = row.get(usize::from(cx)) else {
+        return Vec::new();
+    };
+    // Blink-off (or an unfocused pane's steady-invisible block) still
+    // owes the cell's ink in PLAIN color: the row left it holed.
+    let show_block = cursor_at(fr, a.cursor_alpha).is_some();
+    let cell = a.cell;
+    let span: u16 = if cd.wide { 2 } else { 1 };
+    let r = cell_rect(rect, cx, cy, cell, span);
+    let bg = with_opacity(to_c32(vt_rgb(fr.default_bg)), a.fill_alpha);
+    let bg_ink = Color32::from_rgb(bg.r(), bg.g(), bg.b());
+    let default_fg = to_c32(vt_rgb(fr.default_fg));
+    let sel_opaque = to_c32(a.pal.selection_background);
+    // Soft blink: the block fades between the pane bg and the cursor
+    // color (alpha 1 = legacy solid block). Peak capped at 0.9 so even
+    // the fully-on block keeps a hint of the background under it.
+    let cursor_col = fr
+        .cursor_color
+        .map(vt_rgb)
+        .map_or(to_c32(a.pal.cursor), to_c32);
+    let cursor_col = crate::render::tokens::lerp_color(bg, cursor_col, a.cursor_alpha.min(0.9));
+    let mut out: Vec<egui::Shape> = Vec::with_capacity(5);
+    if show_block {
+        out.push(egui::Shape::rect_filled(r, 2.0, cursor_col));
+    }
+    let (base_fg, explicit_bg) = cell_colors(cd, default_fg, bg_ink);
+    let ink_bg = if cd.selected {
+        sel_opaque
+    } else {
+        explicit_bg.unwrap_or(bg_ink)
+    };
+    let fg = if cd.faint {
+        crate::render::tokens::lerp_color(base_fg, ink_bg, 0.5)
+    } else {
+        base_fg
+    };
+    let ink_visible = !cd.invisible && (!cd.blink || a.blink_on);
+    if ink_visible && !cd.text.is_empty() {
+        // Cursor-block glyph ink: the cell's own effective bg at full
+        // alpha (contrast on colored cells), else the pane bg color - a
+        // semi-transparent fill would hide it on glass. With the block
+        // off the ink is the cell's own plain color, exactly what the
+        // row would have painted into the hole.
+        let glyph = if show_block {
+            bg_runs::cursor_ink(cd, default_fg, sel_opaque, bg_ink)
+        } else {
+            fg
+        };
+        let font = FontId::monospace(a.font_size);
+        let wide_font = FontId::monospace(cell.wide_size);
+        let cell_font = if cd.wide { &wide_font } else { &font };
+        if let Some(shape) = super::ink::shape(
+            ctx,
+            Pos2::new(r.min.x, r.center().y),
+            cd.text.as_str(),
+            cell_font.clone(),
+            glyph,
+            cd.italic,
+        ) {
+            out.push(shape);
+        }
+        if cd.bold {
+            if let Some(shape) = super::ink::shape(
+                ctx,
+                Pos2::new(r.min.x + 0.5, r.center().y),
+                cd.text.as_str(),
+                cell_font.clone(),
+                glyph,
+                cd.italic,
+            ) {
+                out.push(shape);
             }
         }
     }
+    if ink_visible && cd.underline {
+        out.push(egui::Shape::line_segment(
+            [r.left_bottom(), r.right_bottom()],
+            Stroke::new(1.0, fg),
+        ));
+    }
+    if ink_visible && cd.strikethrough {
+        out.push(egui::Shape::line_segment(
+            [r.left_center(), r.right_center()],
+            Stroke::new(1.0, fg),
+        ));
+    }
+    out
+}
+
+/// Build one terminal snapshot's egui shapes for `rect` as the layered
+/// composition [`bg_shapes`] + every [`row_shapes`] (the cursor cell's
+/// ink hoisted out of its row) + [`cursor_shapes`]. The uncached paint
+/// path (preedit composition) and tests use this; the row cache paints
+/// the layers separately so unchanged rows replay instead of rebuilding.
+pub fn frame_shapes(ctx: &egui::Context, rect: Rect, a: &DrawArgs<'_>) -> Vec<egui::Shape> {
+    let fr = a.fr;
+    let at = cursor_cell(fr);
+    let mut out = bg_shapes(rect, a);
+    for y in 0..usize::from(fr.rows) {
+        let hole = match at {
+            Some((cx, cy)) if cy as usize == y => Some(cx),
+            _ => None,
+        };
+        out.extend(row_shapes(ctx, rect, y, hole, a));
+    }
+    out.extend(cursor_shapes(ctx, rect, a));
     out
 }
 

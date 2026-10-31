@@ -48,3 +48,45 @@ fn cached_frame_is_returned_without_a_rebuild() {
     task::invalidate_frame(&mut sess);
     assert_eq!(task::frame_cached(&mut sess).cells[1][0].text, "w");
 }
+
+#[test]
+fn row_gens_bump_only_the_rows_the_engine_reports() {
+    let Some(mut sess) = session() else { return };
+    sess.term.vt_write(b"one");
+    let first = task::frame_cached(&mut sess);
+    assert_eq!(first.row_gens.len(), usize::from(first.rows));
+    assert!(
+        first.row_gens.iter().all(|g| *g >= 1),
+        "a fresh build leaves no zero gens (0 only exists in Frame::default)"
+    );
+    let before: Vec<u64> = first.row_gens.clone();
+    // Same-row output: only the row the engine dirtied moves on.
+    task::invalidate_frame_rows(&mut sess);
+    sess.term.vt_write(b"X");
+    let second = task::frame_cached(&mut sess);
+    let moved: Vec<usize> = second
+        .row_gens
+        .iter()
+        .zip(&before)
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(y, _)| y)
+        .collect();
+    assert!(!moved.is_empty(), "the written row must bump");
+    assert!(
+        moved.iter().all(|y| second.cells[*y].iter().any(|c| !c.text.is_empty())),
+        "only rows with content may move (scroll would move all - fine)"
+    );
+    // A full invalidation bumps every row.
+    let before_full: Vec<u64> = second.row_gens.clone();
+    task::invalidate_frame(&mut sess);
+    let third = task::frame_cached(&mut sess);
+    assert!(
+        third
+            .row_gens
+            .iter()
+            .zip(&before_full)
+            .all(|(a, b)| a != b),
+        "full invalidation bumps every row gen"
+    );
+}

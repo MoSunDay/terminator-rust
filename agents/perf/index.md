@@ -207,3 +207,23 @@ ROOT pacing 管辖 secondary（secondary 在 root pass 内渲染）：root 最�
 真机 release 实测（60Hz 输出流）：未聚焦 26fps/~4%、聚焦 53fps/~8%、
 最小化 2fps/~0.4%（旧构建最小化 70%）；空闲可见 0.8%，
 `pass_avg_us` ~150-200。
+
+## M1 行级形状缓存（2026-10-31，perf/m1-layered-cache）
+背景：旧 `shape_cache` 键含 pane 级 `frame_gen` 与 `cursor_alpha`——任意 1 字节
+输出或 blink 沿都整 pane 重建形状。M1 拆三层：bg 层（键=frame_gen）、行墨层
+（键=该行自身 `Frame::row_gens`）、光标 overlay（永不缓存，≤5 shape）。光标
+cell 的墨从行中挖 `hole`（`grid::cursor_cell`，与 alpha 无关）：blink 沿 0 行
+重建、光标移动恰好 2 行重建、`cursor_alpha` 彻底离开缓存键。
+gl 沙箱 release 实测（e2e-idle-cpu.sh 全 PASS，S1 0 帧保持）：
+- S2 spinner `pass_avg_us` median 426→315（-26%），mean 683→535（-22%）；
+  pass_max_us median 875→782。
+- S2 整机 CPU 持平（基线 3 轮 median 267.3% vs M1 265.7%，交错 A/B）：剩余
+  成本在 llvmpipe 软件光栅 + present + 全量 tessellation——egui 0.36 无跨帧
+  mesh 缓存，`epaint` 每帧重细分所有 delivered shape，是下一个杠杆（M2 候选）。
+- S13 busy（cat 40k 行）每帧 Dirty::Full：行级缓存全 miss + 逐行 Vec 重放，
+  与旧整表重建等价（avg ~2.4%，帧率带宽受限），洪泛路径的解析预算属 M4。
+- 单测：row_cache 6 项契约（脏行只重建该行 / blink 沿 0 重建 / 光标移动 2 行 /
+  样式变更全弃 / 两帧未画剪枝 / overlay 跟随 alpha）+ vt-pane row_gens 语义
+  （脏行 bump / 全失效全 bump / 新帧无 0 gen）。467 全绿；e2e-bg-seams 全绿
+  （分层后像素等同）；e2e-cjk / e2e-edge-select 在本沙箱基线二进制同样失败
+  （fontTools 缺失→已补、X 拖拽工具缺失），非回归。

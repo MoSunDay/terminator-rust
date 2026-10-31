@@ -232,15 +232,26 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   snapshots are CACHED per Session (cache_valid; invalidate on pump,
   resize, theme change, selection/viewport mutations - vt-pane
   task.rs frame_cached/invalidate_frame, session_map::sync_frame) and
-  Frame.has_blink gates blink scheduling. TESSELLATION is cached per
-  PANE (2026-10-14, render/shape_cache.rs): Key = {frame_gen, rect,
-  cell, font_size, fill_alpha, cursor_alpha, blink_on,
-  pixels_per_point} - frame_gen is a vt-pane counter bumped on every
-  mutation (task.rs), so a spinner pane re-tessellates only ITSELF
-  while untouched panes replay cached shapes (Cache::paint /
-  end_frame once per frame; main.rs frame-scopes terminal_theme::sync
-  + pump_all + the cache end_frame in one block). blink_on only
-  enters the Key when fr.has_blink. 60Hz single-pane spinner measured
+  Frame.has_blink gates blink scheduling. SHAPES are cached in
+  LAYERS per PANE (2026-10-31 M1, render/row_cache.rs replacing
+  shape_cache.rs): a pane-level bg layer (pane fill + merged runs,
+  keyed on frame_gen) + a PER-ROW ink layer keyed on that row's own
+  gen (vt_pane Frame::row_gens, bumped only when the row's cells were
+  rewritten) + an UNCACHED cursor overlay (block + cursor-cell ink,
+  rebuilt every paint - at most a few shapes). The cursor cell's ink
+  is hoisted out of its row as a `hole` positioned by
+  grid::cursor_cell (alpha-INDEPENDENT: blink edges rebuild no row,
+  the overlay recolors; a cursor move rebuilds exactly two rows;
+  cursor_alpha is deliberately NOT a cache key). StyleKey = {rect,
+  cell, font_size, fill_alpha, blink_on && fr.has_blink,
+  pixels_per_point} - any change drops all layers.
+  grid::frame_shapes (uncached preedit path, tests) is the
+  composition bg + rows + overlay (pixel parity with the cached
+  path; e2e-bg-seams green). One dirty row now rebuilds one row, not
+  the pane; spinner pass_avg_us median 426->315us (gl sandbox), total
+  spinner CPU flat (dominated by raster/present - the NEXT lever).
+  egui 0.36 still re-tessellates every delivered shape each frame;
+  cross-frame mesh caching remains open (perf/index.md M1). 60Hz single-pane spinner measured
   0.6% core on the deployed desktop (vs the 23% complaint). IME panel
   chase (ime/x11.rs sync): the 16ms follow-up must run for the WHOLE
   composition - the IME server re-docks its panel asynchronously

@@ -8,7 +8,7 @@ use remote::PaneKind;
 
 use crate::actions;
 use crate::input::{ime, mouse, pointer, resize};
-use crate::render::{cadence, colors, dropzone, grid, preedit, shape_cache, tokens};
+use crate::render::{cadence, colors, dropzone, grid, preedit, row_cache, tokens};
 use crate::session_map;
 use crate::state::{AppState, Data, DIVIDER_W};
 use crate::ui::chrome;
@@ -321,23 +321,22 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                     // frame generation does not track: paint uncached.
                     grid::draw_frame(&painter, content, &args);
                 } else {
-                    let key = shape_cache::Key {
-                        frame_gen: fgen,
+                    let key = row_cache::StyleKey {
                         rect: content,
                         cell,
                         font_size,
                         fill_alpha,
-                        cursor_alpha: args.cursor_alpha,
                         // Blink flips only matter to frames that carry
                         // blink-attribute text; a pane without any must
                         // not rebuild on every 0.5s text-blink edge
                         // (output is blink_on-independent there).
+                        // cursor_alpha is deliberately absent: the
+                        // cursor cell is an uncached overlay, so a
+                        // blink edge repaints no row at all.
                         blink_on: blink_on && fr.has_blink,
                         pixels_per_point: ctx.pixels_per_point(),
                     };
-                    shapes.paint(&ctx, &painter, pane, key, |ctx| {
-                        grid::frame_shapes(ctx, content, &args)
-                    });
+                    shapes.paint(&ctx, &painter, pane, key, fgen, &args);
                 }
                 // Scrollback review indicator over the grid, right edge.
                 if Some(pane) == focused && !vp_pinned {

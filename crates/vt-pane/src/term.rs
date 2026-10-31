@@ -88,6 +88,13 @@ pub struct Frame {
     /// Some cell carries the blink attribute: the renderer must keep
     /// scheduling blink edges for this pane even without new output.
     pub has_blink: bool,
+    /// Per-row generation, bumped exactly when that row's cells were
+    /// rewritten (dirty-row patch, full rebuild or defensive blanking).
+    /// A render-side row cache keys each row on its own gen so one
+    /// changed row no longer repaints the whole pane. Always >= 1 once
+    /// built (0 only in a `Frame::default()`), so an all-zero entry can
+    /// never falsely match.
+    pub row_gens: Vec<u64>,
 }
 
 /// Reset a cached cell for reuse: keeps the text buffer's allocation
@@ -238,6 +245,11 @@ pub(crate) fn snapshot_frame_into(
     let dirty = if full { Dirty::Full } else { snapshot.dirty()? };
     let every_row = full || matches!(dirty, Dirty::Full);
     let some_rows = matches!(dirty, Dirty::Partial);
+    if every_row {
+        for g in frame.row_gens.iter_mut() {
+            *g += 1;
+        }
+    }
 
     frame.cols = cols;
     frame.rows = rows;
@@ -258,6 +270,7 @@ pub(crate) fn snapshot_frame_into(
         frame
             .cells
             .resize_with(rows as usize, || vec![CellData::default(); cols as usize]);
+        frame.row_gens.resize(rows as usize, 0);
     }
 
     let mut rebuilt = false;
@@ -277,15 +290,19 @@ pub(crate) fn snapshot_frame_into(
             // Clear the per-row layer for every row we touched (the global
             // flag below does NOT clear it - the layers are independent).
             row.set_dirty(false)?;
+            if let Some(g) = frame.row_gens.get_mut(y) {
+                *g += 1;
+            }
             rebuilt = true;
         }
         y += 1;
     }
     // Defensive: rows the engine did not report are blank, not stale.
-    for row in frame.cells.iter_mut().skip(y) {
+    for (g, row) in frame.row_gens.iter_mut().zip(frame.cells.iter_mut()).skip(y) {
         for cell in row.iter_mut() {
             reset_cell(cell);
         }
+        *g += 1;
     }
     if every_row {
         // Every row was rebuilt (or blanked): the accumulated flag is exact.
