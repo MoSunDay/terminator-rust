@@ -259,3 +259,24 @@ empty-restore/windows/mouse-key PASS；467 单测不变）：
   （Ctrl+Shift+N/D/E），按唯一二进制路径定点管理 app PID。
 - e2e-cjk / e2e-edge-select / e2e-tab-close 在 M1 基线二进制同样失败
   （沙箱无 WM：xdotool `windowactivate` 步骤），环境性，非回归。
+
+## M3 选择失效粒度（2026-11-01，ed98d2e）
+背景：选择编辑（press/drag/release/clear）一律 `invalidate_frame` 整 pane 全
+量重建——10k cell pane 上拖拽即每事件 ~50k FFI 读。引擎侧两条事实（探针实
+证）：`set_selection` 每次把 dirty 打成 Full+全行标志（幻影脏，内容没动）；
+Press/Drag 事件无 getter，锚点只能 vt-pane 侧自记。
+改法：drag 相等（`Selection::equals`）→ 连 `set_selection` 与失效都跳过（格
+内移动零开销）；变化 → 只失效 anchor..head 视口行 span（两端各放 1 行冗余
+盖 snap）。press/release 保守全量（多击选行可跨折行）。作用域门控在会话侧
+（引擎 dirty 不可仲裁）：`content_epoch` 内容时钟 + `engine_clean`/`sel_dirt`
+标志；新鲜 span 重建时忽略并清掉引擎幻影层，内容后到 / 引擎状态未知 /
+FULL pending → 回退全量。task.rs 超 800 行，缓存策略函数拆到
+task/cache_policy.rs（126 行，`pub use` 保持路径）。
+gl 沙箱验证：cargo test 474/0（新增 selection_rows 7 项：仅 span 行 bump、
+equals 跳过、union 扩展、FULL 支配、clear span、以及关键安全性质——span
+pending 期间内容到达不被遮蔽，与无缓存 fresh 快照交叉核对）；e2e-idle-cpu
+全 PASS（idle 0 帧、wake 29ms、spinner 51.7fps、busy 18.9fps）；
+e2e-bg-seams 全绿；e2e-mouse-key 全过。e2e-edge-select 在本沙箱仍环境性
+失败（无 Wayland display 时剪贴板初始化失败，与基线一致），选择行为以单测
+为准。macro CPU A/B 未跑：M2 经验表明 llvmpipe 主导下整机交错 A/B 噪声大，
+机制级断言（行 gen 变化集）已覆盖本里程碑的行为差异。
