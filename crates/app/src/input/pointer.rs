@@ -407,6 +407,9 @@ pub fn handle(
             _ => {}
         }
     }
+    // Buffer put-back: the loop above must keep its no-early-return
+    // shape (only `continue`); a `return` would leak the take and
+    // silently revert this pass to per-call allocation.
     EVENTS.with(|b| *b.borrow_mut() = events);
 }
 

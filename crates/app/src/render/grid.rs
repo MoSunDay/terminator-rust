@@ -10,8 +10,25 @@ use crate::state::CellSize;
 
 /// Measure the monospace cell metrics from egui fonts.
 pub fn measure_cells(ctx: &egui::Context, font_size: f32) -> CellSize {
-    let font = FontId::monospace(font_size);
     let ppp = ctx.pixels_per_point();
+    // Single-slot memo keyed on the two runtime inputs: fonts are
+    // installed once at startup (main.rs) before any pass, so the probe
+    // is a pure function of (font_size, pixels_per_point) for the life
+    // of the process. The probe pays a full fallback-chain galley build
+    // (`layout_no_wrap` on a Han glyph) - it used to run once per
+    // window pass.
+    thread_local! {
+        static LAST: std::cell::RefCell<Option<((f32, f32), CellSize)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    if let Some(c) = LAST.with(|l| {
+        l.borrow()
+            .filter(|((fs, p), _)| *fs == font_size && *p == ppp)
+            .map(|(_, c)| c)
+    }) {
+        return c;
+    }
+    let font = FontId::monospace(font_size);
     let (w, h, wide_advance) = ctx.fonts_mut(|f| {
         let (w, h) = (f.glyph_width(&font, 'M'), f.row_height(&font));
         // Fullwidth probe through the same family fallback chain: with
@@ -46,13 +63,15 @@ pub fn measure_cells(ctx: &egui::Context, font_size: f32) -> CellSize {
     } else {
         font_size * 1.2
     };
-    CellSize {
+    let cell = CellSize {
         w,
         h,
         wide_size,
         w_px: (w * ppp).round().max(1.0) as u32,
         h_px: (h * ppp).round().max(1.0) as u32,
-    }
+    };
+    LAST.with(|l| *l.borrow_mut() = Some(((font_size, ppp), cell)));
+    cell
 }
 
 /// layout_tree::Rect -> egui::Rect.
