@@ -243,12 +243,13 @@ pane 循环内的 `win_id` 复查保持每 pass——死 pane 点击会关窗）
 `all_pane_ids` BTreeSet 去重 + ensure_sessions 本地 HashSet；
 `divs` 每 pass 算一次共享给交互与绘制（非活动 tab 上的拖拽 `Cow`
 回退重算）；chrome 七色单槽 memo（键=bg/fg/block_highlight 三色）；
-`measure_cells` 单槽 memo（字体启动时安装一次，结果恒定）。
+`measure_cells` 单槽 memo（字体启动时安装一次，结果恒定；初版补丁脚本
+漏掉、评审抓出，实际落地于跟进提交 847ce05）。
 gl 沙箱 release 实测（e2e-idle-cpu 全 PASS，S1 0 帧保持；bg-seams 全绿；
 empty-restore/windows/mouse-key PASS；467 单测不变）：
 - 交错 A/B vs M1（各 3 轮）：单窗 spinner 整机持平（274.5% vs 274.6%，
   pass_med ~185 vs ~183µs）；鼠标连续移动持平（~460% llvmpipe 主导，
-  pass_max_med 178-192 → 165-185µs 略降）；3 窗 × 5 pane spinner 环境
+  pass_max_med 178-192 → 165-170µs 略降）；3 窗 × 5 pane spinner 环境
   双峰（~9.1ms 与 ~12.3ms 两态随轮次换边），轮均 pass_med 10147 vs
   10132µs 持平——宏观数仍被 llvmpipe 软光栅 + egui 0.36 全量重细分
   掩盖（上游 mesh 缓存杠杆），本改动削减的是光栅便宜处的每 pass 固定功。

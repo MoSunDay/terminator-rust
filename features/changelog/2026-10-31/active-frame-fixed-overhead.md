@@ -44,6 +44,8 @@ O(n^2) `ids.contains` in `ensure_sessions`.
 6. **`measure_cells` memo** (grid.rs): single-slot keyed on
    (font_size, pixels_per_point); the fonts are installed once at
    startup (main.rs), so the probe result can never change mid-run.
+   (Initially missed by the M2 patch script and caught in review;
+   landed in follow-up `847ce05`.)
 
 ## Verification
 - 467 unit tests green (baseline count unchanged); release build clean.
@@ -55,7 +57,7 @@ O(n^2) `ids.contains` in `ensure_sessions`.
   xdotool `windowactivate` step) - environmental, not regressions.
 - Interleaved A/B vs M1 (3 rounds each): single-window spinner total
   CPU flat (274.5% vs 274.6%; pass_med ~185 vs ~183us) and mouse-
-  motion flat (~460% llvmpipe-bound; pass_max_med 178-192 -> 165-185);
+  motion flat (~460% llvmpipe-bound; pass_max_med 178-192 -> 165-170);
   3-window x 5-pane spinner flat after averaging a bimodal
   environmental state (round-mean pass_med 10147 vs 10132us). The
   macro numbers stay dominated by llvmpipe software raster + egui 0.36
