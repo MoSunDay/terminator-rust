@@ -49,4 +49,16 @@ X11 只使用候选位置矩形的起点，所以报告光标单元格左下角�
   目标 2px 内/与上次命令一致就不 XMoveWindow）让每趟复查零 X 写入；
   非 composing 帧 repair 早退，普通帧零 X 流量（get_input_focus/pid
   往返也不再发生）。
-- [测试索引](../e2e-suites.md)；[已实测能力](../verified-end-to-end.md)。原生窗口实测覆盖 IBus；Fcitx 尚无同等级运行证据。macOS 原生候选窗仍需实机验证，Linux XIM 与交叉编译不能代替。
+- XIM 服务端生命周期陷阱（2026-11-01，实机 fcitx5 5.1.7+rime）：fcitx5
+  在应用启动后被重启（本机单日出现 4 个 fcitx5 PID；更早一次是 xim
+  addon 被运行时 unload），已运行实例的 XIC 永久失联——winit 的
+  destroy 回调置 is_destroyed 后 `set_ime_allowed` 早退，
+  instantiate-callback 恢复不会为既有窗口重建 IC，egui-winit 每帧的
+  ime 输出从此静默无效。症状：只有本应用的旧窗口无候选无预编辑，
+  新起实例一切正常（实测 IC 注册 + rime 提交上屏）。判别：
+  `gdbus call --session -d org.fcitx.Fcitx5 -o /controller -m
+  org.fcitx.Fcitx.Controller1.DebugInfo` 中没有本程序的
+  `frontend:xim` 条目；xterm 对照可证服务端健康。处置：重启应用
+  （`terminator-ctl migrate` 可先把 tab 迁去新实例再退出旧的）。
+  应用层无法自愈（winit 无公开重建 API），治本需上游修复。
+- [测试索引](../e2e-suites.md)；[已实测能力](../verified-end-to-end.md)。原生窗口实测覆盖 IBus；Fcitx 已有实机运行证据（2026-11-01，IC 注册 + 提交上屏），像素级 e2e 仍仅 IBus。macOS 原生候选窗仍需实机验证，Linux XIM 与交叉编译不能代替。

@@ -59,7 +59,9 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   Exact row-end and wide-character wrap preserve all 180 committed glyph
   pixels; last-row preview preserves 182, Escape restores the original
   image, and actual commit follows the previewed wrap (M3e).
-  macOS native panel and Fcitx runtime behavior remain unverified.
+  macOS native panel remains unverified. Fcitx has real-machine runtime
+  evidence (2026-11-01, XIM IC registration + commit-to-screen on live
+  fcitx5), but pixel-level e2e coverage remains IBus-only.
   2026-10-12 re-run on libX11 1.7.5 exposed a real gap the 1.8.12 box
   hid: under preedit callbacks libX11 ignores XNSpotLocation (bug
   1580) so the ibus panel parked bottom-left in BOTH old and new
