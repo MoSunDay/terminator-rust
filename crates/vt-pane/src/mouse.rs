@@ -306,10 +306,53 @@ pub fn send_wheel(
     Ok(())
 }
 
+/// Viewport row of a grid-y position (cell rows are uniform height).
+fn row_of_y(sess: &Session, y: f32) -> u32 {
+    let rows = u32::from(sess.term.rows().unwrap_or(24)).max(1);
+    let (_, ch) = vtask::cell_px(sess);
+    ((y / ch.max(1) as f32) as u32).min(rows - 1)
+}
+
+/// Whether a selection edit may use row-scoped invalidation: only when
+/// the engine is fully clean (nothing unconsumed - PTY output, scrolls -
+/// that the row scoping would hide) or its only dirt is a phantom
+/// selection flag from a previous selection edit of ours. Otherwise the
+/// engine holds real pending changes: FULL.
+fn may_scope_rows(sess: &Session) -> bool {
+    sess.engine_clean || sess.sel_dirt
+}
+
+/// Inclusive viewport-row span an anchor->head selection edit can have
+/// changed, with one row of slack at each end (word/line snap moves an
+/// endpoint at most one row; anchors are exact). `None` when the anchor
+/// is unknown (drag without our press) - callers then stay FULL.
+fn drag_span(anchor: Option<u32>, head: u32, sess: &Session) -> Option<(u32, u32)> {
+    let a = anchor?;
+    let rows = u32::from(sess.term.rows().unwrap_or(24)).max(1);
+    Some((
+        a.min(head).saturating_sub(1),
+        (a.max(head) + 1).min(rows - 1),
+    ))
+}
+
 /// Clear the active selection (mouse-grabbing apps own the screen).
 pub fn clear_selection(sess: &mut Session) {
+    let had = sess.term.selection().map(|s| s.is_some()).unwrap_or(true);
+    if !had && sess.sel_span.is_none() {
+        sess.sel_anchor = None;
+        return; // nothing installed, nothing to repaint
+    }
     let _ = sess.term.set_selection(None);
-    vtask::invalidate_frame(sess);
+    sess.sel_anchor = None;
+    // The estimate covers every row the selection touched; without one
+    // (never dragged / not scoped) stay conservative.
+    match (sess.sel_span.take(), may_scope_rows(sess)) {
+        (Some((a, b)), true) => {
+            vtask::invalidate_frame_rows_span(sess, a, b);
+            sess.sel_dirt = true;
+        }
+        _ => vtask::invalidate_frame(sess),
+    }
 }
 
 /// Snap the viewport back to the live area if the user had scrolled up.
@@ -326,6 +369,7 @@ pub fn select_press(sess: &mut Session, x: f32, y: f32) -> Result<()> {
         return Ok(());
     }
     let (x, y) = clamp_grid_px(sess, x, y);
+    let vy = row_of_y(sess, y);
     let grid_ref = sess.term.grid_ref(viewport_point(sess, x, y))?;
     let (cw, _) = vtask::cell_px(sess);
     let elapsed = sess.pointer.t0.elapsed();
@@ -336,7 +380,11 @@ pub fn select_press(sess: &mut Session, x: f32, y: f32) -> Result<()> {
         .set_position(f64::from(x), f64::from(y))?
         .apply(gesture, &sess.term, grid_ref)?;
     sess.term.set_selection(sel.as_ref())?;
+    sess.sel_anchor = Some(vy);
+    sess.sel_span = drag_span(Some(vy), vy, sess);
     vtask::invalidate_frame(sess);
+    // The engine's only dirt now is this selection's phantom flag.
+    sess.sel_dirt = true;
     Ok(())
 }
 
@@ -356,14 +404,43 @@ pub fn select_drag(sess: &mut Session, x: f32, y: f32, rectangle: bool) -> Resul
             screen_height: u32::from(sess.term.rows().unwrap_or(24)).saturating_mul(ch.max(1)),
         }
     };
+    let vy = row_of_y(sess, y);
+    let old = sess.term.selection()?;
     let sel = sess
         .pointer
         .drag
         .set_position(f64::from(x), f64::from(y))?
         .set_rectangle(rectangle)?
         .apply(&mut sess.pointer.gesture, &sess.term, grid_ref, geometry)?;
+    // Within-cell motion keeps the snapped selection identical: skip
+    // the engine write AND the invalidation entirely.
+    let changed = match (&old, &sel) {
+        (Some(o), Some(n)) => !o.equals(&sess.term, n)?,
+        (None, None) => false,
+        _ => true,
+    };
+    if !changed {
+        return Ok(());
+    }
     sess.term.set_selection(sel.as_ref())?;
-    vtask::invalidate_frame(sess);
+    // A drag edits at most the span between anchor and head (slightly
+    // widened: snap moves an endpoint a row); rebuilding the previous
+    // span too covers a head that jumped rows. Scoping needs a clean
+    // engine or a fresh span (content would defeat it); no anchor ->
+    // FULL regardless.
+    match (drag_span(sess.sel_anchor, vy, sess), may_scope_rows(sess)) {
+        (Some(span), true) => {
+            let union = match sess.sel_span {
+                Some((a, b)) => (a.min(span.0), b.max(span.1)),
+                None => span,
+            };
+            vtask::invalidate_frame_rows_span(sess, union.0, union.1);
+            sess.sel_span = Some(span);
+            // Selection-only dirt again (set_selection's phantom FULL).
+            sess.sel_dirt = true;
+        }
+        _ => vtask::invalidate_frame(sess),
+    }
     Ok(())
 }
 
@@ -378,6 +455,8 @@ pub fn select_release(sess: &mut Session, x: f32, y: f32) -> Result<()> {
         .release
         .apply(&mut sess.pointer.gesture, &sess.term, grid_ref)?;
     vtask::invalidate_frame(sess);
+    // Only the engine's phantom selection flag is unconsumed now.
+    sess.sel_dirt = true;
     Ok(())
 }
 

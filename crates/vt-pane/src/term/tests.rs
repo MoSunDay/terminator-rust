@@ -22,8 +22,10 @@ fn snapshot_into(
     frame: &mut Frame,
     force_full: bool,
 ) {
-    snapshot_frame_into(term, &mut it.0, &mut it.1, &mut it.2, frame, force_full)
-        .expect("snapshot");
+    snapshot_frame_into(
+        term, &mut it.0, &mut it.1, &mut it.2, frame, force_full, None,
+    )
+    .expect("snapshot");
 }
 
 fn fresh_frame(bytes: &[u8]) -> Frame {

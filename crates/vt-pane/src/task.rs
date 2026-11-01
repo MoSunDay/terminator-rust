@@ -16,7 +16,7 @@ use libghostty_vt::Terminal;
 
 use crate::effects::{self, CellPx, NoticeFlag};
 use crate::pty::{self, PtyHandle};
-use crate::term::{snapshot_frame, snapshot_frame_into, Frame};
+use crate::term::{snapshot_frame, Frame};
 
 /// Events delivered by the pty reader thread.
 #[derive(Debug)]
@@ -130,6 +130,36 @@ pub struct Session {
     /// Bumped on every frame-cache invalidation so render-side shape
     /// caches can key on it.
     frame_gen: u64,
+    /// Viewport rows a pending selection edit may have changed
+    /// (inclusive span + the `content_epoch` it was recorded at).
+    /// Valid only while no content arrived after the recording; the
+    /// rebuild then patches exactly the span and IGNORES the engine's
+    /// dirty state - `set_selection` flips it to FULL on every change,
+    /// which would defeat the row scoping. A stale span (content since)
+    /// falls back to the engine's word; a pending FULL rebuild
+    /// dominates anyway.
+    pub(crate) pending_rows: Option<((u32, u32), u64)>,
+    /// Bumped by every content-affecting invalidation (PTY output,
+    /// resize, theme sync, press/release): the freshness clock for
+    /// `pending_rows`.
+    pub(crate) content_epoch: u64,
+    /// True right after a banked rebuild: the engine's dirty layers were
+    /// consumed and cleared, so a selection edit entering now faces a
+    /// clean engine and may scope its invalidation (see
+    /// `mouse::may_scope_rows`).
+    pub(crate) engine_clean: bool,
+    /// True while the engine's ONLY unconsumed dirt is a phantom
+    /// selection flag (`set_selection` flips the layers to FULL): set by
+    /// the selection paths after their own write, cleared by any
+    /// content-affecting invalidation and by the next banked rebuild.
+    pub(crate) sel_dirt: bool,
+    /// Estimated viewport-row span of the CURRENT selection (inclusive,
+    /// one row of slack at each end for snap adjustments): the union
+    /// base for the next selection edit's row-scoped invalidation.
+    pub(crate) sel_span: Option<(u32, u32)>,
+    /// Viewport row of the active selection gesture's anchor (the press
+    /// cell). Kept after release (harmless); the next press overwrites.
+    pub(crate) sel_anchor: Option<u32>,
     /// Current cell pixel size, shared with the size-query effect.
     cell_px: CellPx,
     /// Set by the desktop-notification effect (OSC 9/777); drained once
@@ -267,6 +297,12 @@ fn assemble(
         cache: Frame::default(),
         cache_valid: false,
         cache_full: false,
+        pending_rows: None,
+        content_epoch: 0,
+        engine_clean: true,
+        sel_dirt: false,
+        sel_span: None,
+        sel_anchor: None,
         frame_gen: 0,
         cell_px,
         notice,
@@ -582,76 +618,14 @@ pub fn frame(sess: &mut Session) -> Result<Frame> {
     Ok(frame)
 }
 
-/// The render snapshot, cached: rebuilt only after something visibly
-/// changed (pty bytes via [`pump`], [`resize`], selection/viewport edits
-/// or a theme sync invalidating via [`invalidate_frame`]). Rendering
-/// paths use this; `frame` stays the uncached fresh snapshot.
-///
-/// PERF: when only PTY output invalidated the cache, the rebuild goes
-/// through the engine's dirty-row tracking and patches just the rows that
-/// changed (a 10k-cell pane then costs a few hundred FFI calls instead of
-/// ~50k), reusing the cached grid's cells and strings in place.
-pub fn frame_cached(sess: &mut Session) -> &Frame {
-    if !sess.cache_valid {
-        let full = sess.cache_full;
-        let built = snapshot_frame_into(
-            &mut sess.term,
-            &mut sess.render_state,
-            &mut sess.row_it,
-            &mut sess.cell_it,
-            &mut sess.cache,
-            full,
-        );
-        bank_snapshot(sess, built);
-    }
-    &sess.cache
-}
+mod cache_policy;
 
-/// Bank a `snapshot_frame_into` outcome into the cache policy: success
-/// publishes the frame, failure keeps the cache invalid for a FULL rebuild.
-pub(crate) fn bank_snapshot(sess: &mut Session, built: Result<()>) {
-    match built {
-        Ok(()) => {
-            sess.cache_valid = true;
-            sess.cache_full = false;
-        }
-        Err(e) => {
-            log::warn!("frame snapshot: {e}");
-            // The frame may be half-updated: drop it AND keep the
-            // cache invalid, so the next call rebuilds on the FULL
-            // path (a "valid" cache would replay the half-built frame
-            // forever - its generation never changes).
-            sess.cache = Frame::default();
-            sess.cache_valid = false;
-            sess.cache_full = true;
-        }
-    }
-}
-
-/// Drop the cached snapshot and make the next rebuild re-read EVERY grid
-/// row. Used whenever the change is invisible to the engine's per-row
-/// dirty flags: selection edits, viewport scrolling, palette/theme swaps
-/// and resizes.
-pub fn invalidate_frame(sess: &mut Session) {
-    sess.cache_valid = false;
-    sess.cache_full = true;
-    sess.frame_gen += 1;
-}
-
-/// Drop the cached snapshot after PTY output. The engine marks the rows
-/// its content touched, so the rebuild patches only those (see
-/// [`frame_cached`]); a pending full invalidation stays pending, because
-/// row patching must never be trusted for a change it cannot see.
-pub fn invalidate_frame_rows(sess: &mut Session) {
-    sess.cache_valid = false;
-    sess.frame_gen += 1;
-}
-
-/// Current frame-cache generation: changes whenever something visibly
-/// invalidated the snapshot, so render-side caches can key on it.
-pub fn frame_gen(sess: &Session) -> u64 {
-    sess.frame_gen
-}
+// Test-only re-export (tests/snapshot_policy banks failures directly).
+#[allow(unused_imports)]
+pub(crate) use cache_policy::bank_snapshot;
+pub use cache_policy::{
+    frame_cached, frame_gen, invalidate_frame, invalidate_frame_rows, invalidate_frame_rows_span,
+};
 
 /// Resize terminal + pty window. `cell_{w,h}_px` are font cell metrics.
 pub fn resize(

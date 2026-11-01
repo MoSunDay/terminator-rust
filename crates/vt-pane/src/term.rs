@@ -222,6 +222,11 @@ pub(crate) fn snapshot_frame_into(
     cell_it: &mut CellIterator<'static>,
     frame: &mut Frame,
     force_full: bool,
+    // Rows the caller KNOWS changed (fresh selection span; see
+    // `task::Session::pending_rows`). When set, it is the sole truth:
+    // the engine's dirty layers are ignored (a selection change flips
+    // them to FULL wholesale) and cleared as we pass.
+    pending: Option<(u32, u32)>,
 ) -> anyhow::Result<()> {
     let pending_wrap = terminal.is_cursor_pending_wrap()?;
     let autowrap = terminal.mode(libghostty_vt::terminal::Mode::WRAPAROUND)?;
@@ -242,7 +247,12 @@ pub(crate) fn snapshot_frame_into(
     // `Full` means the engine cannot point at individual rows (scroll,
     // clear, erase-to-end): every row must be rebuilt. `Partial` marks the
     // rows exactly; `Clean` touches none (the scalars above stay fresh).
-    let dirty = if full { Dirty::Full } else { snapshot.dirty()? };
+    let dirty = match (full, pending) {
+        (true, _) => Dirty::Full,
+        // Fresh selection span: trust it over the engine's FULL.
+        (false, Some(_)) => Dirty::Clean,
+        (false, None) => snapshot.dirty()?,
+    };
     let every_row = full || matches!(dirty, Dirty::Full);
     let some_rows = matches!(dirty, Dirty::Partial);
     if every_row {
@@ -284,12 +294,15 @@ pub(crate) fn snapshot_frame_into(
         if row_cells.len() != cols as usize {
             row_cells.resize_with(cols as usize, CellData::default);
         }
-        let row_dirty = every_row || (some_rows && row.dirty()?);
+        let row_dirty = every_row
+            || (some_rows && row.dirty()?)
+            || pending.is_some_and(|(a, b)| (y as u32) >= a && (y as u32) <= b);
+        // Always clear the per-row layer as we pass (the global flag
+        // does NOT clear it - the layers are independent), so a span
+        // rebuild also drops the selection's phantom FULL flags.
+        row.set_dirty(false)?;
         if row_dirty {
             rebuilt_blink |= rebuild_row(cell_it, row, row_cells, cols)?;
-            // Clear the per-row layer for every row we touched (the global
-            // flag below does NOT clear it - the layers are independent).
-            row.set_dirty(false)?;
             if let Some(g) = frame.row_gens.get_mut(y) {
                 *g += 1;
             }
@@ -298,7 +311,12 @@ pub(crate) fn snapshot_frame_into(
         y += 1;
     }
     // Defensive: rows the engine did not report are blank, not stale.
-    for (g, row) in frame.row_gens.iter_mut().zip(frame.cells.iter_mut()).skip(y) {
+    for (g, row) in frame
+        .row_gens
+        .iter_mut()
+        .zip(frame.cells.iter_mut())
+        .skip(y)
+    {
         for cell in row.iter_mut() {
             reset_cell(cell);
         }
@@ -329,7 +347,15 @@ pub fn snapshot_frame(
     cell_it: &mut CellIterator<'static>,
 ) -> anyhow::Result<Frame> {
     let mut frame = Frame::default();
-    snapshot_frame_into(terminal, render_state, row_it, cell_it, &mut frame, true)?;
+    snapshot_frame_into(
+        terminal,
+        render_state,
+        row_it,
+        cell_it,
+        &mut frame,
+        true,
+        None,
+    )?;
     Ok(frame)
 }
 
