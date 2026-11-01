@@ -144,8 +144,7 @@ pub fn cursor_cell(fr: &VtFrame) -> Option<(u16, u16)> {
 /// Where the cursor BLOCK paints this frame, if anywhere (alpha above
 /// the visibility floor): the on/off decision inside the overlay.
 pub fn cursor_at(fr: &VtFrame, cursor_alpha: f32) -> Option<(u16, u16)> {
-    if cursor_alpha > 0.02 && fr.cursor.visible && fr.cursor.x < fr.cols && fr.cursor.y < fr.rows
-    {
+    if cursor_alpha > 0.02 && fr.cursor.visible && fr.cursor.x < fr.cols && fr.cursor.y < fr.rows {
         Some((fr.cursor.x, fr.cursor.y))
     } else {
         None
@@ -280,11 +279,7 @@ pub(crate) fn row_shapes(
 /// else the pane bg color - see [`bg_runs::cursor_ink`]). At most a
 /// handful of shapes, rebuilt every paint: cursor moves and blink edges
 /// recolor it live without touching any cached row.
-pub(crate) fn cursor_shapes(
-    ctx: &egui::Context,
-    rect: Rect,
-    a: &DrawArgs<'_>,
-) -> Vec<egui::Shape> {
+pub(crate) fn cursor_shapes(ctx: &egui::Context, rect: Rect, a: &DrawArgs<'_>) -> Vec<egui::Shape> {
     let fr = a.fr;
     let Some((cx, cy)) = cursor_cell(fr) else {
         return Vec::new();

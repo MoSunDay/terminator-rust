@@ -40,7 +40,11 @@ fn frame(rows: u16, gens: Vec<u64>) -> VtFrame {
             visible: true,
             ..FrameCursor::default()
         },
-        default_fg: Color { r: 255, g: 255, b: 255 },
+        default_fg: Color {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
         ..VtFrame::default()
     }
 }
@@ -82,14 +86,35 @@ fn one_dirty_row_rebuilds_only_that_row() {
     let (ctx, ui) = test_ui("row-cache-dirty-row");
     let mut cache = Cache::default();
     let fr = frame(2, vec![1, 1]);
-    cache.paint(&ctx, ui.painter(), 7, style(), 1, &args(&dracula(), &fr, 0.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
     let after_first = cache.row_builds;
     let fr2 = frame(2, vec![2, 1]);
-    cache.paint(&ctx, ui.painter(), 7, style(), 2, &args(&dracula(), &fr2, 0.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        2,
+        &args(&dracula(), &fr2, 0.0),
+    );
     assert_eq!(cache.row_builds - after_first, 1);
     // Nothing changed: zero rebuilds, pure replay.
     let before = cache.row_builds;
-    cache.paint(&ctx, ui.painter(), 7, style(), 2, &args(&dracula(), &fr2, 0.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        2,
+        &args(&dracula(), &fr2, 0.0),
+    );
     assert_eq!(cache.row_builds, before);
     drain(&ctx);
 }
@@ -101,13 +126,37 @@ fn blink_edge_rebuilds_no_rows() {
     let (ctx, ui) = test_ui("row-cache-blink-edge");
     let mut cache = Cache::default();
     let fr = frame(2, vec![1, 1]);
-    cache.paint(&ctx, ui.painter(), 7, style(), 1, &args(&dracula(), &fr, 1.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        1,
+        &args(&dracula(), &fr, 1.0),
+    );
     let before = cache.row_builds;
     // Same frame, alpha 1 -> 0 (blink off): rows replay, only the
     // overlay differs.
-    cache.paint(&ctx, ui.painter(), 7, style(), 1, &args(&dracula(), &fr, 0.0));
-    cache.paint(&ctx, ui.painter(), 7, style(), 1, &args(&dracula(), &fr, 1.0));
-    assert_eq!(cache.row_builds, before, "blink edges must not rebuild rows");
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        1,
+        &args(&dracula(), &fr, 1.0),
+    );
+    assert_eq!(
+        cache.row_builds, before,
+        "blink edges must not rebuild rows"
+    );
     drain(&ctx);
 }
 
@@ -124,7 +173,14 @@ fn cursor_move_rebuilds_source_and_destination_rows_only() {
         visible: true,
         ..FrameCursor::default()
     };
-    cache.paint(&ctx, ui.painter(), 7, style(), 1, &args(&dracula(), &fr, 1.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        1,
+        &args(&dracula(), &fr, 1.0),
+    );
     let before = cache.row_builds;
     let mut fr2 = frame(3, vec![1, 1, 1]);
     fr2.cursor = FrameCursor {
@@ -133,7 +189,14 @@ fn cursor_move_rebuilds_source_and_destination_rows_only() {
         visible: true,
         ..FrameCursor::default()
     };
-    cache.paint(&ctx, ui.painter(), 7, style(), 1, &args(&dracula(), &fr2, 1.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        1,
+        &args(&dracula(), &fr2, 1.0),
+    );
     assert_eq!(
         cache.row_builds - before,
         2,
@@ -149,14 +212,39 @@ fn style_change_rebuilds_all_rows_and_bg() {
     let (ctx, ui) = test_ui("row-cache-style-change");
     let mut cache = Cache::default();
     let fr = frame(2, vec![1, 1]);
-    cache.paint(&ctx, ui.painter(), 7, style(), 1, &args(&dracula(), &fr, 0.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
     let mut restyle = style();
     restyle.font_size = 17.0;
-    cache.paint(&ctx, ui.painter(), 7, restyle, 1, &args(&dracula(), &fr, 0.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        restyle,
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
     assert_eq!(cache.row_builds, 4, "both rows rebuild under the new style");
     let bgs = cache.bg_builds;
-    cache.paint(&ctx, ui.painter(), 7, restyle, 2, &args(&dracula(), &fr, 0.0));
-    assert_eq!(cache.bg_builds, bgs + 1, "frame-gen change re-merges the bg");
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        restyle,
+        2,
+        &args(&dracula(), &fr, 0.0),
+    );
+    assert_eq!(
+        cache.bg_builds,
+        bgs + 1,
+        "frame-gen change re-merges the bg"
+    );
     drain(&ctx);
 }
 
@@ -167,15 +255,43 @@ fn end_frame_prunes_unpainted_panes() {
     let (ctx, ui) = test_ui("row-cache-prune");
     let mut cache = Cache::default();
     let fr = frame(1, vec![1]);
-    cache.paint(&ctx, ui.painter(), 1, style(), 1, &args(&dracula(), &fr, 0.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        1,
+        style(),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
     cache.end_frame();
     let before = cache.row_builds;
-    cache.paint(&ctx, ui.painter(), 1, style(), 1, &args(&dracula(), &fr, 0.0));
-    assert_eq!(cache.row_builds, before, "painting every frame keeps rows cached");
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        1,
+        style(),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
+    assert_eq!(
+        cache.row_builds, before,
+        "painting every frame keeps rows cached"
+    );
     cache.end_frame();
     cache.end_frame();
-    cache.paint(&ctx, ui.painter(), 1, style(), 1, &args(&dracula(), &fr, 0.0));
-    assert_eq!(cache.row_builds, before + 1, "an unpainted frame prunes the entry");
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        1,
+        style(),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
+    assert_eq!(
+        cache.row_builds,
+        before + 1,
+        "an unpainted frame prunes the entry"
+    );
     drain(&ctx);
 }
 
@@ -196,11 +312,20 @@ fn overlay_tracks_cursor_alpha() {
         visible: true,
         ..FrameCursor::default()
     };
-    cache.paint(&ctx, ui.painter(), 1, style(), 1, &args(&dracula(), &fr, 1.0));
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        1,
+        style(),
+        1,
+        &args(&dracula(), &fr, 1.0),
+    );
     let mut out = ctx.end_pass();
     out.textures_delta.clear();
     assert!(
-        out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill != Color32::TRANSPARENT)),
+        out.shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill != Color32::TRANSPARENT)),
         "visible cursor paints a block"
     );
     ctx.begin_pass(egui::RawInput::default());
@@ -209,7 +334,14 @@ fn overlay_tracks_cursor_alpha() {
         egui::Id::new("row-cache-overlay-2"),
         egui::UiBuilder::new().max_rect(Rect::from_min_size(Pos2::ZERO, Vec2::new(90.0, 90.0))),
     );
-    cache.paint(&ctx, ui2.painter(), 1, style(), 1, &args(&dracula(), &fr, 0.0));
+    cache.paint(
+        &ctx,
+        ui2.painter(),
+        1,
+        style(),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
     let mut out = ctx.end_pass();
     out.textures_delta.clear();
     // Only the pane bg + row ink remain: no cursor-colored rect.

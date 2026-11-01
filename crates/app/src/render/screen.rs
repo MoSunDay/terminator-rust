@@ -485,7 +485,8 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
     // field with a 2px rounded-cap grab handle in the middle. Geometry
     // and hit-testing live in mouse.rs; this is paint only.
     if !st.win().is_some_and(|w| w.ui.zoom) && !divs.is_empty() {
-        let hover_key = ui.input(|i| i.pointer.hover_pos())
+        let hover_key = ui
+            .input(|i| i.pointer.hover_pos())
             .and_then(|p| mouse::find_divider_in(&divs, p, 2.0))
             .map(|h| (h.pane, h.level));
         for h in &divs {
@@ -493,10 +494,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
             painter.rect_filled(
                 s,
                 0.0,
-                colors::with_opacity(
-                    colors::to_c32(colors::chrome_bg(&pal)),
-                    st.settings.opacity,
-                ),
+                colors::with_opacity(colors::to_c32(colors::chrome_bg(&pal)), st.settings.opacity),
             );
             // Handle brightens from the resting divider step to a
             // clear hover step while the pointer is on the strip.
@@ -506,8 +504,7 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 pal.foreground,
                 if resting { 0.13 } else { 0.22 },
             );
-            let handle_col =
-                colors::with_opacity(colors::to_c32(handle_col), st.settings.opacity);
+            let handle_col = colors::with_opacity(colors::to_c32(handle_col), st.settings.opacity);
             // Tall strip = vertical split: the handle runs along y;
             // otherwise it is a horizontal strip: along x.
             let along = |len: f32| {

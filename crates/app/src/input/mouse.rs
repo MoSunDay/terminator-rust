@@ -91,8 +91,7 @@ pub fn find_divider(tab: &Tab, area: LRect, gap: f32, pos: Pos2, tol: f32) -> Op
 /// computed `divs` - the per-pass divider list is shared by interaction
 /// and paint, so hit tests no longer re-walk the layout tree.
 pub fn find_divider_in(divs: &[DividerHit], pos: Pos2, tol: f32) -> Option<DividerHit> {
-    divs
-        .iter()
+    divs.iter()
         .filter(|d| {
             let grown = d.strip.expand(tol);
             grown.contains(pos)

@@ -220,11 +220,13 @@ pub fn chrome(p: &Palette) -> Chrome {
     let key = (
         (p.background.r, p.background.g, p.background.b),
         (p.foreground.r, p.foreground.g, p.foreground.b),
-        (p.block_highlight.r, p.block_highlight.g, p.block_highlight.b),
+        (
+            p.block_highlight.r,
+            p.block_highlight.g,
+            p.block_highlight.b,
+        ),
     );
-    if let Some(c) = CHROME_MEMO
-        .with(|m| m.borrow().filter(|(k, _)| *k == key).map(|(_, c)| c))
-    {
+    if let Some(c) = CHROME_MEMO.with(|m| m.borrow().filter(|(k, _)| *k == key).map(|(_, c)| c)) {
         return c;
     }
     let c = Chrome {

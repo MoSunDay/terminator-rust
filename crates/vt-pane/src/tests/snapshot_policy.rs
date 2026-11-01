@@ -74,7 +74,9 @@ fn row_gens_bump_only_the_rows_the_engine_reports() {
         .collect();
     assert!(!moved.is_empty(), "the written row must bump");
     assert!(
-        moved.iter().all(|y| second.cells[*y].iter().any(|c| !c.text.is_empty())),
+        moved
+            .iter()
+            .all(|y| second.cells[*y].iter().any(|c| !c.text.is_empty())),
         "only rows with content may move (scroll would move all - fine)"
     );
     // A full invalidation bumps every row.
@@ -82,11 +84,7 @@ fn row_gens_bump_only_the_rows_the_engine_reports() {
     task::invalidate_frame(&mut sess);
     let third = task::frame_cached(&mut sess);
     assert!(
-        third
-            .row_gens
-            .iter()
-            .zip(&before_full)
-            .all(|(a, b)| a != b),
+        third.row_gens.iter().zip(&before_full).all(|(a, b)| a != b),
         "full invalidation bumps every row gen"
     );
 }
