@@ -19,7 +19,7 @@ fn cell() -> CellSize {
     }
 }
 
-fn style() -> StyleKey {
+fn style(ctx: &egui::Context) -> StyleKey {
     StyleKey {
         rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(90.0, 90.0)),
         cell: cell(),
@@ -27,6 +27,7 @@ fn style() -> StyleKey {
         fill_alpha: 1.0,
         blink_on: true,
         pixels_per_point: 1.0,
+        bake: super::BakeKey::for_context(ctx),
     }
 }
 
@@ -90,7 +91,7 @@ fn one_dirty_row_rebuilds_only_that_row() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 0.0),
     );
@@ -100,7 +101,7 @@ fn one_dirty_row_rebuilds_only_that_row() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         2,
         &args(&dracula(), &fr2, 0.0),
     );
@@ -111,7 +112,7 @@ fn one_dirty_row_rebuilds_only_that_row() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         2,
         &args(&dracula(), &fr2, 0.0),
     );
@@ -130,7 +131,7 @@ fn blink_edge_rebuilds_no_rows() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 1.0),
     );
@@ -141,7 +142,7 @@ fn blink_edge_rebuilds_no_rows() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 0.0),
     );
@@ -149,7 +150,7 @@ fn blink_edge_rebuilds_no_rows() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 1.0),
     );
@@ -177,7 +178,7 @@ fn cursor_move_rebuilds_source_and_destination_rows_only() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 1.0),
     );
@@ -193,7 +194,7 @@ fn cursor_move_rebuilds_source_and_destination_rows_only() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr2, 1.0),
     );
@@ -216,11 +217,11 @@ fn style_change_rebuilds_all_rows_and_bg() {
         &ctx,
         ui.painter(),
         7,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 0.0),
     );
-    let mut restyle = style();
+    let mut restyle = style(&ctx);
     restyle.font_size = 17.0;
     cache.paint(
         &ctx,
@@ -259,7 +260,7 @@ fn end_frame_prunes_unpainted_panes() {
         &ctx,
         ui.painter(),
         1,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 0.0),
     );
@@ -269,7 +270,7 @@ fn end_frame_prunes_unpainted_panes() {
         &ctx,
         ui.painter(),
         1,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 0.0),
     );
@@ -283,7 +284,7 @@ fn end_frame_prunes_unpainted_panes() {
         &ctx,
         ui.painter(),
         1,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 0.0),
     );
@@ -316,7 +317,7 @@ fn overlay_tracks_cursor_alpha() {
         &ctx,
         ui.painter(),
         1,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 1.0),
     );
@@ -338,7 +339,7 @@ fn overlay_tracks_cursor_alpha() {
         &ctx,
         ui2.painter(),
         1,
-        style(),
+        style(&ctx),
         1,
         &args(&dracula(), &fr, 0.0),
     );
@@ -351,4 +352,58 @@ fn overlay_tracks_cursor_alpha() {
             .any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.corner_radius != egui::CornerRadius::ZERO && r.fill != Color32::TRANSPARENT)),
         "hidden cursor paints no block"
     );
+}
+
+/// Atlas growth and tessellation-option changes bake different vertices
+/// (UV normalization / feathering) even when geometry and content are
+/// identical: every layer must rebuild, and the painter must deliver
+/// meshes (not shapes) for the cached layers.
+#[test]
+fn bake_key_change_rebuilds_all_rows_and_bg() {
+    let (ctx, ui) = test_ui("row-cache-bake-key");
+    let mut cache = Cache::default();
+    let fr = frame(2, vec![1, 1]);
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(&ctx),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
+    let mut out = ctx.end_pass();
+    out.textures_delta.clear();
+    assert!(
+        out.shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Mesh(_))),
+        "cached layers are delivered as meshes"
+    );
+    ctx.begin_pass(egui::RawInput::default());
+
+    let mut restyle = style(&ctx);
+    restyle.bake.atlas_size = [
+        restyle.bake.atlas_size[0].max(1) * 2,
+        restyle.bake.atlas_size[1].max(1) * 2,
+    ];
+    let rows = cache.row_builds;
+    let bgs = cache.bg_builds;
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        restyle,
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
+    assert_eq!(cache.row_builds - rows, 2, "atlas growth rebuilds rows");
+    assert_eq!(cache.bg_builds - bgs, 1, "atlas growth rebuilds bg");
+    drain(&ctx);
+
+    let mut opts = restyle;
+    opts.bake.options.feathering = !opts.bake.options.feathering;
+    let rows = cache.row_builds;
+    cache.paint(&ctx, ui.painter(), 7, opts, 1, &args(&dracula(), &fr, 0.0));
+    assert_eq!(cache.row_builds - rows, 2, "tess options rebuild rows");
+    drain(&ctx);
 }

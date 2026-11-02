@@ -5,6 +5,11 @@
   - S1：`max1s < 1%`（单核）**且 frames == 0** —— 唯一的 `<1%` 硬断言
     （`IDLE_GPU_BACKEND=gl` 软件后端，无宿主驱动地板；见下方 GPU BACKEND 段）。
   - S2 / S13：`fps <= 65`（`TERMINATOR_FRAME_FLOOR_MS` 真节流上限）；CPU 只记录。
+  - S14（10Hz 输出稳态）：**主线程** `max1s <= 1.0%` 且 `fps <= 12` ——
+    CPU 预算调速器的 `<1%` 硬门；process CPU 只记录（gl 沙箱里 llvmpipe
+    光栅线程每帧的成本会占满 process，见 M6）。
+  - S15（8 pane 空闲）：`frames == 0` 且 process **avg < 1%**（`max1s <= 1.0%`，
+    一个 10ms jiffy 恰为 1.0%，只有持续成本才会抬高 avg）。
   - S7：runaway 兜底断言 `max1s <= 50%`；CPU 只记录。
   - WAKE：`ctl send` 回声 <= 2s 到达 `ctl capture`（无 tick 后唤醒路径的活体证明）。
 - **tier2 记录（无阈值）**：矩阵里其余可跑场景（S1b/S3/S4/S8/S11）与真机
@@ -53,7 +58,7 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 - **本脚本只记录、不断言（tier2）**：真机 idle 地板属宿主驱动线程，脚本里没有阈值门；
   阈值 gate 是 `scripts/bin/e2e-idle-cpu.sh`（tier1，见下）。
 
-## 场景矩阵 S1–S13
+## 场景矩阵 S1–S15
 | id | 场景 | 做法 | 判定 |
 | --- | --- | --- | --- |
 | S1 | 空转（单窗单 pane） | 远程 s1：直接采样 | 断言 max1s < 1% 且 frames == 0（tier1，唯一 `<1%` 硬门） |
@@ -69,6 +74,8 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | S11 | 边缘 resize 手势 | 远程 s11：右边缘 `mousedown 1`，按住时 +/- 拖动，采样结束 `mouseup 1`（EXIT trap 兜底释放） | 记录（tier2） |
 | S12 | tab chip 拖动 / 跨窗拖拽 | 待补：本地 e2e（drag/drop overlay 每帧重绘） | 未实现（tier3） |
 | S13 | `cat` 40k 行输出洪泛 | 远程 s13：远端生成 4 万行文件后 `ctl send cat <file>` | 断言 fps <= 65；CPU 仅记录（输出带宽受限） |
+| S14 | 10Hz spinner 稳态 | 本地 S14：`printf "spin10 %s\r"` + `sleep 0.1`，等待 900ms 交互闩锁 + EMA 收敛后采样；远程 s14 同一 payload | 断言主线程 max1s <= 1%、fps <= 12；process 记录 |
+| S15 | 8 pane 空闲 | 本地 S15：`Ctrl+Shift+E` x7（windowfocus 后真键），settle 后采样；远程 s15 需 `S15_ALLOW_SPLITS=1`（live 窗口会留下 8 pane） | 断言 frames == 0、process avg < 1%、max1s <= 1% |
 
 ## 环境开关
 - `TERMINATOR_FRAME_STATS=1`：开启后每秒向 stderr 写一行
@@ -89,12 +96,16 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | `S7_SAMPLE_S` / `S7_MAX1S_PCT` | 5 / 50 | S7 重命名编辑器窗口与 runaway 兜底 |
 | `PIN_SAMPLE_S` | 5 | S1b 常驻探针窗口 |
 | `MAX_FPS_SPIN` / `MAX_FPS_BUSY` | 65 / 65 | S2 / S13 帧率上限（配合 floor 16ms ≈ 62.5fps） |
+| `S14_SAMPLE_S` / `S14_MAX1S_PCT` / `MAX_FPS_SPIN10` | 5 / 1.0 / 12 | S14 窗口、主线程门槛、帧率上限（首窗超限自动重采一次取更优） |
+| `S14_SPIN_N` / `S14` settle | 240 / 6s | 24s payload；6s 让 900ms 交互闩锁结束且 8 样本 EMA 收敛（软件后端可能已在 1fps，3s 会抓到启动 ramp） |
+| `S15_PANES` / `S15_SETTLE_S` / `S15_SAMPLE_S` | 8 / 3 / 8 | 分裂数、静默期、采样窗（超限重采一次取更优） |
 | `APP_BIN` / `CTL_BIN` | target/debug/… | 指向 release 包（`verify-release.sh` 用它） |
 
 - S1/S7 走 `e2e_sandbox` → `TERMINATOR_OPAQUE=1` + `TERMINATOR_NO_MOTION=1`：
   空闲/编辑器场景必须是**帧静止**态；悬停/光标动画由别的像素用例覆盖。
-- 软件后端下 S2/S13 的 CPU 数字（llvmpipe 多线程可到 ~600%/核）只记录、
-  不断言；真机 `native` 才是可比成本。
+- 软件后端下 S2/S13/S14 的 process CPU（llvmpipe 多线程可到 ~600%/核）
+  只记录、不断言；S14 断言的是主线程（app 自己的循环），真机 `native`
+  才是可比成本。S15 的 8 pane 空闲没有帧，llvmpipe 不跑，process 可以直接断言。
 
 ## egui 0.36 重绘语义（修正）
 - 零延迟 `request_repaint` 只是把 `outstanding` 置 1，同一轮里每个输出事件仍渲染**两遍**（0.36 context.rs）；
@@ -280,3 +291,67 @@ e2e-bg-seams 全绿；e2e-mouse-key 全过。e2e-edge-select 在本沙箱仍环�
 失败（无 Wayland display 时剪贴板初始化失败，与基线一致），选择行为以单测
 为准。macro CPU A/B 未跑：M2 经验表明 llvmpipe 主导下整机交错 A/B 噪声大，
 机制级断言（行 gen 变化集）已覆盖本里程碑的行为差异。
+
+## M4 chrome 稳态固定成本（2026-11-02）
+`ui/tabs.rs` 740 → 505 行，chip 层拆到 `ui/tabs/chips.rs`（352 行）：
+- `chips::measure` 用**一趟**扫描产出全部 `ChipInfo`（标签宽度、badge、
+  close zone）；旧的 draw 路径每个 chip 先 layout 再单独扫 badge，同一帧
+  对 n 个 chip 做了两遍布局。
+- tab 锚点（`state::tab_anchor`）与 attention（`attention::tab_has_notice`）
+  改为 `layout_tree::min_pane_id` / `any_pane_id`：树内递归、短路、零分配；
+  旧实现每帧 `pane_ids()` 收集 `Vec` 再排序/扫描。
+- `ui/pane_header.rs`（443 行）的关闭 X 改成 `ui.interact(...CLICK)` +
+  `painter` 自绘（`vis.weak_bg_fill` + `Align2::CENTER_CENTER`）：去掉一个
+  egui `Button` 的 widget 机制（状态机、焦点位、文本布局）每窗每 pane 每帧。
+  同时沿用非 focusable 的 `Sense::CLICK`，不触发 0.36 的 Tab 焦点陷阱。
+这些是空转/输出帧都会付的固定成本，不改变任何像素布局（Xvfb 像素探针
+复核 X 按钮颜色一致）。
+
+## M5 跨帧 mesh 缓存（2026-11-02）
+egui 0.36 每帧无条件 `tessellate(shapes, ppp)`：M1 的行级 shape 缓存只省了
+shape 生成，Text shape（每个非空格一个，单 pane 300–900 个）仍每帧重新
+细分。egui 明确拒绝调用方提供的 shape 比较缓存（context.rs 2863-2865）。
+改法：`render/row_cache/mesh.rs` 把每一行（含 bg 层）细分出的
+`Vec<Arc<Mesh>>` 留在行缓存里；命中时直接 `add` 已烘好的 mesh，未命中的行
+才细分一次。
+- `BakeKey` = `StyleKey`（rect/cell/font_size/fill_alpha/blink_on&&has_blink/
+  ppp）+ **atlas_size** + tessellation options。glyph UV 按 atlas 尺寸归一化，
+  feathering 与 pixel snapping 已烘进顶点，任一变化都必须整层作废。
+- bake 固定 `clip_rect = Rect::EVERYTHING`：剪裁在绘制端做，缓存与 pane 的
+  裁剪矩形无关；光标 cell 的 block + ink 仍是**未缓存 overlay**（blink 边沿
+  不重建行，光标移动只重建两行）。
+- 顶点等价单测：同一 frame 的 cached path 与未缓存 `grid::frame_shapes`
+  逐顶点比较（位置/uv/color），缓存命中不改变任何像素。
+单 pane spinner（gl 沙箱）pass 时间在 M1 之后已降到中位 ~315µs，本轮把
+细分从每帧成本里移除；llvmpipe 的 raster/present 仍主导宏观数字（见 M6），
+因此不为 M5 单独宣称整机百分比，机制级等价测试是正确性门。
+
+## M6 CPU 预算帧调度器（2026-11-02）
+目标口径：**空闲 + 10Hz 输出稳态 ≤1% 单核**；60fps 场景只允许经帧预算
+降采样（不是禁用输出帧）。实现：
+- `render/frame_cpu.rs`（177 行）：每次 root pass 读进程 CPU
+  （Linux `CLOCK_PROCESS_CPUTIME_ID`，macOS `getrusage`），得到单帧成本后
+  做 α=1/8 的 EMA（样本 clamp 50µs–50ms）。交互（键盘/指针/IME/OSC、
+  IPC drain、窗口重新获得焦点）打开 900ms 的 60fps 延迟窗口。
+- `cadence::budget_floor`：`fps = clamp(10 * target_pct / cpu_ms, 1, 60)`，
+  `floor = clamp(1000/fps, 16ms, 1s)`。CPU 越贵帧越稀；下限 1fps 保证
+  输出永不静默（大输出仍会逐秒推进），上限 16ms 保留原有 60fps 上限。
+- `main.rs` 的 pty wake 用 `budgeted_floor` 取代裸 pacing floor；
+  `stats::governor_enabled` / `cpu_target_pct` 读
+  `TERMINATOR_CPU_TARGET_PCT`（默认 1.0，0=关，>100 回退默认）。
+  **显式设置 `TERMINATOR_FRAME_FLOOR_MS`（含 0）会关闭调速器**，e2e 的
+  确定节奏因此不受影响。
+- 交互期不降速（900ms 闩锁在每次输入时续期），所以键入手感不受影响；
+  只有无人交互的持续输出才会被降采样。
+gl 沙箱实测（2026-11-02，release）：
+| 场景 | 主线程 max1s | process（记录） | fps |
+| --- | --- | --- | --- |
+| S14 10Hz spinner 稳态 | 1.0% | 9.0%（llvmpipe 每帧光栅） | 1.0 |
+| S15 8 pane 空闲 | — | avg 0.25% / max1s 1.0%（1-2 jiffy） | 0 |
+| S1 空闲 | 0.0% | 0.0% | 0 |
+| S2 60Hz spinner（交互 ramp 后） | — | 记录 | ~1（预算）/ 首秒 24.7 |
+1fps 下限在软件后端是 process 预算的物理极限：每帧 llvmpipe 光栅 ~60ms，
+要到 1% 需 0.16fps；真机 GPU 上每帧成本低一个量级，10Hz 输出会以更接近
+10fps 的速率运行。真机验证用 `measure-cpu-remote.sh` 的 s14：
+`SCEN=s14 DEPLOY_HOST=... bash scripts/deploy/measure-cpu-remote.sh`
+（native GPU 看 process；沙箱看 `thread_max1s`，即主线程）。

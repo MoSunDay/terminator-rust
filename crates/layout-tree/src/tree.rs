@@ -84,6 +84,34 @@ pub fn sorted_pane_ids(node: &Node) -> Vec<PaneId> {
     ids
 }
 
+/// Smallest pane id in the subtree (None only for an impossible empty tree).
+pub fn min_pane_id(node: &Node) -> Option<PaneId> {
+    match node {
+        Node::Pane { id } => Some(*id),
+        Node::Split { first, second, .. } => match (min_pane_id(first), min_pane_id(second)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, b) => b,
+        },
+    }
+}
+
+/// True when any leaf pane id satisfies `pred` (early-exit, no allocation).
+pub fn any_pane_id(node: &Node, pred: impl Fn(PaneId) -> bool) -> bool {
+    any_pane_with(node, &pred)
+}
+
+/// Recursive worker of [`any_pane_id`]: a trait object keeps the
+/// instantiation shallow while still short-circuiting per subtree.
+fn any_pane_with(node: &Node, pred: &dyn Fn(PaneId) -> bool) -> bool {
+    match node {
+        Node::Pane { id } => pred(*id),
+        Node::Split { first, second, .. } => {
+            any_pane_with(first, pred) || any_pane_with(second, pred)
+        }
+    }
+}
+
 /// First node in tree order whose pane id is `pane`.
 pub fn find_node(node: &Node, pane: PaneId) -> Option<&Node> {
     match node {
@@ -299,6 +327,53 @@ mod tests {
         pane_ids(root, &mut ids);
         assert_eq!(ids, vec![1, 3, 2]); // tree order
         assert_eq!(sorted_pane_ids(root), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn min_pane_id_matches_first_sorted_id() {
+        let tree = three_panes();
+        let root = &tree.tabs[0].root;
+        assert_eq!(min_pane_id(root), sorted_pane_ids(root).first().copied());
+        assert_eq!(min_pane_id(root), Some(1));
+        // A split whose left subtree holds the larger ids: min still wins.
+        let swapped = Node::Split {
+            axis: Axis::Vertical,
+            ratio: 0.5,
+            first: Box::new(pane(9)),
+            second: Box::new(Node::Split {
+                axis: Axis::Horizontal,
+                ratio: 0.5,
+                first: Box::new(pane(7)),
+                second: Box::new(pane(2)),
+            }),
+        };
+        assert_eq!(min_pane_id(&swapped), Some(2));
+    }
+
+    #[test]
+    fn min_pane_id_of_single_pane() {
+        assert_eq!(min_pane_id(&pane(42)), Some(42));
+    }
+
+    #[test]
+    fn any_pane_id_matches_and_short_circuits() {
+        let tree = three_panes();
+        let root = &tree.tabs[0].root;
+        assert!(any_pane_id(root, |id| id == 1));
+        assert!(any_pane_id(root, |id| id == 2));
+        assert!(any_pane_id(root, |id| id == 3));
+        assert!(!any_pane_id(root, |id| id == 4));
+        assert!(any_pane_id(root, |id| id > 2));
+        assert!(!any_pane_id(root, |_| false));
+        // Early exit: stop at the first match instead of visiting everything.
+        // (Cell keeps the closure `Fn`; the public signature takes `impl Fn`.)
+        let seen = std::cell::Cell::new(0u32);
+        let hit = any_pane_id(root, |id| {
+            seen.set(seen.get() + 1);
+            id == 1
+        });
+        assert!(hit);
+        assert_eq!(seen.get(), 1); // first leaf matches, the rest never visited
     }
 
     #[test]

@@ -29,7 +29,7 @@ pub use tabs::{
     new_tree, next_pane_id,
 };
 pub use tree::{
-    contains_pane, find_node, find_node_mut, pane_count, pane_ids, parent_axis, parent_ratio,
-    set_parent_ratio, set_ratio_at_level, sorted_pane_ids, split_pane, split_pane_ratio,
-    LayoutTree, Node, PaneId, Tab, MAX_RATIO, MIN_RATIO,
+    any_pane_id, contains_pane, find_node, find_node_mut, min_pane_id, pane_count, pane_ids,
+    parent_axis, parent_ratio, set_parent_ratio, set_ratio_at_level, sorted_pane_ids, split_pane,
+    split_pane_ratio, LayoutTree, Node, PaneId, Tab, MAX_RATIO, MIN_RATIO,
 };

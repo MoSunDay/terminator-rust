@@ -19,6 +19,13 @@
 //! `cadence::output_wake_paced` then returns `SOON_SINGLE_PASS` - one
 //! immediate pass per output burst, no coalescing window (and never the
 //! zero-delay double pass).
+//!
+//! The adaptive CPU budget sits ON TOP of that floor
+//! (`TERMINATOR_CPU_TARGET_PCT`, default 1.0, `0` = off): it raises the
+//! output floor until one measured pass fits the target share of a core
+//! (`render::frame_cpu` + `cadence::budgeted_floor`). An EXPLICIT
+//! `TERMINATOR_FRAME_FLOOR_MS` (including `0`) disables the governor so
+//! e2e runs keep a deterministic cadence.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -30,6 +37,11 @@ pub const DEFAULT_FLOOR_MS: u64 = 16;
 /// Upper bound for `TERMINATOR_FRAME_FLOOR_MS`; anything larger would
 /// stall visibly (>=1s per frame) and is treated as a typo.
 pub const MAX_FLOOR_MS: u64 = 1000;
+/// Default CPU budget for output-driven frames (% of one core).
+pub const DEFAULT_CPU_TARGET_PCT: f32 = 1.0;
+/// Upper bound for `TERMINATOR_CPU_TARGET_PCT`; beyond this the budget
+/// is indistinguishable from "off" and more likely a typo.
+pub const MAX_CPU_TARGET_PCT: f32 = 100.0;
 /// Fallback frame-time prediction (µs) when a pass has no usable
 /// `predicted_dt` yet (egui's own default is 1/60s).
 pub const PREDICTED_DT_FALLBACK_US: u64 = 16_670;
@@ -99,6 +111,35 @@ pub fn predicted_dt_us(secs: f32) -> u64 {
         return PREDICTED_DT_FALLBACK_US;
     }
     (us.round().max(1.0) as u64).min(1_000_000)
+}
+
+/// `TERMINATOR_CPU_TARGET_PCT` -> percent of one core. Unparseable,
+/// negative/non-finite or absurd (> [`MAX_CPU_TARGET_PCT`]) values fall
+/// back to [`DEFAULT_CPU_TARGET_PCT`]; `0` is a valid "off".
+pub fn parse_target_pct(s: &str) -> f32 {
+    s.trim()
+        .parse::<f32>()
+        .ok()
+        .filter(|v| v.is_finite() && (0.0..=MAX_CPU_TARGET_PCT).contains(v))
+        .unwrap_or(DEFAULT_CPU_TARGET_PCT)
+}
+
+/// The configured CPU target for output-driven frames (0 = off).
+pub fn cpu_target_pct() -> f32 {
+    static TARGET: OnceLock<f32> = OnceLock::new();
+    *TARGET.get_or_init(|| {
+        std::env::var("TERMINATOR_CPU_TARGET_PCT")
+            .map_or(DEFAULT_CPU_TARGET_PCT, |v| parse_target_pct(&v))
+    })
+}
+
+/// Whether the adaptive output budget is active: no explicit frame floor
+/// (which pins e2e cadence) and a non-zero target.
+pub fn governor_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var_os("TERMINATOR_FRAME_FLOOR_MS").is_none() && cpu_target_pct() > 0.0
+    })
 }
 
 /// Cheap gate for [`record`]: read once, then a cached branch per pass.
@@ -181,6 +222,21 @@ mod tests {
         assert_eq!(parse_floor_ms("-3"), DEFAULT_FLOOR_MS);
         assert_eq!(parse_floor_ms("3.5"), DEFAULT_FLOOR_MS);
         assert_eq!(parse_floor_ms("5000"), DEFAULT_FLOOR_MS);
+    }
+
+    #[test]
+    fn cpu_target_env_values_are_guarded() {
+        assert_eq!(parse_target_pct("1"), 1.0);
+        assert_eq!(parse_target_pct(" 0.5 "), 0.5);
+        assert_eq!(parse_target_pct("0"), 0.0, "0 = governor off");
+        assert_eq!(parse_target_pct("100"), 100.0);
+        for bad in ["", "abc", "-1", "101", "NaN", "inf"] {
+            assert_eq!(
+                parse_target_pct(bad),
+                DEFAULT_CPU_TARGET_PCT,
+                "{bad:?} falls back to the default"
+            );
+        }
     }
 
     #[test]

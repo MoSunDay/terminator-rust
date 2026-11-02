@@ -347,6 +347,10 @@ fn forward(
 /// Service pending requests on the UI thread; called once per frame.
 pub fn drain(ipc: &mut Ipc, data: &mut crate::state::Data) {
     while let Ok(cmd) = ipc.rx.try_recv() {
+        // An IPC request is an external human/tool interaction: open the
+        // latency window before executing it so the CPU governor cannot
+        // delay the response frame.
+        crate::render::frame_cpu::mark_interaction();
         let resp = crate::ipc::handle::execute(cmd.req, cmd.fds, cmd.payload, data);
         let _ = cmd.reply.send(resp);
     }

@@ -417,10 +417,7 @@ pub fn all_pane_ids(st: &AppState) -> Vec<PaneId> {
 /// never reused and never move between tabs, so this survives index
 /// shifts; only closing that specific pane invalidates it.
 pub fn tab_anchor(tab: &layout_tree::Tab) -> PaneId {
-    layout_tree::sorted_pane_ids(&tab.root)
-        .first()
-        .copied()
-        .unwrap_or(tab.focused)
+    layout_tree::min_pane_id(&tab.root).unwrap_or(tab.focused)
 }
 
 /// True when no live tab carries this anchor: a rename edit buffer

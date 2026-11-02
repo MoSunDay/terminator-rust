@@ -39,7 +39,9 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
   （实测 19ms）、S7 重命名编辑器：期间 frames==0 + 回车提交
   （egui TextEdit 的 caret blink 已在 ui/style.rs 钉住）、
   S2 spinner / S13 busy 的 fps 门（≤65；TERMINATOR_FRAME_FLOOR_MS
-  默认 16 ≈ 62.5fps，pass 统计见 render/stats.rs）；`IDLE_SETTLE_S=6`
+  默认 16 ≈ 62.5fps，pass 统计见 render/stats.rs）、S14 10Hz 稳态
+  （主线程 max1s ≤1%、fps ≤12，process 只记录）与 S15 8 pane 空闲
+  （frames==0、process avg <1%、max1s ≤1%）；`IDLE_SETTLE_S=6`
   在采样前隔离 setup 的 ctl traffic 与首帧 GL 抖动。走 `e2e_sandbox`
   → TERMINATOR_OPAQUE=1 + TERMINATOR_NO_MOTION=1（S1/S7 必须是
   帧静止态；悬停/光标动画的驱动另有 perf 用例覆盖）

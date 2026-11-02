@@ -52,6 +52,20 @@ pub const HIDDEN_HEARTBEAT: Duration = Duration::from_millis(500);
 /// (including `0` = OFF) always wins over focus.
 const UNFOCUSED_FLOOR: Duration = Duration::from_millis(50);
 
+/// Adaptive CPU budget (render/frame_cpu.rs): the output pacing floor is
+/// never allowed below the rate that keeps one frame's EMA cost inside
+/// `TERMINATOR_CPU_TARGET_PCT` (default 1%) of one core. Bounds keep the
+/// schedule sane: at least 1fps (a visible tail) and at most 1s/frame.
+/// The floor is deliberately lower than the old 4fps/250ms pair: a host
+/// whose per-frame cost is several ms (software rasterizer, huge font,
+/// 4K glass) cannot meet a 1% budget at 4fps. A slow host therefore
+/// downsamples an unattended stream to 1fps (still progress); human
+/// input opens a 900ms 60fps window, so only unattended output is paced.
+pub const CPU_BUDGET_MIN_FPS: f32 = 1.0;
+pub const CPU_BUDGET_MAX_FPS: f32 = 60.0;
+pub const CPU_BUDGET_MIN_FLOOR: Duration = Duration::from_millis(16);
+pub const CPU_BUDGET_MAX_FLOOR: Duration = Duration::from_millis(1_000);
+
 /// What the current pass still needs a future frame for.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Needs {
@@ -107,8 +121,13 @@ static FOCUSED: AtomicBool = AtomicBool::new(true);
 /// pass). Takes the raw `Option<bool>` viewport fields; a missing
 /// observation keeps the latency-biased default.
 pub fn observe(focused: Option<bool>, minimized: Option<bool>) {
-    FOCUSED.store(focused.unwrap_or(true), Ordering::Relaxed);
+    let was_focused = FOCUSED.swap(focused.unwrap_or(true), Ordering::Relaxed);
     HIDDEN.store(minimized.unwrap_or(false), Ordering::Relaxed);
+    // Focusing a window is human intent: open the latency window so the
+    // CPU governor cannot delay the first frames of a return to the app.
+    if !was_focused && FOCUSED.load(Ordering::Relaxed) {
+        crate::render::frame_cpu::mark_interaction();
+    }
 }
 
 /// Whether the root viewport is currently minimized/hidden.
@@ -130,6 +149,35 @@ fn floor_for(focused: bool, base: Duration) -> Duration {
     } else {
         base.max(UNFOCUSED_FLOOR)
     }
+}
+
+/// Frame floor that keeps one frame's measured CPU inside `target_pct`
+/// of one core (pure): `fps = clamp(10 * target_pct / cpu_ms, 1, 60)`,
+/// then `floor = clamp(1000 / fps, 16ms, 1s)`. `target_pct <= 0`
+/// (governor off) and a zero/unknown EMA both yield the 16ms floor.
+pub fn budget_floor(ema_us: u64, target_pct: f32) -> Duration {
+    if !target_pct.is_finite() || target_pct <= 0.0 || ema_us == 0 {
+        return CPU_BUDGET_MIN_FLOOR;
+    }
+    let cpu_ms = ema_us as f32 / 1_000.0;
+    let fps = (10.0 * target_pct / cpu_ms).clamp(CPU_BUDGET_MIN_FPS, CPU_BUDGET_MAX_FPS);
+    let floor = Duration::from_secs_f32(1.0 / fps);
+    floor.max(CPU_BUDGET_MIN_FLOOR).min(CPU_BUDGET_MAX_FLOOR)
+}
+
+/// The full output-wake floor: focus pacing (unfocused raise), the
+/// adaptive CPU budget, and the interactive override, combined with
+/// max - no component may lower another. Inside the interaction window
+/// the budget contributes only the 16ms floor (60fps for a human);
+/// otherwise it scales the frame rate to the CPU target.
+pub fn budgeted_floor(base: Duration, ema_us: u64, target_pct: f32, interactive: bool) -> Duration {
+    let pacing = pacing_floor(base);
+    let budget = if interactive {
+        CPU_BUDGET_MIN_FLOOR
+    } else {
+        budget_floor(ema_us, target_pct)
+    };
+    pacing.max(budget)
 }
 
 /// Clamp a root repaint delay by the hidden heartbeat (pure core of
@@ -369,6 +417,53 @@ mod tests {
         // Visible: untouched.
         assert_eq!(hidden_clamp(Duration::ZERO, false), Duration::ZERO);
         assert_eq!(hidden_clamp(SOON_SINGLE_PASS, false), SOON_SINGLE_PASS);
+    }
+
+    #[test]
+    fn cpu_budget_decision_table() {
+        let ms = |d: Duration| d.as_millis() as i64;
+        // 1% target: 0.5ms/frame -> 50ms, 1ms -> 100ms, 2ms -> 200ms,
+        // 3.3ms -> 330ms (3fps), 10ms -> the 1s ceiling (1fps floor).
+        assert_eq!(ms(budget_floor(500, 1.0)), 50);
+        assert_eq!(ms(budget_floor(1_000, 1.0)), 100);
+        assert_eq!(ms(budget_floor(2_000, 1.0)), 200);
+        assert_eq!(ms(budget_floor(3_300, 1.0)), 330);
+        assert_eq!(ms(budget_floor(10_000, 1.0)), 1_000);
+        assert_eq!(ms(budget_floor(20_000, 1.0)), 1_000);
+        // 2% target doubles the allowed rate at the same cost.
+        assert_eq!(ms(budget_floor(500, 2.0)), 25);
+        assert_eq!(ms(budget_floor(1_000, 2.0)), 50);
+        assert_eq!(ms(budget_floor(2_000, 2.0)), 100);
+        // Off / unknown -> the 16ms floor (never 250).
+        assert_eq!(ms(budget_floor(2_000, 0.0)), 16);
+        assert_eq!(ms(budget_floor(0, 1.0)), 16);
+        assert_eq!(ms(budget_floor(100, 1.0)), 16, "fast frames keep 60fps");
+    }
+
+    #[test]
+    fn budgeted_floor_stacks_interactive_focus_and_budget() {
+        let ms = |d: Duration| d.as_millis() as i64;
+        // Interactive: latency wins, 16ms floor even for a 2ms pass.
+        assert_eq!(
+            ms(budgeted_floor(Duration::from_millis(16), 2_000, 1.0, true)),
+            16
+        );
+        // Unfocused raises to 50ms, never lowered by a cheaper budget.
+        assert_eq!(
+            ms(budgeted_floor(Duration::from_millis(16), 500, 1.0, false)),
+            50
+        );
+        // Budget above the unfocused floor wins.
+        assert_eq!(
+            ms(budgeted_floor(Duration::from_millis(16), 2_000, 1.0, false)),
+            200
+        );
+        // Exemplar of the 10Hz target: a 2.6ms pass at 1% = 3.8fps
+        // (1/3.846s = 259ms; floor arithmetic is f32).
+        assert_eq!(
+            ms(budgeted_floor(Duration::from_millis(16), 2_600, 1.0, false)),
+            259
+        );
     }
 
     #[test]

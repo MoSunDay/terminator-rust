@@ -19,12 +19,16 @@
 //! the render pass looks a pane up by id and hands `DrawArgs` in.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use egui::{Context, Painter};
 use layout_tree::PaneId;
 
+pub use self::mesh::BakeKey;
 use crate::render::grid::{self, DrawArgs};
 use crate::state::CellSize;
+
+mod mesh;
 
 /// Pane-level style identity of a paint: everything `grid::row_shapes`
 /// and `grid::bg_shapes` depend on beyond the VT frame's own per-row
@@ -41,6 +45,10 @@ pub struct StyleKey {
     pub fill_alpha: f32,
     pub blink_on: bool,
     pub pixels_per_point: f32,
+    /// Mesh-bake inputs (font atlas size + tessellation options). Glyph
+    /// UVs and feathering are baked into the cached vertices, so any
+    /// change here must invalidate every layer.
+    pub bake: BakeKey,
 }
 
 /// One cached row: the generation (and cursor-hole position) it was
@@ -50,7 +58,7 @@ pub struct StyleKey {
 struct RowEntry {
     gen: u64,
     hole: Option<u16>,
-    shapes: Vec<egui::Shape>,
+    meshes: Vec<Arc<egui::epaint::Mesh>>,
 }
 
 impl RowEntry {
@@ -66,7 +74,7 @@ impl RowEntry {
 struct PaneEntry {
     style: StyleKey,
     /// Background layer + the frame generation it was merged at.
-    bg: Vec<egui::Shape>,
+    bg: Vec<Arc<egui::epaint::Mesh>>,
     bg_gen: Option<u64>,
     rows: Vec<RowEntry>,
     /// Frame stamp of the last `paint` hit (see [`Cache::end_frame`]).
@@ -126,11 +134,17 @@ impl Cache {
         }
         // Background first (it must sit under every row's ink).
         if e.bg_gen != Some(frame_gen) {
-            e.bg = grid::bg_shapes(style.rect, a);
+            e.bg = mesh::bake(
+                style.pixels_per_point,
+                style.bake,
+                grid::bg_shapes(style.rect, a),
+            );
             e.bg_gen = Some(frame_gen);
             self.bg_builds += 1;
         }
-        painter.extend(e.bg.iter().cloned());
+        for m in &e.bg {
+            painter.add(egui::Shape::Mesh(m.clone()));
+        }
         // Per-row ink: replay unless that row's own gen or hole moved.
         if e.rows.len() != usize::from(fr.rows) {
             e.rows.resize_with(usize::from(fr.rows), RowEntry::fresh);
@@ -149,10 +163,16 @@ impl Cache {
             if entry.gen != gen || entry.hole != hole {
                 entry.gen = gen;
                 entry.hole = hole;
-                entry.shapes = grid::row_shapes(ctx, style.rect, y, hole, a);
+                entry.meshes = mesh::bake(
+                    style.pixels_per_point,
+                    style.bake,
+                    grid::row_shapes(ctx, style.rect, y, hole, a),
+                );
                 self.row_builds += 1;
             }
-            painter.extend(entry.shapes.iter().cloned());
+            for m in &entry.meshes {
+                painter.add(egui::Shape::Mesh(m.clone()));
+            }
         }
         // Cursor overlay: never cached, never more than a few shapes.
         painter.extend(grid::cursor_shapes(ctx, style.rect, a));

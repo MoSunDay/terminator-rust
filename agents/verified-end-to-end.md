@@ -96,6 +96,15 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   e2e-empty-restore, e2e-dragdrop D1-D8 and e2e-migrate M1-M5 all green (bg-seams re-pinned to the dracula
   palette the 2026-09-27 sync installs - its old ghostty-default
   color pins had drifted stale, failing K1/K4 on BOTH builds).
+- perf M4/M5/M6 (2026-11-02, release on the gl Xvfb sandbox):
+  `e2e-idle-cpu.sh` PASS with the new gates - S1 idle 0.0%/0 frames,
+  S1b 0.0%, WAKE 19ms, S7 0.0% (rename committed, no key leak),
+  S2 24.7fps <= 65, S13 0.8fps, S14 10Hz spinner main thread max1s
+  1.0% / avg 0.6% with process 9.0% recorded (llvmpipe raster) and
+  fps 1.0, S15 8-pane idle avg 0.25% / max1s 1.0% / 0 frames.
+  `e2e-bg-seams.sh` K1-K5 ALL GREEN after the mesh cache (merged bg
+  runs, bottom/right bleed, CJK pair selection unchanged). M4 chrome
+  test/size facts and M5 bake-key invariants in agents/perf/index.md.
 - persistence: state.json save/restore across restart
 
 See [agents.md](../agents.md) for the crate map and the

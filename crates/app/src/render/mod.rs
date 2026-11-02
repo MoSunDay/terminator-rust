@@ -4,6 +4,7 @@ pub mod bg_runs;
 pub mod cadence;
 pub mod colors;
 pub mod dropzone;
+pub mod frame_cpu;
 pub mod grid;
 mod ink;
 pub mod preedit;

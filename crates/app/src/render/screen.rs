@@ -359,6 +359,11 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                         // blink edge repaints no row at all.
                         blink_on: blink_on && fr.has_blink,
                         pixels_per_point: ctx.pixels_per_point(),
+                        // Atlas growth (new glyphs elsewhere on the
+                        // desktop) changes text UV normalization; the
+                        // tessellation options are baked into the mesh
+                        // too, so both invalidate every cached layer.
+                        bake: row_cache::BakeKey::for_context(&ctx),
                     };
                     shapes.paint(&ctx, &painter, pane, key, fgen, &args);
                 }

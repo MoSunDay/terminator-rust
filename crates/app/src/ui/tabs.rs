@@ -1,27 +1,20 @@
 //! Chrome top bar: custom-drawn tab chip row + anchored edge cells.
 
-use egui::{pos2, vec2, Align2, CornerRadius, FontId, Id, Key, Rect, Sense, TextEdit, Ui};
-use layout_tree::Tab;
+mod chips;
+
+use egui::{pos2, vec2, Align2, Id, Key, Rect, Sense, TextEdit, Ui};
 use theme::Palette;
 
 use crate::actions::winops;
-use crate::attention;
 use crate::render::colors::{self, to_c32};
 use crate::render::tokens;
 use crate::state::{self, AppState, CloseDialog, Data, WindowState};
 use crate::ui::chrome::{self, Metrics};
 use crate::ui::{tabs_widgets, xdrag};
 
-/// How long a pane-drag must hover another tab's chip before the active
-/// tab switches there (browser tab-drag dwell).
-const DWELL_SECS: f64 = 0.4;
-/// Chip silhouette: full pill - the bar bg matches the chip field, so the
-/// rounding reads as a soft silhouette instead of a tab-flap.
-const CHIP_RADIUS: CornerRadius = CornerRadius {
-    nw: tokens::R_MD,
-    ne: tokens::R_MD,
-    sw: tokens::R_MD,
-    se: tokens::R_MD,
+use self::chips::{
+    chip_label, clamp_scroll, dwell_step, ensure_visible, ghost_chip, measure, wheel_px,
+    CHIP_RADIUS,
 };
 
 /// Render the single-row chrome bar: tab chips + trailing buttons, with
@@ -31,16 +24,6 @@ pub fn bar(ui: &mut Ui, d: &mut Data) {
     let pal = colors::palette_of(&d.st.theme_name);
     let m = chrome::metrics(d.st.settings.font_size);
     tab_row(ui, d, &pal, &m);
-}
-
-/// Chip label: pane count suffix once the tab holds more than one pane.
-fn chip_label(tab: &Tab) -> String {
-    let panes = layout_tree::pane_count(&tab.root);
-    if panes > 1 {
-        format!("{} [{}]", tab.title, panes)
-    } else {
-        tab.title.clone()
-    }
 }
 
 fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
@@ -93,42 +76,15 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
     let mut chip_rects: Vec<(Rect, usize)> = Vec::new();
 
     // --- Chip-strip overflow scrolling -----------------------------------
-    // Precompute the unscrolled chip spans (relative to row.left()) with
-    // the same width formula the paint loop uses, so the strip only
-    // scrolls when the tabs really overflow the space left of the pinned
-    // chrome.
-    let painter = ui.painter().clone();
-    let count = d.st.win().map(|w| w.tree.tabs.len()).unwrap_or(0);
-    let mut spans: Vec<(f32, f32)> = Vec::with_capacity(count); // (left, right) rel
+    // ONE metadata pass per frame (chips::measure): the label galley,
+    // badge, anchor and width of every chip are shared by the span math
+    // below and the paint loop further down - no chip is laid out twice.
+    let infos = measure(ui, &d.st, &d.ui.notices, window_focused, m);
+    let mut spans: Vec<(f32, f32)> = Vec::with_capacity(infos.len()); // (left, right) rel
     let mut flow = 0.0f32;
-    for i in 0..count {
-        let Some(tab) = d.st.win().and_then(|w| w.tree.tabs.get(i)) else {
-            continue;
-        };
-        let editing = d.st.win().is_some_and(|w| {
-            w.ui.tab_edit
-                .as_ref()
-                .is_some_and(|(a, _)| *a == state::tab_anchor(tab))
-        });
-        let w = if editing {
-            m.chip_edit_w
-        } else {
-            let galley = painter.layout_no_wrap(
-                chip_label(tab),
-                FontId::proportional(m.chip_font),
-                egui::Color32::PLACEHOLDER,
-            );
-            let selected = d.st.win().is_some_and(|w| w.tree.active_tab == i);
-            let badge_w =
-                if attention::tab_needs_badge(tab, &d.ui.notices, selected, window_focused) {
-                    18.0 * m.s
-                } else {
-                    0.0
-                };
-            (m.chip_pad_x * 2.0 + galley.size().x + m.close_w + badge_w).max(m.chip_min_w)
-        };
-        spans.push((flow, flow + w));
-        flow += w + m.chip_gap;
+    for info in &infos {
+        spans.push((flow, flow + info.width));
+        flow += info.width + m.chip_gap;
     }
     let total_w = flow - if spans.is_empty() { 0.0 } else { m.chip_gap };
     let strip = Rect::from_min_max(
@@ -187,29 +143,16 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
         ui.set_clip_rect(saved_clip.intersect(strip_span));
         ui.spacing_mut().item_spacing.x = m.chip_gap;
         let Data {
-            st,
-            sess,
-            ui: uist,
-            dirty,
-            ..
+            st, sess, dirty, ..
         } = d;
         let mut close_tab: Option<layout_tree::PaneId> = None;
-        let count = st.win().map(|w| w.tree.tabs.len()).unwrap_or(0);
         let chrome_base = to_c32(colors::chrome_bg(pal));
         let chrome_hover = to_c32(colors::chrome_hover(pal));
-        for i in 0..count {
-            let Some((anchor, title, label)) = st
-                .win()
-                .and_then(|w| w.tree.tabs.get(i))
-                .map(|t| (state::tab_anchor(t), t.title.clone(), chip_label(t)))
-            else {
-                continue;
-            };
-            let editing = st
-                .win()
-                .is_some_and(|w| w.ui.tab_edit.as_ref().is_some_and(|(a, _)| *a == anchor));
+        // Paint in flow order from the frame's metadata pass: every chip's
+        // anchor, title, galley, badge and width is already computed.
+        for (i, info) in infos.iter().enumerate() {
             let selected = st.win().is_some_and(|w| w.tree.active_tab == i);
-            if editing {
+            if info.editing {
                 // Rename buffer lives in the window ui, the title it edits
                 // in the window tree: split WindowState for both.
                 let wi = st.active_idx();
@@ -257,21 +200,19 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                 continue;
             }
 
+            // The cached label galley: one layout per chip per frame, shared
+            // by every consumer below (the Arc clone at paint time is free).
+            let Some(galley) = info.galley.as_ref() else {
+                continue;
+            };
             let tab_drag = st.win().and_then(|w| w.ui.tab_drag);
             let painter = ui.painter().clone();
-            let galley = painter.layout_no_wrap(
-                label,
-                FontId::proportional(m.chip_font),
-                egui::Color32::PLACEHOLDER,
-            );
-            let badged = st
-                .win()
-                .and_then(|win| win.tree.tabs.get(i))
-                .is_some_and(|tab| {
-                    attention::tab_needs_badge(tab, &uist.notices, selected, window_focused)
-                });
-            let badge_w = if badged { 18.0 * m.s } else { 0.0 };
-            let w = (m.chip_pad_x * 2.0 + galley.size().x + m.close_w + badge_w).max(m.chip_min_w);
+            let anchor = info.anchor;
+            // Galley, badge and width come from chips::measure: nothing is
+            // re-laid-out or re-scanned per chip here.
+            let badged = info.badged;
+            let badge_w = info.badge_w;
+            let w = info.width;
             if tab_drag.is_some_and(|td| td.anchor == anchor) {
                 // The dragged chip's slot stays an empty gap: the other
                 // chips shift around it live while the ghost follows the
@@ -362,7 +303,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
                     pos2(vrect.right() - m.close_w - badge_w, vrect.bottom()),
                 ),
             );
-            painter.galley(galley_rect.min, galley, text_col);
+            painter.galley(galley_rect.min, galley.clone(), text_col);
             if badged {
                 painter.circle_filled(
                     pos2(vrect.right() - m.close_w - badge_w * 0.5, vrect.center().y),
@@ -397,7 +338,7 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
             close_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             if resp.double_clicked() {
                 if let Some(w) = st.win_mut() {
-                    w.ui.tab_edit = Some((anchor, title));
+                    w.ui.tab_edit = Some((anchor, info.title.clone()));
                 }
             }
             if resp.middle_clicked() {
@@ -561,180 +502,4 @@ fn tab_row(ui: &mut Ui, d: &mut Data, pal: &Palette, m: &Metrics) {
         ui.min_rect().bottom() - 0.5,
         egui::Stroke::new(1.0, to_c32(colors::hairline(pal))),
     );
-}
-
-/// Ghost chip for the in-flight tab drag: selected-chip look pinned under
-/// the pointer. The label centers (the real chip left-aligns to leave
-/// room for its close button, which the ghost does not carry).
-fn ghost_chip(ui: &mut Ui, pal: &Palette, label: &str, left: f32, top: f32, w: f32, m: &Metrics) {
-    let painter = ui.painter().clone();
-    let rect = Rect::from_min_size(pos2(left, top), vec2(w, m.chip_h));
-    painter.rect_filled(rect, CHIP_RADIUS, to_c32(colors::tab_active(pal)));
-    // Rounded-cap accent underline, inset like the real chip.
-    let underline = Rect::from_min_max(
-        pos2(
-            rect.left() + f32::from(tokens::R_MD) + 2.0,
-            rect.bottom() - m.accent_h,
-        ),
-        pos2(rect.right() - f32::from(tokens::R_MD) - 2.0, rect.bottom()),
-    );
-    painter.rect_filled(underline, 1.0, to_c32(pal.block_highlight));
-    let galley = painter.layout_no_wrap(
-        label.to_owned(),
-        FontId::proportional(m.chip_font),
-        egui::Color32::PLACEHOLDER,
-    );
-    let text_rect = Align2::CENTER_CENTER.align_size_within_rect(galley.size(), rect);
-    painter.galley(text_rect.min, galley, to_c32(pal.foreground));
-}
-
-/// Hover-dwell state for the pane-drag tab switch: returns the new dwell
-/// state and whether the active tab should switch to the hovered chip's
-/// tab now. Arms (or keeps) the timer only while a NON-active chip is
-/// hovered; anything else clears it.
-fn dwell_step(
-    hover: Option<usize>,
-    dwell: Option<(usize, f64)>,
-    active: usize,
-    now: f64,
-) -> (Option<(usize, f64)>, bool) {
-    match hover {
-        Some(i) if i != active => {
-            // Same chip as before keeps the armed start time; hopping to
-            // another chip restarts the clock.
-            let armed = match dwell {
-                Some((j, t)) if j == i => (i, t),
-                _ => (i, now),
-            };
-            if now - armed.1 >= DWELL_SECS {
-                (None, true)
-            } else {
-                (Some(armed), false)
-            }
-        }
-        _ => (None, false),
-    }
-}
-
-/// Clamp a chip-strip scroll offset into `0..=overflow`; NaN (never
-/// allocated, corrupt state) reads as "no scroll".
-fn clamp_scroll(scroll: f32, overflow: f32) -> f32 {
-    if scroll.is_nan() || overflow.is_nan() || overflow <= 0.0 {
-        return 0.0;
-    }
-    scroll.clamp(0.0, overflow)
-}
-
-/// Scroll offset that brings the `[left, right]` span (unscrolled chip
-/// coordinates) inside a strip window `area_w` wide: reveal the left
-/// edge, else pull back until the right edge shows, else keep.
-fn ensure_visible(scroll: f32, left: f32, right: f32, area_w: f32) -> f32 {
-    if left < scroll {
-        left
-    } else if right > scroll + area_w {
-        right - area_w
-    } else {
-        scroll
-    }
-}
-
-/// Wheel delta converted to strip pixels for each unit egui reports.
-fn wheel_px(unit: egui::MouseWheelUnit, delta: egui::Vec2, step: f32) -> egui::Vec2 {
-    match unit {
-        egui::MouseWheelUnit::Line => delta * step,
-        egui::MouseWheelUnit::Page => delta * (step * 10.0),
-        egui::MouseWheelUnit::Point => delta,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use layout_tree::{new_tree, split_pane, Axis};
-
-    #[test]
-    fn chip_label_counts_panes() {
-        let mut tree = new_tree("work");
-        assert_eq!(chip_label(&tree.tabs[0]), "work");
-        let focused = tree.tabs[0].focused;
-        assert_eq!(
-            split_pane(&mut tree, 0, focused, Axis::Vertical),
-            Some(2),
-            "split creates the second pane"
-        );
-        assert_eq!(chip_label(&tree.tabs[0]), "work [2]");
-    }
-
-    #[test]
-    fn dwell_step_arms_and_keeps_start_time() {
-        // A fresh hover on another tab's chip arms the timer at `now`.
-        let (dwell, switch) = dwell_step(Some(1), None, 0, 10.0);
-        assert_eq!(dwell, Some((1, 10.0)));
-        assert!(!switch, "not due yet");
-        // Staying on the same chip keeps the ORIGINAL start time.
-        let (dwell, switch) = dwell_step(Some(1), dwell, 0, 10.2);
-        assert_eq!(dwell, Some((1, 10.0)));
-        assert!(!switch);
-    }
-
-    #[test]
-    fn dwell_step_switches_when_due() {
-        let (dwell, switch) = dwell_step(Some(1), Some((1, 10.0)), 0, 10.5);
-        assert_eq!(dwell, None, "the switch consumes the timer");
-        assert!(switch);
-    }
-
-    #[test]
-    fn dwell_step_restarts_on_chip_change() {
-        let (dwell, _) = dwell_step(Some(2), Some((1, 10.0)), 0, 10.3);
-        assert_eq!(dwell, Some((2, 10.3)), "hopping chips re-arms from now");
-    }
-
-    #[test]
-    fn dwell_step_clears_on_active_tab_hover() {
-        let (dwell, switch) = dwell_step(Some(0), Some((0, 10.0)), 0, 10.9);
-        assert_eq!(dwell, None);
-        assert!(!switch, "hovering the active tab never switches");
-    }
-
-    #[test]
-    fn dwell_step_clears_without_hover() {
-        let (dwell, switch) = dwell_step(None, Some((1, 10.0)), 0, 10.9);
-        assert_eq!(dwell, None);
-        assert!(!switch);
-    }
-
-    #[test]
-    fn clamp_scroll_bounds_and_nan() {
-        assert_eq!(clamp_scroll(-10.0, 100.0), 0.0);
-        assert_eq!(clamp_scroll(50.0, 100.0), 50.0);
-        assert_eq!(clamp_scroll(500.0, 100.0), 100.0);
-        assert_eq!(clamp_scroll(f32::NAN, 100.0), 0.0);
-        assert_eq!(clamp_scroll(50.0, f32::NAN), 0.0);
-        assert_eq!(clamp_scroll(50.0, 0.0), 0.0, "no overflow = no scroll");
-    }
-
-    #[test]
-    fn ensure_visible_branches() {
-        // Chip starts left of the window: reveal its left edge.
-        assert_eq!(ensure_visible(200.0, 50.0, 120.0, 300.0), 50.0);
-        // Chip ends past the window's right edge: pull left until it fits.
-        assert_eq!(ensure_visible(0.0, 50.0, 400.0, 300.0), 100.0);
-        // Already inside: untouched.
-        assert_eq!(ensure_visible(50.0, 80.0, 300.0, 300.0), 50.0);
-    }
-
-    #[test]
-    fn wheel_px_units() {
-        let d = egui::Vec2::new(1.0, -2.0);
-        assert_eq!(wheel_px(egui::MouseWheelUnit::Point, d, 48.0), d);
-        assert_eq!(
-            wheel_px(egui::MouseWheelUnit::Line, d, 48.0),
-            egui::Vec2::new(48.0, -96.0)
-        );
-        assert_eq!(
-            wheel_px(egui::MouseWheelUnit::Page, d, 48.0),
-            egui::Vec2::new(480.0, -960.0)
-        );
-    }
 }

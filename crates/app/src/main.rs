@@ -84,14 +84,25 @@ impl Terminator {
             let since_last_frame = Duration::from_millis(since_start_ms())
                 .saturating_sub(Duration::from_millis(LAST_FRAME_MS.load(Ordering::Relaxed)));
             let predicted = Duration::from_micros(PREDICTED_DT_US.load(Ordering::Relaxed).max(1));
-            let delay = render::cadence::output_wake_paced(
-                since_last_frame,
-                predicted,
-                // Unfocused windows stream at the higher floor; hidden
-                // ones additionally collapse onto the heartbeat inside
-                // request_root_after.
-                render::cadence::pacing_floor(render::stats::output_floor()),
-            );
+            // Output pacing floor: the base 16ms coalescing window,
+            // raised by focus (unfocused 50ms) and - unless an explicit
+            // TERMINATOR_FRAME_FLOOR_MS pins e2e cadence - by the
+            // adaptive CPU budget (render/frame_cpu.rs): a measured pass
+            // may not cost more than TERMINATOR_CPU_TARGET_PCT of a core
+            // per second of output. Human interaction opens a 900ms
+            // 60fps window, so only unattended streams are throttled.
+            let base = render::stats::output_floor();
+            let floor = if render::stats::governor_enabled() {
+                render::cadence::budgeted_floor(
+                    base,
+                    render::frame_cpu::ema_us(),
+                    render::stats::cpu_target_pct(),
+                    render::frame_cpu::interactive(),
+                )
+            } else {
+                render::cadence::pacing_floor(base)
+            };
+            let delay = render::cadence::output_wake_paced(since_last_frame, predicted, floor);
             render::cadence::request_root_after(&wake_ctx, delay)
         }));
         Self {
@@ -118,6 +129,10 @@ impl eframe::App for Terminator {
         // (every window renders inside it) and only surfaces with
         // TERMINATOR_FRAME_STATS=1; the two atomics feed the pty wake
         // pacing (last pass start + egui's frame-time prediction).
+        // Sample the CPU the PREVIOUS pass spent (tessellation and submit
+        // happen after `App::ui` returns, so a sample at the end would miss
+        // them). The EMA drives the output frame budget (frame_cpu.rs).
+        render::frame_cpu::tick();
         let t0 = Instant::now();
         let ctx = ui.ctx().clone();
         LAST_FRAME_MS.store(since_start_ms(), Ordering::Relaxed);
@@ -125,6 +140,12 @@ impl eframe::App for Terminator {
             render::stats::predicted_dt_us(ctx.input(|i| i.predicted_dt)),
             Ordering::Relaxed,
         );
+        // Any real input (key, pointer, wheel, resize, focus-delivered
+        // event) is human interaction: keep output frames at 60fps for the
+        // next 900ms instead of letting the CPU budget stretch them.
+        if ctx.input(|i| !i.events.is_empty() || i.pointer.any_down()) {
+            render::frame_cpu::mark_interaction();
+        }
         // Root viewport focus/minimized drive the wake-path pacing floors
         // (unfocused floor, hidden heartbeat); refresh before any pump of
         // this frame can schedule the next one.
@@ -155,8 +176,14 @@ impl eframe::App for Terminator {
         // once, before any pass renders a frame snapshot.
         let pal = render::colors::palette_of(&theme);
         terminal_theme::sync(&mut self.data.sess, &pal, self.data.st.settings.bg_color);
+        let mut noticed = false;
         for pane in session_map::pump_all(&mut self.data.sess) {
             self.data.ui.notices.insert(pane);
+            noticed = true;
+        }
+        if noticed {
+            // A notification is user-facing: do not budget its frame away.
+            render::frame_cpu::mark_interaction();
         }
         windows::render(ui, &mut self.data, 0);
         ui::inspector::show(&ctx, &mut self.data, 0);
@@ -243,6 +270,13 @@ fn main() -> eframe::Result {
                 .with_decorations(false)
                 .with_transparent(true),
         ),
+        // Dithering is a full-screen per-pixel hash in the wgpu present
+        // path: pure cost for a terminal UI, and it is the documented
+        // source of the "1-off column" noise in pixel-gate screenshots
+        // (llvmpipe/NVIDIA present dithers fixed screen columns). Keep it
+        // OFF; a pixel gate that starts flaking on 1-off deviations is a
+        // regression here, not something to loosen.
+        dithering: false,
         ..Default::default()
     };
     eframe::run_native(

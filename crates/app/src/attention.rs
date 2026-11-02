@@ -7,9 +7,7 @@ use layout_tree::{PaneId, Tab};
 use crate::state::{AppState, UiState};
 
 pub fn tab_has_notice(tab: &Tab, notices: &BTreeSet<PaneId>) -> bool {
-    layout_tree::sorted_pane_ids(&tab.root)
-        .iter()
-        .any(|id| notices.contains(id))
+    layout_tree::any_pane_id(&tab.root, |id| notices.contains(&id))
 }
 
 pub fn tab_needs_badge(

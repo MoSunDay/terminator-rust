@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use egui::{Button, FontId, Id, Key, Rect, Sense, TextEdit, Ui, Vec2};
+use egui::{FontId, Id, Key, Rect, Sense, TextEdit, Ui, Vec2};
 use layout_tree::PaneId;
 use theme::Palette;
 
@@ -287,13 +287,33 @@ pub fn show(
     // X close button (appearance lives in the global Settings panel).
     // Sense::CLICK (not the default focusable click): a focusable button
     // would take keyboard focus on a bare Tab and then fire on the next
-    // Space, closing the pane out from under the typist.
+    // Space, closing the pane out from under the typist. Painted by hand
+    // (interact + painter) instead of an egui::Button: the widget built a
+    // whole frame/atom layout plus a text galley per pane per frame just
+    // to draw one letter.
     let r = rect.right_top() + Vec2::new(-m.header_btn - 4.0, (rect.height() - m.header_btn) / 2.0);
-    let close = ui.put(
-        Rect::from_min_size(r, Vec2::splat(m.header_btn)),
+    let close_rect = Rect::from_min_size(r, Vec2::splat(m.header_btn));
+    let close = ui.interact(close_rect, Id::new("pane_close").with(pane), Sense::CLICK);
+    // The visuals an egui Button would pick: active while pressed,
+    // hovered under the pointer, inactive otherwise. `weak_bg_fill` is
+    // the fill channel Button painted with (style::sync pins the inactive
+    // bg_fill AND weak_bg_fill to the chrome hover step, so the square
+    // stays dark at rest; hover/press step up to the divider/accent).
+    let vis = *ui.style().interact(&close);
+    ui.painter().rect(
+        close_rect,
+        vis.corner_radius,
+        vis.weak_bg_fill,
+        vis.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "X",
         // egui's Small text style is 10.0pt; keep that size at scale 1.
-        Button::new(egui::RichText::new("X").font(FontId::proportional(10.0 * m.s)))
-            .sense(Sense::CLICK),
+        FontId::proportional(10.0 * m.s),
+        vis.fg_stroke.color,
     );
 
     if close.clicked() {

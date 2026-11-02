@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# measure-cpu-remote.sh - run ONE cpu scenario from the S1-S13 perf matrix
+# measure-cpu-remote.sh - run ONE cpu scenario from the S1-S15 perf matrix
 # (agents/perf/index.md) against the REAL deploy box, sampling the live
 # app's /proc/<pid>/stat through scripts/bin/cpu-sample.py.
 #
@@ -24,6 +24,8 @@
 #   SAMPLE_SECONDS  sampler --seconds window, default 10
 #   SAMPLER_ARGS    extra sampler args, e.g. --json (word-split; default empty)
 #   WM_CLASS        xdotool --class for the app window, default terminator-rust
+#   S15_ALLOW_SPLITS=1  opt in to s15 (splits the LIVE window to 8 panes;
+#                   ctl has no close command, so the panes stay open)
 #   LOCAL=1         run the assembled remote script with the LOCAL bash
 #                   instead of ssh (driver self-test only; the matrix runs
 #                   the remote script on the deploy box)
@@ -79,7 +81,8 @@ trap 'rm -rf "$TMP"' EXIT
 # --- remote prelude (runs on the deploy box, args after the extra --) ------
 cat > "$TMP/prelude" <<'REMOTE'
 set -u
-root=$1; app=$2; ctl=$3; sampler=$4; secs=$5; scen=$6; extra=$7; wmclass=$8
+root=$1; app=$2; ctl=$3; sampler=$4; secs=$5; scen=$6; extra=$7; wmclass=$8; s15allow=${9:-0}
+S15_ALLOW_SPLITS=$s15allow; export S15_ALLOW_SPLITS
 case "$root" in "~") root=$HOME ;; "~/"*) root=$HOME/${root#\~/} ;; esac
 cd "$root" 2>/dev/null || { echo "ERROR: remote repo root not found: $root" >&2; exit 2; }
 [ -f "$sampler" ] || { echo "ERROR: sampler not found: $sampler (in $root)" >&2; exit 2; }
@@ -344,6 +347,52 @@ rm -f "$BIG"
 REMOTE
 }
 
+body_s14() {
+    cat <<'REMOTE'
+
+need_ctl; need_pane
+echo "setup: 10Hz spinner (240 x 0.1s) - steady-state governor contract"
+echo "  sampling: process (recorded) + MAIN thread (--thread-max1s $PID)"
+"$ctl" send "$PANE" --text "i=0; while [ \$i -lt 240 ]; do printf \"spin10 %s\\\\r\" \"\$(date +%s%N)\"; sleep 0.1; i=\$((i+1)); done"$'\n' >/dev/null
+sleep 6.0
+python3 "$sampler" --pid "$PID" --seconds "$secs" --top-threads 5 \
+    --thread-max1s "$PID" $extra
+rc=$?
+stop_loop
+exit "$rc"
+REMOTE
+}
+
+body_s15() {
+    cat <<'REMOTE'
+
+if [ "${S15_ALLOW_SPLITS:-0}" != "1" ]; then
+    echo "SKIP: s15 splits the LIVE window to 8 panes; ctl has no close command,"
+    echo "  so the extra panes would stay open. Set S15_ALLOW_SPLITS=1 to opt in."
+    exit 3
+fi
+need_ctl; need_pane
+if [ -z "$WID" ] || ! command -v xdotool >/dev/null 2>&1; then
+    echo "SKIP: s15 needs xdotool + a window (DISPLAY=${DISPLAY:-unset}, WID=${WID:-none})" >&2
+    exit 3
+fi
+xdotool windowactivate "$WID" 2>/dev/null || xdotool windowfocus "$WID" 2>/dev/null || true
+echo "setup: split to 8 panes (Ctrl+Shift+E x7); they stay open after the run"
+for _ in 2 3 4 5 6 7 8; do
+    xdotool key --clearmodifiers ctrl+shift+e
+    sleep 0.4
+done
+sleep 3
+n=$("$ctl" list --json 2>/dev/null | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+echo "   panes after splits: $n"
+if [ "$n" != "8" ]; then
+    echo "ERROR: expected 8 panes, got $n (keys did not reach the app?)" >&2
+    exit 2
+fi
+run_sampler
+REMOTE
+}
+
 # --- local driver: one ssh per scenario ------------------------------------
 
 run_remote() {  # $1 = script file; remaining args = remote argv
@@ -363,7 +412,7 @@ run_scenario() {
             echo "== SKIP $s (documented local-only matrix scenario; agents/perf/index.md)"
             return 0
         fi
-        echo "FAIL: unknown scenario '$s' (implemented: s1 s2 s3 s4 s7 s8 s11 s13)" >&2
+        echo "FAIL: unknown scenario '$s' (implemented: s1 s2 s3 s4 s7 s8 s11 s13 s14 s15)" >&2
         return 1
     fi
     { cat "$TMP/prelude"; "body_$s"; } > "$TMP/body.sh"
@@ -374,7 +423,7 @@ run_scenario() {
     fi
     if run_remote "$TMP/body.sh" \
         "$ROOT" "$APP" "$CTL" "$CPU_SAMPLE" "$SAMPLE_SECONDS" "$s" \
-        "$SAMPLER_ARGS" "$WM_CLASS"; then
+        "$SAMPLER_ARGS" "$WM_CLASS" "${S15_ALLOW_SPLITS:-0}"; then
         rc=0
     else
         rc=$?

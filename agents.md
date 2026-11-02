@@ -250,8 +250,17 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   path; e2e-bg-seams green). One dirty row now rebuilds one row, not
   the pane; spinner pass_avg_us median 426->315us (gl sandbox), total
   spinner CPU flat (dominated by raster/present - the NEXT lever).
-  egui 0.36 still re-tessellates every delivered shape each frame;
-  cross-frame mesh caching remains open (perf/index.md M1). 60Hz single-pane spinner measured
+  egui 0.36 tessellates every delivered shape each frame, so M5
+  (2026-11-02) bakes each row into Vec<Arc<Mesh>> keyed by BakeKey =
+  StyleKey + atlas_size + tessellation options; bake uses
+  clip_rect=EVERYTHING (paint-time clipping) and only a dirty row
+  re-tessellates. M6 (same day): frame_cpu.rs process-CPU EMA (alpha
+  1/8) + cadence::budget_floor fps=clamp(10*target/cpu_ms,1,60) raises
+  the output floor up to 1s; TERMINATOR_CPU_TARGET_PCT=1 default, an
+  EXPLICIT TERMINATOR_FRAME_FLOOR_MS disables the governor, and a 900ms
+  interaction latch keeps typing/output at full 60fps. Gates:
+  e2e-idle-cpu S14 (10Hz main-thread max1s<=1%) + S15 (8-pane idle,
+  frames==0). 60Hz single-pane spinner measured
   0.6% core on the deployed desktop (vs the 23% complaint). IME panel
   chase (ime/x11.rs sync): the 16ms follow-up must run for the WHOLE
   composition - the IME server re-docks its panel asynchronously
@@ -259,7 +268,7 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   verify loop passed dev timing but failed the release gate
   (input-method/index.md). Outside composition repair early-returns
   with zero X traffic.
-- CPU 测量口径 / 场景矩阵 / 帧率开关 / 2026-10-16 发布 45452f15 真机数字（idle 地板=宿主驱动线程，动画成本≈帧数×0.25ms）: [agents/perf/index.md](agents/perf/index.md).
+- CPU 测量口径 / 场景矩阵 S1–S15 / 帧率开关 / 2026-10-16 发布 45452f15 真机数字（idle 地板=宿主驱动线程，动画成本≈帧数×0.25ms）: [agents/perf/index.md](agents/perf/index.md). M4/M5/M6 sections cover chrome split, mesh cache and the CPU governor.
 - cell backgrounds paint as MERGED runs (render/bg_runs/ since 2026-09-23 split: row.rs classify, merge.rs interval-absorb, rect.rs bleed; 2026-09-22):
   one rect_filled PER CELL feathered a seam lattice (1/255/column at the
   cell pitch, vertical AND row boundaries) across every ANSI-bg region,
