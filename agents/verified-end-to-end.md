@@ -52,13 +52,16 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   Shift_L switches to EN passthrough; double-click rename editors (tab
   chip AND pane header) compose CJK from the FIRST key and the pane's own
   IME survives the editor closing; composing over existing colored text hides
-  the covered glyphs, and Escape restores them (M3b pixel assertions).
+  the covered glyphs, and cancellation restores them (M3b: Escape no
+  longer cancels libpinyin preedit, so the gate flips engines; pixel
+  assertions).
   Delaying committed 汉字 echo by 1.2s while composing ni preserves all 183
   committed glyph pixels (M3c). Native panel checks pass on ordinary rows,
   hidden cursor, screen bottom, wrapped input and 900x600 resize (M3d).
   Exact row-end and wide-character wrap preserve all 180 committed glyph
-  pixels; last-row preview preserves 182, Escape restores the original
-  image, and actual commit follows the previewed wrap (M3e).
+  pixels; last-row preview preserves 182, cancel (silent in XIM - detected
+  via the panel-vanish signal) restores the original image, and actual
+  commit follows the previewed wrap (M3e).
   macOS native panel remains unverified. Fcitx has real-machine runtime
   evidence (2026-11-01, XIM IC registration + commit-to-screen on live
   fcitx5), but pixel-level e2e coverage remains IBus-only.
