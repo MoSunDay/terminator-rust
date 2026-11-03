@@ -8,15 +8,17 @@
 //! input, a pty-reader wake (`SessionOpts::wake`) or an IPC request
 //! arrives.
 //!
-//! Two throughput brakes sit on top of those deadlines. While the root
-//! viewport is MINIMIZED, the surface is unmapped and `present` no
-//! longer blocks on vblank - the only real brake the 1ms
-//! [`SOON_SINGLE_PASS`] chain ever had - so every root repaint request
-//! collapses to a slow heartbeat ([`HIDDEN_HEARTBEAT`]) instead of
-//! spinning the loop flat out. And an UNFOCUSED window paces pty
-//! output at a higher floor ([`UNFOCUSED_FLOOR`]): nobody reads a
-//! background tail at 60fps, and at 2x scale every frame is a full
-//! 5760x3840 raster.
+//! Two throughput brakes sit on top of those deadlines. While EVERY
+//! viewport (root + secondaries) is MINIMIZED, the surfaces are
+//! unmapped and `present` no longer blocks on vblank - the only real
+//! brake the 1ms [`SOON_SINGLE_PASS`] chain ever had - so every root
+//! repaint request collapses to a slow heartbeat
+//! ([`HIDDEN_HEARTBEAT`]) instead of spinning the loop flat out. And
+//! when NO window is focused, pty output paces at a higher floor
+//! ([`UNFOCUSED_FLOOR`]): nobody reads a background tail at 60fps, and
+//! at 2x scale every frame is a full 5760x3840 raster. Both aggregates
+//! are folded per viewport (`report_viewport`) and committed after all
+//! viewport passes (`finish_viewports`).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -110,16 +112,45 @@ pub fn output_wake_paced(elapsed: Duration, predicted_dt: Duration, floor: Durat
     }
 }
 
-/// Root viewport minimized, refreshed once per root pass (`main.rs`).
-/// Defaults false: until the first pass runs, requests pace as visible.
+/// Every window minimized (root + secondaries), aggregated once per root
+/// frame (`begin_viewports`/`report_viewport`/`finish_viewports` in
+/// `main.rs` + `windows::render`). Defaults false: until the first pass
+/// runs, requests pace as visible.
 static HIDDEN: AtomicBool = AtomicBool::new(false);
-/// Root viewport focus, refreshed once per root pass. Defaults true:
-/// bias toward latency while the state is unknown.
+/// ANY window focused (OR across viewports), aggregated per root frame.
+/// Defaults true: bias toward latency while the state is unknown.
 static FOCUSED: AtomicBool = AtomicBool::new(true);
+/// Accumulator for [`FOCUSED`] across one frame's viewport passes (OR).
+static ANY_FOCUSED: AtomicBool = AtomicBool::new(false);
+/// Accumulator for [`HIDDEN`] across one frame's viewport passes (AND).
+static ALL_HIDDEN: AtomicBool = AtomicBool::new(true);
 
-/// Record the root viewport's pacing-relevant state (once per root
-/// pass). Takes the raw `Option<bool>` viewport fields; a missing
-/// observation keeps the latency-biased default.
+/// Start aggregating viewport state for a new root frame: resets the
+/// per-frame accumulators. Call once per root pass, before any
+/// `windows::render` pass runs.
+pub fn begin_viewports() {
+    ANY_FOCUSED.store(false, Ordering::Relaxed);
+    ALL_HIDDEN.store(true, Ordering::Relaxed);
+}
+
+/// Fold ONE viewport's state (root or secondary; called from
+/// `windows::render`). Takes the raw `Option<bool>` viewport fields; a
+/// missing observation keeps the latency-biased default - missing focus
+/// counts as focused, missing minimized counts as visible.
+pub fn report_viewport(focused: Option<bool>, minimized: Option<bool>) {
+    if focused.unwrap_or(true) {
+        ANY_FOCUSED.store(true, Ordering::Relaxed);
+    }
+    if !minimized.unwrap_or(false) {
+        ALL_HIDDEN.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Commit the frame's aggregated viewport state after every viewport
+/// pass has reported: FOCUSED means ANY window is focused (focus floor),
+/// HIDDEN means EVERY window is minimized (hidden heartbeat). Pacing
+/// queries between frames (`pacing_floor`, `hidden_clamp`) read the
+/// committed values.
 pub fn observe(focused: Option<bool>, minimized: Option<bool>) {
     let was_focused = FOCUSED.swap(focused.unwrap_or(true), Ordering::Relaxed);
     HIDDEN.store(minimized.unwrap_or(false), Ordering::Relaxed);
@@ -130,13 +161,23 @@ pub fn observe(focused: Option<bool>, minimized: Option<bool>) {
     }
 }
 
-/// Whether the root viewport is currently minimized/hidden.
+/// Finish the frame's viewport aggregation: commit the OR-ed focus and
+/// AND-ed hidden state into the pacing statics.
+pub fn finish_viewports() {
+    observe(
+        Some(ANY_FOCUSED.load(Ordering::Relaxed)),
+        Some(ALL_HIDDEN.load(Ordering::Relaxed)),
+    );
+}
+
+/// Whether every viewport is currently minimized/hidden.
 pub fn hidden() -> bool {
     HIDDEN.load(Ordering::Relaxed)
 }
 
-/// Output pacing floor for the current focus state. A zero floor
-/// (explicit OFF) passes through untouched.
+/// Output pacing floor for the current focus state (any window focused
+/// passes the base floor through). A zero floor (explicit OFF) passes
+/// through untouched.
 pub fn pacing_floor(base: Duration) -> Duration {
     floor_for(FOCUSED.load(Ordering::Relaxed), base)
 }
@@ -482,6 +523,49 @@ mod tests {
             floor_for(false, Duration::from_millis(80)),
             Duration::from_millis(80)
         );
+    }
+
+    #[test]
+    fn viewport_aggregation_is_or_focus_and_hidden() {
+        // Pin a deterministic start (these statics are process-global).
+        observe(Some(false), Some(false));
+        // Root unfocused+minimized, secondary focused+visible: ANY focus
+        // keeps the focus floor and ALL-hidden fails.
+        begin_viewports();
+        report_viewport(Some(false), Some(true));
+        report_viewport(Some(true), Some(false));
+        finish_viewports();
+        assert!(!hidden());
+        assert_eq!(
+            pacing_floor(Duration::from_millis(16)),
+            Duration::from_millis(16)
+        );
+        // Every viewport minimized: hidden heartbeat + unfocused floor.
+        begin_viewports();
+        report_viewport(Some(false), Some(true));
+        report_viewport(Some(false), Some(true));
+        finish_viewports();
+        assert!(hidden());
+        assert_eq!(pacing_floor(Duration::from_millis(16)), UNFOCUSED_FLOOR);
+        // Missing observations bias toward latency: no focus report
+        // counts as focused, no minimized report counts as visible.
+        begin_viewports();
+        report_viewport(None, None);
+        finish_viewports();
+        assert!(!hidden());
+        assert_eq!(
+            pacing_floor(Duration::from_millis(16)),
+            Duration::from_millis(16)
+        );
+        // ...even against an all-minimized sibling: hidden stays false
+        // while ANY viewport's minimized observation is missing.
+        begin_viewports();
+        report_viewport(Some(false), None);
+        report_viewport(Some(false), Some(true));
+        finish_viewports();
+        assert!(!hidden());
+        // Leave the latency-biased defaults behind for anything after.
+        observe(Some(true), Some(false));
     }
 
     #[test]

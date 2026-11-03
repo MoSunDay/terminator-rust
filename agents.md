@@ -226,8 +226,12 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   Secondaries render inside the root pass; ipc wakes likewise (now
   single-pass); cadence::next_deadline
   schedules ONLY the next real need (blink edges; 50ms live gesture;
-  retry/reconnect backoff; EXIT_GRACE); MINIMIZED root clamps every
-  request to a 500ms heartbeat, unfocused output floor 50ms (2026-10-22,
+  retry/reconnect backoff; EXIT_GRACE); focus/minimized are AGGREGATED
+  per viewport (cadence::report_viewport from every windows::render
+  pass, committed by begin/finish_viewports in main.rs - 2026-11-03): ANY
+  window focused keeps the 16ms focus floor, only ALL windows minimized
+  clamps every request to a 500ms heartbeat; unfocused (no window
+  focused) output floor 50ms (2026-10-22,
   perf/index.md). Frame
   snapshots are CACHED per Session (cache_valid; invalidate on pump,
   resize, theme change, selection/viewport mutations - vt-pane

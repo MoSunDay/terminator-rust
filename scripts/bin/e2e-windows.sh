@@ -4,6 +4,9 @@
 #       both have a live, INDEPENDENT shell pane (globally unique pane ids).
 #   W2: typing goes to the focused window only; ctl captures prove the two
 #       panes hold different markers.
+#   W2b: typing into the secondary while 20 concurrent ctl round-trips run
+#       (M6 secondary-input/IPC wake race): keys must stay put, no ctl
+#       call may time out.
 #   W3: closing the secondary's last pane (Ctrl+Shift+W) removes that OS
 #       window; the app and the root window stay alive.
 #   W4: a re-spawned secondary works the same way (window ids progress).
@@ -271,6 +274,33 @@ fi
 if "$CTL" capture "$P_ROOT" 2>/dev/null | grep -q E2EWIN2; then
     fail "root pane echoed the SECONDARY marker - keyboard leaked cross-window"
 fi
+
+# --- W2b: secondary typing under concurrent IPC wakes ---------------------
+# The M6 interaction latch must see input in a SECONDARY viewport, and the
+# IPC wake must land after its command is queued: hammer ctl while typing
+# in the secondary, then prove the marker stayed there and no call failed.
+step "W2b: secondary keys survive concurrent IPC wakes"
+IPC_ERRS="$ROOT/w2b-ipc.err"
+: > "$IPC_ERRS"
+(
+    for i in $(seq 1 20); do
+        "$CTL" send "$P_ROOT" --text $'printf "IPCWAKE\\n"\n' >/dev/null 2>>"$IPC_ERRS" \
+            || echo "send $i" >>"$IPC_ERRS"
+        "$CTL" capture "$P_ROOT" >/dev/null 2>>"$IPC_ERRS" \
+            || echo "capture $i" >>"$IPC_ERRS"
+    done
+) &
+IPC_PID=$!
+sleep 0.05
+xdotool type --delay 25 "E2EWIN2B"
+wait_capture "$P_SEC" E2EWIN2B 20 \
+    || { "$CTL" capture "$P_SEC" | tail -3; fail "secondary lost keys while IPC ran"; }
+wait "$IPC_PID" || true
+[ -s "$IPC_ERRS" ] && { cat "$IPC_ERRS"; fail "ctl failed during concurrent secondary input"; }
+if "$CTL" capture "$P_ROOT" 2>/dev/null | grep -q E2EWIN2B; then
+    fail "root pane received secondary keystrokes during IPC activity"
+fi
+echo "secondary typing stayed isolated under 20 IPC round-trips"
 
 # --- W3: closing the secondary's last pane removes that window -----------
 step "W3: Ctrl+Shift+W in the secondary kills only that window"

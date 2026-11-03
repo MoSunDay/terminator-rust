@@ -257,7 +257,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -804,7 +804,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "ctl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "ipc-proto",
@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "ipc-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1895,7 +1895,7 @@ dependencies = [
 
 [[package]]
 name = "layout-tree"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "libc"
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "oc-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "rusqlite",
@@ -2566,7 +2566,7 @@ dependencies = [
 
 [[package]]
 name = "paths"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
 ]
@@ -2925,7 +2925,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "remote"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "libghostty-vt",
@@ -3341,7 +3341,7 @@ dependencies = [
 
 [[package]]
 name = "terminator-session"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "ipc-proto",
@@ -3352,7 +3352,7 @@ dependencies = [
 
 [[package]]
 name = "theme"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3635,7 +3635,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vt-pane"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "libc",

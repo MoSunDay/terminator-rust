@@ -147,10 +147,10 @@ impl eframe::App for Terminator {
             render::frame_cpu::mark_interaction();
         }
         // Root viewport focus/minimized drive the wake-path pacing floors
-        // (unfocused floor, hidden heartbeat); refresh before any pump of
-        // this frame can schedule the next one.
-        let (focused, minimized) = ctx.input(|i| (i.viewport().focused, i.viewport().minimized));
-        render::cadence::observe(focused, minimized);
+        // (unfocused floor, hidden heartbeat) - aggregated across EVERY
+        // viewport pass below, not root-only: each windows::render pass
+        // reports its own state and finish_viewports commits the
+        // combined (any-focused / all-hidden) view before end_frame.
         // Keep the WM max-size constraint glued to the real GPU limit
         // (root viewport; secondaries guard inside their own pass).
         render::surface_guard::apply(&ctx);
@@ -185,6 +185,10 @@ impl eframe::App for Terminator {
             // A notification is user-facing: do not budget its frame away.
             render::frame_cpu::mark_interaction();
         }
+        // Aggregation window for this frame's viewport pacing state: the
+        // root pass and every secondary pass report into it; the commit
+        // happens in finish_viewports below.
+        render::cadence::begin_viewports();
         windows::render(ui, &mut self.data, 0);
         ui::inspector::show(&ctx, &mut self.data, 0);
         // Registered AFTER the inspector so the modal sits on top of it.
@@ -195,10 +199,14 @@ impl eframe::App for Terminator {
         // pass inside windows::render). Removal shrinks the list; the loop
         // re-checks the slot so no window is skipped.
         windows::render_secondaries(&ctx, &mut self.data);
+        // All viewport passes (root + secondaries) have now reported:
+        // commit the aggregated focus/hidden state so next frame's
+        // pacing floors see the true multi-window picture.
+        render::cadence::finish_viewports();
         // Panes spawned by this frame's ensure_sessions get their theme
         // defaults before the next frame's pump parses their first output.
         terminal_theme::sync(&mut self.data.sess, &pal, self.data.st.settings.bg_color);
-        self.data.shapes.end_frame();
+        self.data.shapes.end_frame(&ctx);
         self.data.st.active = self.data.st.focus;
 
         self.save_if_dirty();
@@ -239,6 +247,18 @@ fn launch_state(path: &std::path::Path) -> AppState {
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Runtime gates read this line back: an explicit valid
+    // TERMINATOR_FRAME_FLOOR_MS disables the adaptive CPU budget, so a
+    // governor e2e that did not assert the state could pass vacuously.
+    log::info!(
+        "cpu governor: {} (target {:.1}% of one core)",
+        if render::stats::governor_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        render::stats::cpu_target_pct()
+    );
     // Decode the embedded logo up front (one shared raster for every
     // viewport); a decode failure only costs the custom icon, never the
     // app - app_icon warns and the builders fall back to the default.

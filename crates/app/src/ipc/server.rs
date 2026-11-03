@@ -3,9 +3,11 @@
 //! The listener thread never touches app state: requests cross an mpsc
 //! channel as [`Command`]s and are serviced on the UI thread by [`drain`],
 //! which sends the response back over the per-request reply channel. The
-//! render loop is reactive (no repaint tick), so the listener wakes the
-//! UI with a single-pass root repaint request the moment a request is
-//! accepted: `drain` runs on the very next frame.
+//! render loop is reactive (no repaint tick), so [`forward`] wakes the
+//! UI with a single-pass root repaint request only AFTER the request is
+//! queued: `drain` then runs on the very next frame. Waking before the
+//! queue push raced an early drain and left the request waiting for an
+//! unrelated event (or the 5s reply timeout).
 //!
 //! Migration requests carry more than a line: the sender attaches one
 //! SCM_RIGHTS fd per pane leaf to the header message and follows it with
@@ -214,18 +216,13 @@ fn listen(listener: UnixListener, tx: Sender<Command>, stop: Arc<AtomicBool>, ct
 /// Read one request exchange, hand it to the UI thread and write the
 /// response back as one JSON line.
 fn serve(stream: UnixStream, tx: &Sender<Command>, ctx: &egui::Context) {
-    // Wake the reactive render loop: without a repaint tick, `drain` on
-    // the UI thread would otherwise wait for the next input event. The
-    // SOON single-pass wake avoids egui's zero-delay double pass, and
-    // request_root_after hidden-clamps it while minimized.
-    crate::render::cadence::request_root_after(ctx, crate::render::cadence::SOON_SINGLE_PASS);
     // Accepted sockets may inherit non-blocking mode; blocking + timeouts
     // is what a request/response exchange wants.
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
     let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
     let resp = match read_request(&stream) {
-        Some((req, fds, payload)) => forward(req, fds, payload, tx),
+        Some((req, fds, payload)) => forward(req, fds, payload, tx, ctx),
         None => ipc_proto::Response::err("bad request"),
     };
     if let Ok(mut line) = serde_json::to_string(&resp) {
@@ -325,6 +322,7 @@ fn forward(
     fds: Vec<OwnedFd>,
     payload: Vec<u8>,
     tx: &Sender<Command>,
+    ctx: &egui::Context,
 ) -> ipc_proto::Response {
     let (reply, rx) = mpsc::channel();
     if tx
@@ -338,6 +336,11 @@ fn forward(
     {
         return ipc_proto::Response::err("app shutting down");
     }
+    // The command is now IN the UI thread's queue: wake it with a
+    // single-pass root repaint. Waking before the push let an early
+    // drain find an empty queue and wait for an unrelated event (or the
+    // 5s reply timeout) - the intermittent ctl timeout.
+    crate::render::cadence::request_soon_single_pass(ctx);
     match rx.recv_timeout(REPLY_TIMEOUT) {
         Ok(resp) => resp,
         Err(_) => ipc_proto::Response::err("app not responding"),
@@ -347,10 +350,20 @@ fn forward(
 /// Service pending requests on the UI thread; called once per frame.
 pub fn drain(ipc: &mut Ipc, data: &mut crate::state::Data) {
     while let Ok(cmd) = ipc.rx.try_recv() {
-        // An IPC request is an external human/tool interaction: open the
-        // latency window before executing it so the CPU governor cannot
-        // delay the response frame.
-        crate::render::frame_cpu::mark_interaction();
+        // Only state-MUTATING requests open the interaction latch: Notice
+        // / Write / MigrateOut / TabOffer alter user-visible state, so the
+        // CPU governor must not budget their response frame away. List and
+        // Capture are read-only - a ctl polling loop must not pin 60fps
+        // and disable the governor. Borrow-only match keeps `cmd` movable.
+        if matches!(
+            &cmd.req,
+            ipc_proto::Request::Notice { .. }
+                | ipc_proto::Request::Write { .. }
+                | ipc_proto::Request::MigrateOut { .. }
+                | ipc_proto::Request::TabOffer { .. }
+        ) {
+            crate::render::frame_cpu::mark_interaction();
+        }
         let resp = crate::ipc::handle::execute(cmd.req, cmd.fds, cmd.payload, data);
         let _ = cmd.reply.send(resp);
     }

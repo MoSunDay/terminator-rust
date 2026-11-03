@@ -4,16 +4,19 @@
 - **tier1 断言（gate 实跑：`release.yml` → `scripts/deploy/verify-release.sh` → `e2e-idle-cpu.sh`）**
   - S1：`max1s < 1%`（单核）**且 frames == 0** —— 唯一的 `<1%` 硬断言
     （`IDLE_GPU_BACKEND=gl` 软件后端，无宿主驱动地板；见下方 GPU BACKEND 段）。
-  - S2 / S13：`fps <= 65`（`TERMINATOR_FRAME_FLOOR_MS` 真节流上限）；CPU 只记录。
+  - S2 / S13：`fps <= 65`（基础 16ms pacing floor；governor 只会再抬高）；
+    CPU 只记录。
   - S14（10Hz 输出稳态）：**主线程** `max1s <= 1.0%` 且 `fps <= 12` ——
     CPU 预算调速器的 `<1%` 硬门；process CPU 只记录（gl 沙箱里 llvmpipe
-    光栅线程每帧的成本会占满 process，见 M6）。
+    光栅线程每帧的成本会占满 process，见 M6）。启动日志必须是
+    `cpu governor: enabled`，否则 S14 直接 FAIL（继承的显式 floor /
+    target=0 会让该门变得空洞）。
   - S15（8 pane 空闲）：`frames == 0` 且 process **avg < 1%**（`max1s <= 1.0%`，
     一个 10ms jiffy 恰为 1.0%，只有持续成本才会抬高 avg）。
   - S7：runaway 兜底断言 `max1s <= 50%`；CPU 只记录。
   - WAKE：`ctl send` 回声 <= 2s 到达 `ctl capture`（无 tick 后唤醒路径的活体证明）。
 - **tier2 记录（无阈值）**：矩阵里其余可跑场景（S1b/S3/S4/S8/S11）与真机
-  `scripts/deploy/measure-cpu-remote.sh` 的 s1..s13 全部只报数字。真机 idle 地板是宿主
+  `scripts/deploy/measure-cpu-remote.sh` 的 s1..s15 全部只报数字。真机 idle 地板是宿主
   驱动线程（NVIDIA `[vkps] Update` ~0.3-0.4%/核、**零帧**），native 下 `<1%` 不可达，
   这是环境成本不是应用回归。tier1 的 `<1%` 只在 gl 沙箱成立；`ci.yml` 不跑本 gate。
 - **tier3 未实现**：S5/S6/S9/S10/S12（本地 e2e 扩展，见矩阵"判定"）。
@@ -73,8 +76,8 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | S10 | 大范围选择 + Copy | 待补：本地 e2e（选择/ctx.copy_text 路径） | 未实现（tier3） |
 | S11 | 边缘 resize 手势 | 远程 s11：右边缘 `mousedown 1`，按住时 +/- 拖动，采样结束 `mouseup 1`（EXIT trap 兜底释放） | 记录（tier2） |
 | S12 | tab chip 拖动 / 跨窗拖拽 | 待补：本地 e2e（drag/drop overlay 每帧重绘） | 未实现（tier3） |
-| S13 | `cat` 40k 行输出洪泛 | 远程 s13：远端生成 4 万行文件后 `ctl send cat <file>` | 断言 fps <= 65；CPU 仅记录（输出带宽受限） |
-| S14 | 10Hz spinner 稳态 | 本地 S14：`printf "spin10 %s\r"` + `sleep 0.1`，等待 900ms 交互闩锁 + EMA 收敛后采样；远程 s14 同一 payload | 断言主线程 max1s <= 1%、fps <= 12；process 记录 |
+| S13 | `cat` 40k 行输出洪泛 | 远程 s13（需 `S13_ALLOW_FLOOD=1`，会写 live pane）：远端生成 4 万行文件后 `ctl send cat <file>` | 断言 fps <= 65；CPU 仅记录（输出带宽受限） |
+| S14 | 10Hz spinner 稳态 | 本地 S14：`printf "spin10 %s\r"` + `sleep 0.1`，等待 900ms 交互闩锁 + EMA 收敛后采样；远程 s14（需 `S14_ALLOW_TYPE=1`，24s live spinner）同一 payload | 启动日志 `cpu governor: enabled` + 主线程 max1s <= 1%、fps <= 12；process 记录 |
 | S15 | 8 pane 空闲 | 本地 S15：`Ctrl+Shift+E` x7（windowfocus 后真键），settle 后采样；远程 s15 需 `S15_ALLOW_SPLITS=1`（live 窗口会留下 8 pane） | 断言 frames == 0、process avg < 1%、max1s <= 1% |
 
 ## 环境开关
@@ -95,7 +98,7 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | `IDLE_MAX_FPS` | 0 | S1 帧数上限（帧必须是 0 才叫空闲） |
 | `S7_SAMPLE_S` / `S7_MAX1S_PCT` | 5 / 50 | S7 重命名编辑器窗口与 runaway 兜底 |
 | `PIN_SAMPLE_S` | 5 | S1b 常驻探针窗口 |
-| `MAX_FPS_SPIN` / `MAX_FPS_BUSY` | 65 / 65 | S2 / S13 帧率上限（配合 floor 16ms ≈ 62.5fps） |
+| `MAX_FPS_SPIN` / `MAX_FPS_BUSY` | 65 / 65 | S2 / S13 帧率上限（配合 floor 16ms ≈ 62.5fps；governor 只降不升） |
 | `S14_SAMPLE_S` / `S14_MAX1S_PCT` / `MAX_FPS_SPIN10` | 5 / 1.0 / 12 | S14 窗口、主线程门槛、帧率上限（首窗超限自动重采一次取更优） |
 | `S14_SPIN_N` / `S14` settle | 240 / 6s | 24s payload；6s 让 900ms 交互闩锁结束且 8 样本 EMA 收敛（软件后端可能已在 1fps，3s 会抓到启动 ramp） |
 | `S15_PANES` / `S15_SETTLE_S` / `S15_SAMPLE_S` | 8 / 3 / 8 | 分裂数、静默期、采样窗（超限重采一次取更优） |
@@ -329,10 +332,10 @@ shape 生成，Text shape（每个非空格一个，单 pane 300–900 个）仍
 ## M6 CPU 预算帧调度器（2026-11-02）
 目标口径：**空闲 + 10Hz 输出稳态 ≤1% 单核**；60fps 场景只允许经帧预算
 降采样（不是禁用输出帧）。实现：
-- `render/frame_cpu.rs`（177 行）：每次 root pass 读进程 CPU
+- `render/frame_cpu.rs`（181 行）：每次 root pass 读进程 CPU
   （Linux `CLOCK_PROCESS_CPUTIME_ID`，macOS `getrusage`），得到单帧成本后
   做 α=1/8 的 EMA（样本 clamp 50µs–50ms）。交互（键盘/指针/IME/OSC、
-  IPC drain、窗口重新获得焦点）打开 900ms 的 60fps 延迟窗口。
+  可变 IPC 请求、窗口重新获得焦点）打开 900ms 的 60fps 延迟窗口。
 - `cadence::budget_floor`：`fps = clamp(10 * target_pct / cpu_ms, 1, 60)`，
   `floor = clamp(1000/fps, 16ms, 1s)`。CPU 越贵帧越稀；下限 1fps 保证
   输出永不静默（大输出仍会逐秒推进），上限 16ms 保留原有 60fps 上限。
@@ -354,4 +357,6 @@ gl 沙箱实测（2026-11-02，release）：
 要到 1% 需 0.16fps；真机 GPU 上每帧成本低一个量级，10Hz 输出会以更接近
 10fps 的速率运行。真机验证用 `measure-cpu-remote.sh` 的 s14：
 `SCEN=s14 DEPLOY_HOST=... bash scripts/deploy/measure-cpu-remote.sh`
-（native GPU 看 process；沙箱看 `thread_max1s`，即主线程）。
+（native-GPU s14 只**记录** process CPU；沙箱门槛是主线程
+`thread_max1s`，即 S14 自动断言的是 app 主线程——process CPU 没有
+自动化阈值）。

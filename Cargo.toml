@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/MoSunDay/terminator-rust"
@@ -34,13 +34,13 @@ eframe = "0.36"
 egui = "0.36"
 skrifa = "0.44"
 
-ipc-proto = { path = "crates/ipc-proto", version = "0.1.0" }
-oc-store = { path = "crates/oc-store", version = "0.1.0" }
-layout-tree = { path = "crates/layout-tree", version = "0.1.0" }
-vt-pane = { path = "crates/vt-pane", version = "0.1.0" }
-theme = { path = "crates/theme", version = "0.1.0" }
-remote = { path = "crates/remote", version = "0.1.0" }
-paths = { path = "crates/paths", version = "0.1.0" }
+ipc-proto = { path = "crates/ipc-proto", version = "0.2.0" }
+oc-store = { path = "crates/oc-store", version = "0.2.0" }
+layout-tree = { path = "crates/layout-tree", version = "0.2.0" }
+vt-pane = { path = "crates/vt-pane", version = "0.2.0" }
+theme = { path = "crates/theme", version = "0.2.0" }
+remote = { path = "crates/remote", version = "0.2.0" }
+paths = { path = "crates/paths", version = "0.2.0" }
 
 [profile.release]
 lto = "thin"

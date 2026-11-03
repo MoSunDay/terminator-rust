@@ -206,10 +206,12 @@ pub struct Chrome {
     pub title_text: Rgb,
 }
 
+type RgbTriple = (u8, u8, u8);
+type ChromeKey = (RgbTriple, RgbTriple, RgbTriple);
+
 thread_local! {
-    static CHROME_MEMO: std::cell::RefCell<
-        Option<(((u8, u8, u8), (u8, u8, u8), (u8, u8, u8)), Chrome)>,
-    > = const { std::cell::RefCell::new(None) };
+    static CHROME_MEMO: std::cell::RefCell<Option<(ChromeKey, Chrome)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Memoized chrome bundle for `p` (single-slot: keyed on the three

@@ -108,9 +108,9 @@ jobs:
       - name: Install Xvfb + xdotool + scrot + PIL
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil x11-utils
 
-      - name: Multi-window e2e (W1-W10)
+      - name: Multi-window e2e (W1-W11)
         run: scripts/bin/e2e-windows.sh
 
   e2e-window-controls:
@@ -137,7 +137,7 @@ jobs:
       - name: Install Xvfb + xdotool + openbox + screenshot tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool openbox scrot python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb xdotool openbox scrot python3-pil x11-utils
 
       - name: Window-controls e2e (R1-R5, S1-S4)
         run: scripts/bin/e2e-window-controls.sh
@@ -169,7 +169,7 @@ jobs:
       - name: Install Xvfb + xdotool + scrot + PIL
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil x11-utils
 
       - name: Drag-and-drop e2e (D1-D4)
         run: scripts/bin/e2e-dragdrop.sh
@@ -198,7 +198,7 @@ jobs:
       - name: Install Xvfb + xdotool + xclip
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool xclip
+          sudo apt-get install -y --no-install-recommends xvfb xdotool xclip x11-utils
 
       - name: Border-strip selection e2e
         run: scripts/bin/e2e-edge-select.sh
@@ -227,7 +227,7 @@ jobs:
       - name: Install Xvfb + xdotool + scrot + PIL
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil x11-utils
 
       - name: Notice bubble e2e (N1-N9)
         run: scripts/bin/e2e-notice.sh
@@ -256,9 +256,9 @@ jobs:
       - name: Install Xvfb + xdotool + scrot + PIL
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil
+          sudo apt-get install -y --no-install-recommends xvfb xdotool scrot python3-pil x11-utils
 
-      - name: Cell-background seam e2e (K1-K4)
+      - name: Cell-background seam e2e (K1-K5)
         run: scripts/bin/e2e-bg-seams.sh
 
   e2e-empty-restore:
@@ -285,7 +285,7 @@ jobs:
       - name: Install Xvfb + xdotool
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb xdotool
+          sudo apt-get install -y --no-install-recommends xvfb xdotool x11-utils
 
       - name: Empty-restore e2e (E1-E3)
         run: scripts/bin/e2e-empty-restore.sh

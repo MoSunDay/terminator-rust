@@ -92,15 +92,25 @@ pub fn report_due(now_ms: u64, window_ms: u64) -> bool {
     now_ms.saturating_sub(window_ms) >= REPORT_INTERVAL_MS
 }
 
+/// Usable explicit floor values only (`0` included): unparseable,
+/// negative/non-integer or absurd (> [`MAX_FLOOR_MS`]) -> `None`.
+fn parse_floor_ms_opt(s: &str) -> Option<u64> {
+    s.trim().parse::<u64>().ok().filter(|v| *v <= MAX_FLOOR_MS)
+}
+
 /// `TERMINATOR_FRAME_FLOOR_MS` -> milliseconds. `0` passes through and
 /// DISABLES the floor; unparseable, negative/non-integer or absurd
 /// (> [`MAX_FLOOR_MS`]) values fall back to [`DEFAULT_FLOOR_MS`].
 pub fn parse_floor_ms(s: &str) -> u64 {
-    s.trim()
-        .parse::<u64>()
-        .ok()
-        .filter(|v| *v <= MAX_FLOOR_MS)
-        .unwrap_or(DEFAULT_FLOOR_MS)
+    parse_floor_ms_opt(s).unwrap_or(DEFAULT_FLOOR_MS)
+}
+
+/// Whether a raw `TERMINATOR_FRAME_FLOOR_MS` value is a USABLE explicit
+/// floor (`0` included). Unusable values behave like unset everywhere:
+/// the parser falls back to [`DEFAULT_FLOOR_MS`] and the governor keeps
+/// running, so `FLOOR=abc` cannot silently pin the old cadence.
+pub fn floor_is_explicit(raw: Option<&str>) -> bool {
+    raw.and_then(parse_floor_ms_opt).is_some()
 }
 
 /// f32 seconds -> microseconds for the pacing math, guarding non-finite,
@@ -138,7 +148,8 @@ pub fn cpu_target_pct() -> f32 {
 pub fn governor_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var_os("TERMINATOR_FRAME_FLOOR_MS").is_none() && cpu_target_pct() > 0.0
+        let floor = std::env::var("TERMINATOR_FRAME_FLOOR_MS").ok();
+        !floor_is_explicit(floor.as_deref()) && cpu_target_pct() > 0.0
     })
 }
 
@@ -236,6 +247,22 @@ mod tests {
                 DEFAULT_CPU_TARGET_PCT,
                 "{bad:?} falls back to the default"
             );
+        }
+    }
+
+    #[test]
+    fn floor_explicitness_follows_parser_validity() {
+        for (raw, explicit) in [
+            (None, false),
+            (Some("16"), true),
+            (Some("0"), true),
+            (Some(" 40 "), true),
+            (Some("1000"), true),
+            (Some("1001"), false),
+            (Some("abc"), false),
+            (Some("-5"), false),
+        ] {
+            assert_eq!(floor_is_explicit(raw), explicit, "raw={raw:?}");
         }
     }
 

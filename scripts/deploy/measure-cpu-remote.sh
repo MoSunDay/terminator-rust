@@ -26,6 +26,8 @@
 #   WM_CLASS        xdotool --class for the app window, default terminator-rust
 #   S15_ALLOW_SPLITS=1  opt in to s15 (splits the LIVE window to 8 panes;
 #                   ctl has no close command, so the panes stay open)
+#   S13_ALLOW_FLOOD=1   opt in to s13 (40000 lines into the LIVE pane)
+#   S14_ALLOW_TYPE=1    opt in to s14 (24s 10Hz spinner in the LIVE pane)
 #   LOCAL=1         run the assembled remote script with the LOCAL bash
 #                   instead of ssh (driver self-test only; the matrix runs
 #                   the remote script on the deploy box)
@@ -38,12 +40,16 @@
 # informational cross-check (its PID column stays "-" for the primary
 # socket, so it is NOT authoritative).
 #
-# Scenarios implemented remotely: s1 s2 s3 s4 s7 s8 s11 s13
+# Scenarios implemented remotely: s1 s2 s3 s4 s7 s8 s11 s13 s14 s15
 #   (s5 s6 s9 s10 s12 are documented in agents/perf/index.md but need the
 #   local e2e rig; s7 skips by design - pane-header double-click geometry).
 # Remote exit codes: 0 ok / 2 setup failure (no pid, no pane, no ctl) /
 # 3 skipped (missing xdotool/DISPLAY or a documented non-remote scenario).
 # Local exit: 0 all ok (skips allowed), 1 any scenario failed.
+#
+# Opt-in gates (the scenarios drive a LIVE pane): S13_ALLOW_FLOOD=1 for
+# 40000 lines of cat output, S14_ALLOW_TYPE=1 for a 24s 10Hz spinner,
+# S15_ALLOW_SPLITS=1 for eight panes (ctl cannot close them).
 #
 # Usage: DEPLOY_HOST=m@box SCEN=s1,s2 SAMPLER_ARGS=--json \
 #            scripts/deploy/measure-cpu-remote.sh
@@ -51,7 +57,7 @@ set -euo pipefail
 
 DEFERRED="s5 s6 s9 s10 s12"        # matrix ids that only run on the local e2e rig
 
-usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { awk 'NR > 1 && /^set -euo pipefail/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; }
 
 # Arg handling runs BEFORE the required-env check so `-h` works anywhere.
 case "${1:-}" in
@@ -82,7 +88,10 @@ trap 'rm -rf "$TMP"' EXIT
 cat > "$TMP/prelude" <<'REMOTE'
 set -u
 root=$1; app=$2; ctl=$3; sampler=$4; secs=$5; scen=$6; extra=$7; wmclass=$8; s15allow=${9:-0}
+s13allow=${10:-0}; s14allow=${11:-0}
 S15_ALLOW_SPLITS=$s15allow; export S15_ALLOW_SPLITS
+S13_ALLOW_FLOOD=$s13allow; export S13_ALLOW_FLOOD
+S14_ALLOW_TYPE=$s14allow; export S14_ALLOW_TYPE
 case "$root" in "~") root=$HOME ;; "~/"*) root=$HOME/${root#\~/} ;; esac
 cd "$root" 2>/dev/null || { echo "ERROR: remote repo root not found: $root" >&2; exit 2; }
 [ -f "$sampler" ] || { echo "ERROR: sampler not found: $sampler (in $root)" >&2; exit 2; }
@@ -335,6 +344,10 @@ REMOTE
 body_s13() {
     cat <<'REMOTE'
 
+if [ "${S13_ALLOW_FLOOD:-0}" != "1" ]; then
+    echo "SKIP: s13 floods a LIVE pane with 40000 lines; set S13_ALLOW_FLOOD=1 to opt in."
+    exit 3
+fi
 need_ctl; need_pane
 BIG=/tmp/term-cpu-flood-$$
 seq 1 40000 | sed 's/^/line /' > "$BIG"
@@ -350,6 +363,10 @@ REMOTE
 body_s14() {
     cat <<'REMOTE'
 
+if [ "${S14_ALLOW_TYPE:-0}" != "1" ]; then
+    echo "SKIP: s14 starts a 24s spinner in a LIVE pane; set S14_ALLOW_TYPE=1 to opt in."
+    exit 3
+fi
 need_ctl; need_pane
 echo "setup: 10Hz spinner (240 x 0.1s) - steady-state governor contract"
 echo "  sampling: process (recorded) + MAIN thread (--thread-max1s $PID)"
@@ -423,7 +440,8 @@ run_scenario() {
     fi
     if run_remote "$TMP/body.sh" \
         "$ROOT" "$APP" "$CTL" "$CPU_SAMPLE" "$SAMPLE_SECONDS" "$s" \
-        "$SAMPLER_ARGS" "$WM_CLASS" "${S15_ALLOW_SPLITS:-0}"; then
+        "$SAMPLER_ARGS" "$WM_CLASS" "${S15_ALLOW_SPLITS:-0}" \
+        "${S13_ALLOW_FLOOD:-0}" "${S14_ALLOW_TYPE:-0}"; then
         rc=0
     else
         rc=$?

@@ -102,13 +102,38 @@ pub fn render(ui: &mut egui::Ui, d: &mut Data, idx: usize) {
     let Some(id) = d.st.windows.get(idx).map(|w| w.id) else {
         return;
     };
+    // Pacing aggregation: every viewport pass (root AND secondaries all
+    // land here) folds its focus/minimized state so a FOCUSED secondary
+    // keeps the focus floor even while the root is unfocused, and only
+    // ALL-minimized trips the hidden heartbeat. Missing observations
+    // bias toward latency (focused + visible).
+    let (v_focused, v_minimized) = ui
+        .ctx()
+        .input(|i| (i.viewport().focused, i.viewport().minimized));
+    render::cadence::report_viewport(v_focused, v_minimized);
     // Window outline target: capture the full rect BEFORE the panels
     // below partition it (the border is painted at the end of the pass).
     let win_rect = ui.max_rect();
     d.st.active = idx;
+    // Input in a SECONDARY viewport never passes through the root pass,
+    // so the root's interaction mark cannot see it. Without this the CPU
+    // governor paces the secondary's output wakes to the ~1fps budget
+    // floor while the user is typing there.
+    if ui
+        .ctx()
+        .input(|i| !i.events.is_empty() || i.pointer.any_down())
+    {
+        render::frame_cpu::mark_interaction();
+    }
     // Which window does the user consider "the" terminal? The IPC drain and
     // inspector between render passes act on the focused window.
-    if ui.ctx().input(|i| i.viewport().focused == Some(true)) {
+    let focused_now = ui.ctx().input(|i| i.viewport().focused == Some(true));
+    if focused_now && d.st.focus != idx {
+        // Focus gain is human intent: open the latency window before the
+        // first output frame of a return to this window.
+        render::frame_cpu::mark_interaction();
+    }
+    if focused_now {
         d.st.focus = idx;
         crate::attention::acknowledge_active(&d.st, &mut d.ui, idx);
     }

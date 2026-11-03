@@ -3,7 +3,7 @@
 use egui::{Color32, Pos2, Rect, Vec2};
 
 use super::{Cache, StyleKey};
-use crate::render::grid::DrawArgs;
+use crate::render::grid::{self, DrawArgs};
 use crate::state::CellSize;
 use theme::builtin::dracula;
 use vt_pane::term::{Color, FrameCursor};
@@ -264,7 +264,7 @@ fn end_frame_prunes_unpainted_panes() {
         1,
         &args(&dracula(), &fr, 0.0),
     );
-    cache.end_frame();
+    cache.end_frame(&ctx);
     let before = cache.row_builds;
     cache.paint(
         &ctx,
@@ -278,8 +278,8 @@ fn end_frame_prunes_unpainted_panes() {
         cache.row_builds, before,
         "painting every frame keeps rows cached"
     );
-    cache.end_frame();
-    cache.end_frame();
+    cache.end_frame(&ctx);
+    cache.end_frame(&ctx);
     cache.paint(
         &ctx,
         ui.painter(),
@@ -352,6 +352,164 @@ fn overlay_tracks_cursor_alpha() {
             .any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.corner_radius != egui::CornerRadius::ZERO && r.fill != Color32::TRANSPARENT)),
         "hidden cursor paints no block"
     );
+}
+
+/// A frame with NO row generations must still build every row on the
+/// first paint (the old `u64::MAX` sentinel matched a fresh entry) and
+/// replay it on the second.
+#[test]
+fn missing_row_generations_build_then_replay() {
+    let (ctx, ui) = test_ui("row-cache-missing-gen");
+    let mut cache = Cache::default();
+    let fr = frame(3, vec![]);
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(&ctx),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
+    assert_eq!(cache.row_builds, 3, "first paint must build every row");
+    let before = cache.row_builds;
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(&ctx),
+        1,
+        &args(&dracula(), &fr, 0.0),
+    );
+    assert_eq!(
+        cache.row_builds, before,
+        "missing generations replay once built"
+    );
+    drain(&ctx);
+}
+
+/// An atlas-size change requests exactly one corrective single-pass
+/// frame, and the pane's stored StyleKey stays stale so the next frame's
+/// real bake key drops every row.
+#[test]
+fn atlas_change_requests_corrective_frame_and_rebuilds_stale_rows() {
+    let (ctx, ui) = test_ui("row-cache-atlas-guard");
+    let mut cache = Cache::default();
+    let fr = frame(2, vec![1, 1]);
+    let real = ctx.fonts(|f| f.font_image_size());
+    let mut stale = style(&ctx);
+    stale.bake.atlas_size = [
+        real[0].saturating_mul(2).max(1),
+        real[1].saturating_mul(2).max(1),
+    ];
+    // Prime as a pane painted BEFORE another pane grew the atlas: the
+    // stored invalidation key is the pre-growth one.
+    cache.paint(&ctx, ui.painter(), 7, stale, 1, &args(&dracula(), &fr, 0.0));
+    drain(&ctx);
+    // Pretend the atlas grew after the last paint of the frame.
+    cache.atlas = Some(stale.bake.atlas_size);
+    cache.end_frame(&ctx);
+    assert!(
+        ctx.has_requested_repaint(),
+        "atlas growth must request a corrective frame"
+    );
+    let before = cache.row_builds;
+    cache.paint(
+        &ctx,
+        ui.painter(),
+        7,
+        style(&ctx),
+        2,
+        &args(&dracula(), &fr, 0.0),
+    );
+    assert_eq!(
+        cache.row_builds - before,
+        2,
+        "the real key differs from the stale stored key -> every row rebuilds"
+    );
+    drain(&ctx);
+}
+
+/// Real atlas growth inside one `paint`: the row that adds glyphs must
+/// be baked against the FINAL atlas size, not the key captured before
+/// layout. Vertex parity against a direct bake with the final key would
+/// fail on every pre-fix UV.
+#[test]
+fn atlas_growth_inside_paint_bakes_against_the_final_size() {
+    let (ctx, ui) = test_ui("row-cache-atlas-growth");
+    let mut cache = Cache::default();
+    let mut fr = frame(1, vec![1]);
+    fr.cursor.visible = false;
+    // Distinct GB2312 hanzi at a large size force the atlas to grow
+    // while the row lays out.
+    let chars: Vec<char> = "一二三四五六七八九十".chars().collect();
+    for (i, ch) in chars.iter().enumerate() {
+        fr.cells[0][i] = CellData {
+            text: ch.to_string(),
+            ..CellData::default()
+        };
+    }
+    let cell = CellSize {
+        w: 64.0,
+        h: 72.0,
+        wide_size: 64.0,
+        w_px: 64,
+        h_px: 72,
+    };
+    let rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 72.0));
+    let mut st = style(&ctx);
+    st.rect = rect;
+    st.cell = cell;
+    st.font_size = 60.0;
+    let a = DrawArgs {
+        fr: &fr,
+        pal: &dracula(),
+        cell,
+        font_size: 60.0,
+        cursor_alpha: 0.0,
+        blink_on: true,
+        fill_alpha: 1.0,
+    };
+    let before = ctx.fonts(|f| f.font_image_size());
+    cache.paint(&ctx, ui.painter(), 7, st, 1, &a);
+    let after = ctx.fonts(|f| f.font_image_size());
+    assert_ne!(before, after, "test payload must grow the atlas");
+
+    let mut out = ctx.end_pass();
+    out.textures_delta.clear();
+    let got: Vec<egui::epaint::Vertex> = out
+        .shapes
+        .iter()
+        .map(|c| &c.shape)
+        .flat_map(|s| match s {
+            egui::Shape::Mesh(m) => m.vertices.clone(),
+            other => panic!("cached layer must deliver a mesh, got {other:?}"),
+        })
+        .collect();
+    ctx.begin_pass(egui::RawInput::default());
+    let final_key = super::BakeKey::for_context(&ctx);
+    let mut want: Vec<egui::epaint::Vertex> = Vec::new();
+    for m in super::mesh::bake(1.0, final_key, grid::bg_shapes(rect, &a)) {
+        want.extend(m.vertices.iter().copied());
+    }
+    for m in super::mesh::bake(1.0, final_key, grid::row_shapes(&ctx, rect, 0, None, &a)) {
+        want.extend(m.vertices.iter().copied());
+    }
+    assert_eq!(got.len(), want.len(), "cached vertex count");
+    for (i, (a, b)) in got.iter().zip(want.iter()).enumerate() {
+        assert!(
+            (a.pos - b.pos).length() < 1e-4
+                && (a.uv - b.uv).length() < 1e-5
+                && a.color == b.color,
+            "vertex {i} diverged: got pos={:?} uv={:?} color={:?}; want pos={:?} uv={:?} color={:?}",
+            a.pos,
+            a.uv,
+            a.color,
+            b.pos,
+            b.uv,
+            b.color
+        );
+    }
+    drain(&ctx);
 }
 
 /// Atlas growth and tessellation-option changes bake different vertices

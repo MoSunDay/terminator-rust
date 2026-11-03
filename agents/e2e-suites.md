@@ -38,17 +38,22 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
   `native` 用来测真实驱动）、S1b 常驻探针门、wake 往返 ≤2000ms
   （实测 19ms）、S7 重命名编辑器：期间 frames==0 + 回车提交
   （egui TextEdit 的 caret blink 已在 ui/style.rs 钉住）、
-  S2 spinner / S13 busy 的 fps 门（≤65；TERMINATOR_FRAME_FLOOR_MS
-  默认 16 ≈ 62.5fps，pass 统计见 render/stats.rs）、S14 10Hz 稳态
-  （主线程 max1s ≤1%、fps ≤12，process 只记录）与 S15 8 pane 空闲
-  （frames==0、process avg <1%、max1s ≤1%）；`IDLE_SETTLE_S=6`
+  S2 spinner / S13 busy 的 fps 门（≤65；基础 floor 16ms ≈ 62.5fps，
+  governor 只会抬高，pass 统计见 render/stats.rs）、S14 10Hz 稳态
+  （启动日志必须 `cpu governor: enabled` —— 显式合法 floor 或
+  target=0 会直接 FAIL；主线程 max1s ≤1%、fps ≤12，process 只记录）
+  与 S15 8 pane 空闲（frames==0、process avg <1%、max1s ≤1%）；
+  release 验收走 `verify-release.sh`（`env -i` 清掉 APP_BIN/CTL_BIN/
+  IDLE_*/TERMINATOR_FRAME_FLOOR_MS/TERMINATOR_CPU_TARGET_PCT）；
+  `IDLE_SETTLE_S=6`
   在采样前隔离 setup 的 ctl traffic 与首帧 GL 抖动。走 `e2e_sandbox`
   → TERMINATOR_OPAQUE=1 + TERMINATOR_NO_MOTION=1（S1/S7 必须是
   帧静止态；悬停/光标动画的驱动另有 perf 用例覆盖）
 - mouse/key e2e（`e2e-mouse-key.sh`）：裸 Ctrl+C 的 ^C 回显、跨 pane 拖拽
   SGR 投递到按下者、Shift+PageUp/End 翻页、Ctrl+C 真打断前台任务
 - multi-window e2e（`e2e-windows.sh`）：Ctrl+Shift+N 真开第二个 X 窗口、
-  跨窗口输入隔离、关最后 pane 即关窗口、W6-W11（含跨窗口 chip 拖拽、
+  跨窗口输入隔离（W2b：20 个并发 ctl 往返期间向次级窗口打字，键不得
+  落到 root 且 ctl 不得超时）、关最后 pane 即关窗口、W6-W11（含跨窗口 chip 拖拽、
   三窗口拖放不得误 resize 第三窗口的 SIGWINCH 探针）
 - window-chrome e2e（`e2e-window-controls.sh`）：需要 OPENBOX 的边角
   resize / 最大化 / 最小化 / tab 溢出滚动 / 关闭 X 弹确认框（R6：Esc、
@@ -122,11 +127,13 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
   watcher via ctl send (a shell `trap` is NOT a usable probe - dash
   defers/loses it while waiting in the poll loop; python runs the
   handler promptly mid-sleep), gate = no exact-line `^WINCH$` in
-  capture; the source window is externally resized to a distinctive
-  600x460 first so the WRONG resize is not a geometry no-op (why W7-W10
-  never caught the bug: two windows made the dying viewport's retarget
-  slot coincide with the destination and equal-size grids made the
-  spurious TIOCSWINSZ a no-op). W10's pixel gates are THEME-AGNOSTIC (DEFAULT = kanagawa-wave):
+  capture; W2b hammers ctl while typing into the secondary (M6
+  secondary-input/IPC wake race); the source window is externally
+  resized to a distinctive
+  600x460 first so the WRONG resize is not a geometry no-op (why only
+  W11 of the W7-W11 family catches the bug: two windows made the dying
+  viewport's retarget slot coincide with the destination and equal-size
+  grids made the spurious TIOCSWINSZ a no-op). W10's pixel gates are THEME-AGNOSTIC (DEFAULT = kanagawa-wave):
   chip_edges = FIRST wide non-bare-chrome run (chips left-aligned, the
   trailing chrome merges into a LONGER run), strip_diff = strip band vs a
   baseline scrot (never e2e-lib's dracula fill scan). CI runs it (zig via

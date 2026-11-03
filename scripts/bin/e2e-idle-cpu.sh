@@ -11,7 +11,7 @@
 #     render/stats.rs): one line per second that had frames, so "no new
 #     frame-stats line" is exactly fps == 0.
 #
-# Phases (see agents/perf/index.md for the S1..S13 matrix):
+# Phases (see agents/perf/index.md for the S1..S15 matrix):
 #   S1  idle      ASSERTED: max1s < 1% of one core AND fps == 0.
 #       The perf contract. Anything that wakes the loop (a 16/50ms tick,
 #       an unpinned cursor blink, a poll from a gesture) shows up here.
@@ -29,8 +29,9 @@
 #       holds the keyboard and re-renders every frame. Also asserts the
 #       typed name never leaks into the pane and is committed on Enter.
 #   S2  60Hz spinner: `printf ... \\r` every 16ms. ASSERTED fps <= 65:
-#       output pacing (TERMINATOR_FRAME_FLOOR_MS, default 16ms) must keep
-#       output-driven frames at/below the output rate, never faster.
+#       output pacing (base TERMINATOR_FRAME_FLOOR_MS=16ms, raised by the
+#       CPU governor) must keep output-driven frames at/below the output
+#       rate, never faster.
 #   S13 busy: `cat` a 40k-line file. ASSERTED fps <= 65, CPU recorded.
 #   S14 10Hz spinner (steady state): the CPU-budget governor must keep the
 #       MAIN thread inside 1% while it downsamples output frames
@@ -73,6 +74,8 @@
 # ceilings assume the default 16ms pacing floor: exporting
 # TERMINATOR_FRAME_FLOOR_MS=0 (unthrottled upper bound) is a measurement
 # mode, not a gate mode, and will trip the S2/S13/S14 ceilings on purpose.
+# S14 additionally FAILS when the startup governor line says disabled, so
+# an inherited floor/target cannot turn the governor gate vacuous.
 #
 # Usage: scripts/bin/e2e-idle-cpu.sh   (repo root; Xvfb + xdotool +
 # python3 needed). Env:
@@ -154,7 +157,9 @@ busy_maxfps=0; busy_max1s=0; busy_pass=0us
 spin10_max1s=0; spin10_avg=0; spin10_proc=0; spin10_frames=0; spin10_maxfps=0
 panes_max1s=0; panes_frames=0
 
-if [ -z "${APP_BIN:-}" ] && [ -z "${CTL_BIN:-}" ]; then
+# Build when EITHER binary is unset (a half-overridden pair must still
+# build the missing one; both set skips the build entirely).
+if [ -z "${APP_BIN:-}" ] || [ -z "${CTL_BIN:-}" ]; then
     # Build first: the sandboxed HOME below would hide rustup/toolchains.
     step "cargo build -p app -p ctl --bins"
     cargo build -p app -p ctl --bins >/dev/null
@@ -169,7 +174,7 @@ export TERMINATOR_FRAME_STATS=1
 # S7 must be composition-free: a stray XIM server (a shared box's ibus
 # --xim) would eat the ASCII rename keys into a preedit instead.
 unset XMODIFIERS || true
-step "app=$APP ctl=$CTL display=$DISPLAY_N floor=${TERMINATOR_FRAME_FLOOR_MS:-16(default)}ms backend=$IDLE_GPU_BACKEND"
+step "app=$APP ctl=$CTL display=$DISPLAY_N floor=${TERMINATOR_FRAME_FLOOR_MS:-auto(16ms base)} cpu_target=${TERMINATOR_CPU_TARGET_PCT:-1.0(default)}% backend=$IDLE_GPU_BACKEND"
 
 GPU_ENV=()
 if [ "$IDLE_GPU_BACKEND" != "native" ] && [ -n "$IDLE_GPU_BACKEND" ]; then
@@ -187,6 +192,11 @@ if [ ! -r "/proc/$APP_PID/stat" ]; then
     APP_PID=$ALT
 fi
 WID=$(wait_win '^terminator-rust$') || fail "app window never appeared"
+# Runtime gate: the app logs its EFFECTIVE governor state at startup, so
+# a caller-pinned frame floor cannot make S14 pass without a governor.
+GOV_LINE=$(grep -m1 'cpu governor:' "$ROOT/app.log" || true)
+[ -n "$GOV_LINE" ] || fail "no 'cpu governor:' startup line in $ROOT/app.log - cannot assert the governor state"
+echo "governor: $GOV_LINE"
 # Let the prompt + startup frames settle before the first sample.
 sleep 3
 
@@ -397,6 +407,8 @@ float_le "$busy_maxfps" "$MAX_FPS_BUSY" \
 
 
 # --- S14: 10Hz output steady state (governor contract) -------------------
+grep -q 'cpu governor: enabled' <<<"$GOV_LINE" \
+    || fail "S14: governor is DISABLED at startup (explicit TERMINATOR_FRAME_FLOOR_MS or CPU_TARGET_PCT=0? line: $GOV_LINE) - the 10Hz contract would pass vacuously"
 step "S14 10Hz spinner: governor must hold main-thread max1s <= ${S14_MAX1S_PCT}% and fps <= ${MAX_FPS_SPIN10}"
 # The 10Hz steady state IS the <1% contract for output (the 60Hz spinner
 # in S2 is an upper bound only): each output burst wakes the loop, and

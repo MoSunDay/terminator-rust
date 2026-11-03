@@ -34,6 +34,24 @@ VERSION=$(sed -n 's/^version *= *"\([^"]*\)" *$/\1/p' Cargo.toml | head -n1)
 TRIPLE=${1:-$(rustc -vV | sed -n 's/^host: //p')}
 [ -n "$TRIPLE" ] || fail "cannot detect the host triple; pass one explicitly"
 
+# Guard 1: only pack a CLEAN tracked tree. A dirty tree packs unreviewed
+# changes into an artifact that can never be reproduced from git; commit
+# first (ALLOW_DIRTY=1 is the local-repro escape hatch).
+if [ "${ALLOW_DIRTY:-0}" != "1" ] && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        git status --porcelain --untracked-files=no >&2
+        fail "tracked tree is dirty - commit first (or ALLOW_DIRTY=1 to pack anyway)"
+    fi
+fi
+
+# Guard 2: a tag build must match the workspace version - the release
+# notes and the artifact name both claim it. Non-v refs (branches,
+# workflow_dispatch, local runs) skip the check.
+if [ -n "${GITHUB_REF_NAME:-}" ] && [ "${GITHUB_REF_NAME#v}" != "$GITHUB_REF_NAME" ]; then
+    [ "$GITHUB_REF_NAME" = "v$VERSION" ] \
+        || fail "tag $GITHUB_REF_NAME does not match workspace version $VERSION"
+fi
+
 TAR_BIN=tar
 if ! tar --version 2>/dev/null | grep -q 'GNU tar'; then
     command -v gtar >/dev/null 2>&1 \
@@ -50,7 +68,11 @@ for f in target/release/terminator-rust target/release/terminator-ctl target/rel
     [ -f "$f" ] || fail "$f missing (run cargo build --release first)"
 done
 
+# Drop any stale artifacts for THIS dirname only (a half-finished earlier
+# pack must not leak into the fresh one); other dist/ outputs are left
+# alone.
 rm -rf "$STAGE"
+rm -f "$TGZ" "$TGZ.sha256"
 mkdir -p "$STAGE/bin"
 install -m 0755 target/release/terminator-rust "$STAGE/bin/terminator-rust"
 install -m 0755 target/release/terminator-ctl "$STAGE/bin/terminator-ctl"

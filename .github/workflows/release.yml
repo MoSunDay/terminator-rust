@@ -39,6 +39,19 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+
+      # A tag build's artifact names and release notes all claim the
+      # workspace version - refuse the mismatch before burning a build.
+      # Branch/workflow_dispatch builds have no tag to match and skip.
+      - name: Tag/version guard
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -eu
+          VERSION=$(sed -n 's/^version *= *"\([^"]*\)" *$/\1/p' Cargo.toml | head -n1)
+          [ -n "$VERSION" ] || { echo "cannot read workspace version" >&2; exit 1; }
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ] \
+            || { echo "tag $GITHUB_REF_NAME != workspace version v$VERSION" >&2; exit 1; }
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -103,6 +116,12 @@ jobs:
           path: dist
           pattern: release-*
           merge-multiple: true
+
+      # Revalidate the UPLOADED artifacts against their sidecars before
+      # anything publishes: the build job checked its local files, the
+      # upload/download hop must not silently corrupt or swap them.
+      - name: Revalidate artifact checksums
+        run: (cd dist && sha256sum -c ./*.sha256)
 
       - name: Compose release notes (tag body + checksums)
         run: |
