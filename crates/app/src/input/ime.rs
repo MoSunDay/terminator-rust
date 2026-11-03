@@ -14,6 +14,15 @@
 //! [`sync`] falls back to the remembered pane + latch on frames whose
 //! live anchor is missing (see [`effective_target`]).
 //!
+//! winit 0.30 X11/XIM stops delivering preedit events for every composition
+//! AFTER the first commit (ibus libpinyin keeps drawing its native panel,
+//! but the app never sees `Event::Ime` again). Recreating the input context
+//! at that committed boundary (allow/disallow IME) makes it WORSE - the
+//! ibus server wedges (keys stay XFilterEvent-consumed, the panel pops, no
+//! preedit callback ever returns). What repairs it is a real
+//! FocusOut/FocusIn pair on the SAME context (see
+//! [`restart_after_commit`]). Linux-only, same as the XIM bug.
+//!
 //! A focused TextEdit (rename editor, Settings text fields) publishes its
 //! own `o.ime` and never goes through the pane path. Its composition is
 //! tracked per window by a latch folded from the same `Event::Ime`
@@ -35,11 +44,70 @@ mod popup;
 #[cfg(target_os = "linux")]
 mod x11;
 
-fn avoid_native_overlap(ctx: &Context, cursor: Rect, composing: bool) {
+/// Re-arm XIM for the composition after a commit/reset (module note).
+/// Runs for pane AND rename-editor events: on winit X11, ibus's XIM
+/// server stops delivering preedit callbacks to a context once it has
+/// committed through it. Recreating the context via winit's
+/// `set_ime_allowed(false)+set_ime_allowed(true)` makes it WORSE - the
+/// server wedges (keys are still XFilterEvent-consumed and the panel pops,
+/// but no preedit callback ever returns; reproduced 4/4 in the M3e
+/// probe). What revives it is a real FocusOut/FocusIn pair: winit's
+/// XI2 handlers XUnsetICFocus/XSetICFocus the SAME ic across that
+/// pair, which resets the server-side preedit state. So the re-arm is
+/// a pure focus bounce, one phase per frame.
+pub(crate) fn restart_after_commit(ctx: &Context, ui: &mut crate::state::WindowUi) {
     #[cfg(target_os = "linux")]
-    x11::sync(ctx, cursor, composing);
+    {
+        // Phase 2 of finish_rearm (see below): 2 = bounce out pending.
+        ui.ime_rearm = 2;
+        ctx.request_repaint();
+    }
     #[cfg(not(target_os = "linux"))]
-    let _ = (ctx, cursor, composing);
+    let _ = (ctx, ui);
+}
+
+/// Advance a pending XIM re-arm by one phase. Call once per window pass
+/// BEFORE processing the frame's IME events. Phases: 2 = bounce focus out,
+/// 3 = bounce focus back in (see [`restart_after_commit`] for why a bounce
+/// and not a context recreation). A mid-flight restart (a commit landing
+/// during a bounce) just re-arms phase 2, which is safe: a second bounce
+/// on an already-focused window is harmless.
+pub(crate) fn finish_rearm(ctx: &Context, ui: &mut crate::state::WindowUi) {
+    #[cfg(target_os = "linux")]
+    match ui.ime_rearm {
+        0 | 1 => {
+            ui.ime_rearm = 0;
+        }
+        2 => {
+            if x11::begin_focus_bounce() {
+                ui.ime_rearm = 3;
+            } else {
+                // Focus is not on our window right now: the FocusIn
+                // that eventually lands will XSetICFocus for us, so a
+                // bounce is unnecessary. Done.
+                ui.ime_rearm = 0;
+            }
+            ctx.request_repaint();
+        }
+        _ => {
+            ui.ime_rearm = 0;
+            x11::finish_focus_bounce();
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (ctx, ui);
+}
+
+fn avoid_native_overlap(ctx: &Context, cursor: Rect, composing: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        x11::sync(ctx, cursor, composing)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (ctx, cursor, composing);
+        false
+    }
 }
 
 /// Platform IME popup anchor derived from the pane cursor cell.
@@ -66,15 +134,43 @@ fn spot_at_baseline() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_none()
 }
 
-/// Follow the terminal's current cursor, remembering it across hidden-cursor
-/// or resize transition frames while composing. A commit only writes to the
-/// PTY: its echo can arrive AFTER the next Preedit, so freezing the first
-/// cursor would paint the next word over that late echo indefinitely.
-///
-/// Keeping output enabled and interrupt-free protects the native composition;
-/// a valid position update does not disable IME or erase marked text. The
-/// egui-winit backend already updates native coordinates on every input event,
-/// even when the rectangle is unchanged.
+// Follow the terminal's current cursor, remembering it across hidden-cursor
+// or resize transition frames while composing. A commit only writes to the
+// PTY: its echo can arrive AFTER the next Preedit, so freezing the first
+// cursor would paint the next word over that late echo indefinitely.
+// Keeping output enabled and interrupt-free protects the native composition;
+// a valid position update does not disable IME or erase marked text. The
+// egui-winit backend already updates native coordinates on every input event,
+// even when the rectangle is unchanged.
+
+/// Drop a pane preedit whose composition cursor moved: XIM delivers no
+/// end-of-preedit event for a BackSpace-emptied composition, so a latched
+/// preedit must die once the pane cursor leaves the cell it was latched at
+/// (the program repositioned the cursor; a live composition stays at its
+/// anchor and re-latches on every preedit update).
+pub fn drop_moved_preedit(
+    ime: &mut Option<String>,
+    latched: &mut Option<(u16, u16)>,
+    cursor: (u16, u16),
+) -> bool {
+    if ime.is_none() {
+        *latched = None;
+        return false;
+    }
+    match *latched {
+        None => {
+            *latched = Some(cursor);
+            false
+        }
+        Some(pos) if pos == cursor => false,
+        Some(_) => {
+            *ime = None;
+            *latched = None;
+            true
+        }
+    }
+}
+
 pub fn pane_anchor(
     composing: bool,
     live: Option<Rect>,
@@ -261,7 +357,14 @@ pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
             Some(w) => update_editor_latch(ctx, &mut w.ui, Instant::now()),
             None => false,
         };
-        avoid_native_overlap(ctx, cursor, composing);
+        if avoid_native_overlap(ctx, cursor, composing) {
+            // The chased candidate panel vanished: ibus cancelled the
+            // editor composition silently (no preedit-done event ever
+            // arrives), so the latch has to drop here.
+            if let Some(w) = d.st.windows.get_mut(idx) {
+                clear_editor_latch(&mut w.ui);
+            }
+        }
         return; // a focused rename editor owns IME this frame
     }
     // No editor published IME output this frame: any editor latch (and
@@ -282,8 +385,9 @@ pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
     );
     let alive = pane.is_some_and(|p| pane_alive(p, d));
     let out = platform_ime_output(alive, cursor, spot_at_baseline());
+    let mut vanished = false;
     if let Some(out) = &out {
-        avoid_native_overlap(ctx, out.cursor_rect, composing);
+        vanished = avoid_native_overlap(ctx, out.cursor_rect, composing);
     }
     // Assign unconditionally: Some enables IME at the pane cursor, None
     // turns it off (no pane to type into). While composing, the
@@ -291,6 +395,15 @@ pub fn sync(ctx: &Context, d: &mut Data, idx: usize) {
     ctx.output_mut(|o| o.ime = out);
     if let Some(w) = d.st.windows.get_mut(idx) {
         w.ui.ime_last_pane = pane;
+        if vanished {
+            // Candidate panel gone mid-composition: the server-side
+            // cancel is silent (XIM fires no preedit-done on
+            // Escape/BackSpace empties) - drop the stale preedit latch
+            // here or the bottom-row preview scroll outlives the
+            // cancelled composition (e2e-ime M3e-l).
+            w.ui.ime = None;
+            w.ui.ime_pos = None;
+        }
     }
 }
 

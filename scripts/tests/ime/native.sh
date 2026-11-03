@@ -14,6 +14,10 @@ wait_capture DELAY_READY || fail "M3c: delayed echo fixture did not start"
 sleep 0.2
 xdotool type --delay 40 hanzi
 xdotool key --clearmodifiers space
+# Let the post-commit XIM re-arm (focus bounce, a few frames) settle
+# before starting the NEXT composition; this step covers placement, not the
+# immediate-post-commit race.
+sleep 2.0
 xdotool type --delay 40 ni
 sleep 1.5
 python3 scripts/tests/ime/assertions.py snapshot "$ROOT/delayed.png"

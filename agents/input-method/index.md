@@ -49,6 +49,27 @@ X11 只使用候选位置矩形的起点，所以报告光标单元格左下角�
   目标 2px 内/与上次命令一致就不 XMoveWindow）让每趟复查零 X 写入；
   非 composing 帧 repair 早退，普通帧零 X 流量（get_input_focus/pid
   往返也不再发生）。
+- XIM 提交后的重臂 = 纯 focus bounce（2026-11-03 定案，M1–M7 全绿）：
+  ibus XIM 提交过一次后，该 IC 的 preedit 回调就再也不来（winit 侧
+  无感知）。**禁止用 `IMEAllowed(false)+true` 重建 IC**——winit 的
+  set_ime_allowed 会 remove+create context，ibus 服务端随即楔死：按键
+  仍被 XFilterEvent 吃掉（面板照常弹出）但 preedit 回调永远不达客户端
+  （M3e 探针 4/4 复现，e2e-ime 卡在“underline is missing”数周的真凶
+  之一）。正确做法：本进程持有焦点时 `XSetInputFocus` 到 root 再还回
+  （x11.rs begin/finish_focus_bounce，_NET_WM_PID 自校验），winit 的
+  XI2 FocusOut/FocusIn 处理器对同一个 IC 调 XUnsetICFocus/XSetICFocus，
+  服务端 preedit 状态就此复位。焦点不在本进程时跳过即可——将来的
+  FocusIn 自然armed。keyboard.rs 每帧先 finish_rearm 再 restart。
+- XIM 取消是静默的：Escape/BackSpace 把 preedit 清空时 ibus 不发
+  preedit-done（探针实测事件流止于最后一个 Update，面板已消失）。两个
+  恢复信号：候选面板消失（x11.rs repair 里 cached 面板过了
+  CANDIDATE_GRACE 且全树探测为空 → sync 返回 vanished，ime.rs 清
+  pane/editor 闩——末行 preview-scroll 靠它回滚，M3e-l）；以及
+  keyboard.rs 的 raw-key 恢复：闩存续期间任何原生 Key 按下都证明组合
+  已死（活组合的每个键都被 XIM 过滤，M1），直接清闩，组合若真活着下
+  一个 Update 会重新闩上。`WindowUi.ime_pos` + drop_moved_preedit 兜底
+  “程序移走了光标”类陈旧预编辑；screen.rs 必须先清后读 text/composing
+  （同帧生效，不留一帧陈旧 preview）。
 - XIM 服务端生命周期陷阱（2026-11-01，实机 fcitx5 5.1.7+rime）：fcitx5
   在应用启动后被重启（本机单日出现 4 个 fcitx5 PID；更早一次是 xim
   addon 被运行时 unload），已运行实例的 XIC 永久失联——winit 的

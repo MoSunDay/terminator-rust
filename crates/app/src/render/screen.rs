@@ -310,6 +310,17 @@ pub fn screen(ui: &mut Ui, d: &mut Data) {
                 let sync = session_map::sync_frame(s, content.width(), content.height(), cell);
                 let fgen = sync.gen;
                 let fr = sync.frame;
+                if Some(pane) == focused {
+                    if let Some(w) = st.win_mut() {
+                        crate::input::ime::drop_moved_preedit(
+                            &mut w.ui.ime,
+                            &mut w.ui.ime_pos,
+                            (fr.cursor.x, fr.cursor.y),
+                        );
+                    }
+                }
+                // Read AFTER the stale-preedit clear: the same frame must
+                // paint the cleared state, not one frame of stale preview.
                 let text = st.win().and_then(|w| w.ui.ime.clone());
                 let composing =
                     Some(pane) == focused && text.as_deref().is_some_and(|t| !t.is_empty());

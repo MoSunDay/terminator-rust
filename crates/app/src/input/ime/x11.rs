@@ -2,7 +2,7 @@
 //! composing and an X11 window belonging to this process owns focus. Checked
 //! protocol replies tolerate windows disappearing without a global Xlib error
 //! handler.
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -109,23 +109,29 @@ fn monitor_of(s: &State, caret: &Rect) -> Result<Option<Rect>> {
 /// once settled: a move is issued only when `decide_move` says the panel is
 /// not where we last put it (or the target genuinely moved), so the IME
 /// server's own repositioning no longer starts a per-frame tug-of-war.
-fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<()> {
+/// Returns the panel-vanish cancel signal: `true` = the chased panel
+/// vanished while composing (see the `None =>` arm below).
+fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<bool> {
     // No work at all outside composition (the overlap branch is
     // composing-only too); this also skips the per-frame X round-trips
-    // (get_input_focus/pid) on ordinary frames.
+    // (get_input_focus/pid) on ordinary frames. Clearing the chase here
+    // resets the panel identity between compositions so a stale window
+    // never reports a vanish on the next one.
     if !composing {
-        return Ok(());
+        s.candidate = None;
+        s.commanded = None;
+        return Ok(false);
     }
     let focus = s.conn.get_input_focus()?.reply()?.focus;
     if focus == 0 || focus == 1 {
-        return Ok(());
+        return Ok(false);
     }
     let pid = s
         .conn
         .get_property(false, focus, s.pid_atom, AtomEnum::CARDINAL, 0, 1)?
         .reply()?;
     if pid.value32().and_then(|mut v| v.next()) != Some(std::process::id()) {
-        return Ok(());
+        return Ok(false);
     }
     let at = s.conn.translate_coordinates(focus, s.root, 0, 0)?.reply()?;
     let caret = local_caret.translate(vec2(f32::from(at.dst_x), f32::from(at.dst_y)));
@@ -140,13 +146,14 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<()> {
         // Briefly unmapped while the IME redraws candidates: keep the
         // identity and re-check on the next frame.
         None if s.last_seen.elapsed() < CANDIDATE_GRACE => {
-            return Ok(());
+            return Ok(false);
         }
         None => {
+            let had = s.candidate.is_some();
             s.candidate = None;
             s.commanded = None;
             if s.last_probe.elapsed() < PROBE_EVERY {
-                return Ok(());
+                return Ok(false);
             }
             s.last_probe = Instant::now();
             let windows = s.conn.query_tree(s.root)?.reply()?.children;
@@ -159,14 +166,21 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<()> {
             if candidates.len() == 1 {
                 s.last_seen = Instant::now();
                 candidates.into_iter().next()
+            } else if candidates.is_empty() && had {
+                // The panel we were chasing is unmapped and nothing took
+                // its place: the server cancelled the composition
+                // silently (Escape/BackSpace empty preedit fires no
+                // preedit-done); this disappearance is the only cancel
+                // signal the client gets.
+                return Ok(true);
             } else {
                 // Panel not mapped yet / ambiguous menu: re-check next frame.
-                return Ok(());
+                return Ok(false);
             }
         }
     };
     let Some((window, bounds)) = candidate else {
-        return Ok(());
+        return Ok(false);
     };
     s.candidate = Some(window);
     // Both branches are composing-only by construction (the guard above);
@@ -179,10 +193,10 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<()> {
         monitor.and_then(|m| follow_row(caret, bounds, m))
     };
     let Some(target) = target else {
-        return Ok(());
+        return Ok(false);
     };
     match decide_move(bounds.min, s.commanded, target) {
-        None => Ok(()),
+        None => Ok(false),
         Some(at) => {
             s.conn
                 .configure_window(
@@ -194,32 +208,102 @@ fn repair(s: &mut State, local_caret: Rect, composing: bool) -> Result<()> {
                 .check()?;
             s.conn.flush()?;
             s.commanded = Some(at);
-            Ok(())
+            Ok(false)
         }
     }
 }
 
-pub fn sync(ctx: &Context, caret: Rect, composing: bool) {
+// Force a real X FocusOut/FocusIn pair for the focused top-level window
+// owned by this process. winit's X11 backend XUnsetICFocus/XSetICFocus the
+// SAME ic from its XI FocusOut/FocusIn handlers, and that pair is what
+// resets the ibus server-side preedit state after a commit - recreating
+// the context instead wedges the server (see ime::restart_after_commit).
+thread_local! {
+    /// Window whose focus the bounce is holding (set by the FocusOut half).
+    static BOUNCE: std::cell::Cell<Window> = const { std::cell::Cell::new(0) };
+}
+
+fn focused_self() -> Result<Option<Window>> {
+    let (conn, screen) = x11rb::connect(None)?;
+    let root = conn.setup().roots[screen].root;
+    let pid_atom = conn.intern_atom(false, b"_NET_WM_PID")?.reply()?.atom;
+    let win = conn.get_input_focus()?.reply()?.focus;
+    if win == 0 || win == 1 || win == root {
+        return Ok(None);
+    }
+    // Never bounce another process's window (focus can race a switch).
+    let pid = conn
+        .get_property(false, win, pid_atom, AtomEnum::CARDINAL, 0, 1)?
+        .reply()?;
+    Ok((pid.value32().and_then(|mut v| v.next()) == Some(std::process::id())).then_some(win))
+}
+
+fn set_focus(conn: &RustConnection, win: Window) -> Result<()> {
+    conn.set_input_focus(InputFocus::PARENT, win, Time::CURRENT_TIME)?
+        .check()?;
+    conn.flush()?;
+    Ok(())
+}
+
+/// FocusOut half of the XIM re-arm: move focus to the root while remembering
+/// this process's focused top-level window. Returns true when the bounce was
+/// actually started (a focused self was found and focus moved to root);
+/// false when this process holds no focused window - nothing to bounce, and
+/// the eventual FocusIn arms the ic anyway.
+pub(crate) fn begin_focus_bounce() -> bool {
+    (|| -> Result<bool> {
+        let Some(win) = focused_self()? else {
+            return Ok(false);
+        };
+        let (conn, screen) = x11rb::connect(None)?;
+        let root = conn.setup().roots[screen].root;
+        set_focus(&conn, root)?;
+        BOUNCE.with(|b| b.set(win));
+        Ok(true)
+    })()
+    .unwrap_or(false)
+}
+
+/// FocusIn half: winit's X11 backend only calls XSetICFocus from this event,
+/// which is what (re)arms the ic the bounce defocused.
+pub(crate) fn finish_focus_bounce() {
+    let _ = (|| -> Result<()> {
+        let win = BOUNCE.with(Cell::get);
+        if win == 0 {
+            return Ok(());
+        }
+        BOUNCE.with(|b| b.set(0));
+        let (conn, _) = x11rb::connect(None)?;
+        set_focus(&conn, win)
+    })();
+}
+
+/// One pass of the panel chase (see [`repair`]). Returns the panel-vanish
+/// cancel signal: `true` when the chased candidate panel unmapped
+/// mid-composition with nothing taking its place - only meaningful while
+/// `composing` (outside it the chase is reset and never reports).
+pub fn sync(ctx: &Context, caret: Rect, composing: bool) -> bool {
     if !ctx.input(|i| i.focused) {
-        return;
+        return false;
     }
     thread_local! {
         static STATE: RefCell<Option<State>> = RefCell::new(connect());
     }
     STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            let _ = repair(state, caret * ctx.pixels_per_point(), composing);
-            // The panel chase must run for the WHOLE composition: the IME
-            // server re-docks its panel asynchronously after its own
-            // triggers (every candidate update), and none of that wakes a
-            // frame - stopping at the first "settled" observation left the
-            // panel parked when the server's last move landed after ours
-            // (release-build timing exposed it; the idempotence latch keeps
-            // each pass cheap: no XMoveWindow while genuinely in place).
-            // Outside composition `repair` early-returns and no loop runs.
-            if composing {
-                crate::render::cadence::request_root_after(ctx, Duration::from_millis(16));
-            }
+        let vanished = state.borrow_mut().as_mut().is_some_and(|st| {
+            repair(st, caret * ctx.pixels_per_point(), composing).unwrap_or(false)
+        });
+        // The panel chase must run for the WHOLE composition: the IME
+        // server re-docks its panel asynchronously after its own
+        // triggers (every candidate update), and none of that wakes a
+        // frame - stopping at the first "settled" observation left the
+        // panel parked when the server's last move landed after ours
+        // (release-build timing exposed it; the idempotence latch keeps
+        // each pass cheap: no XMoveWindow while genuinely in place).
+        // Outside composition `repair` early-returns and no loop runs.
+        if composing {
+            crate::render::cadence::request_root_after(ctx, Duration::from_millis(16));
         }
-    });
+        vanished
+    })
 }

@@ -241,6 +241,11 @@ pub struct WindowUi {
     /// no composition is in flight (cleared on commit and whenever a
     /// text field takes the keyboard).
     pub ime: Option<String>,
+    /// Grid cell the live preedit was latched at (col, row). XIM sends
+    /// no event when a preedit empties (BackSpace on the last syllable),
+    /// so the render pass clears `ime` once the pane cursor moves away
+    /// from this cell: the composition is stale, not relocating.
+    pub ime_pos: Option<(u16, u16)>,
     /// Focused pane's cursor cell rect in egui points, refreshed by the
     /// render pass each frame; the IME popup anchors here.
     pub ime_cursor: Option<egui::Rect>,
@@ -270,6 +275,11 @@ pub struct WindowUi {
     /// its last repositioning can land past the commit event. `None` =
     /// no grace (latch off, and the deadline passed or was cleared).
     pub ime_editor_grace: Option<Instant>,
+    /// XIM re-arm phase after a commit/reset (winit X11 stops delivering
+    /// preedit otherwise): 1 false sent, 2 true sent, 3 focus moved to the
+    /// root, 4 ready to restore focus (the FocusIn XSetICFocus-es the new
+    /// context).
+    pub ime_rearm: u8,
     /// Chip-strip horizontal scroll offset (px); 0 while the tabs fit.
     pub tab_scroll: f32,
     /// Active tab when the scroll was last auto-followed (keep the active
@@ -330,12 +340,14 @@ pub fn window_ui() -> WindowUi {
         mods_frame_end: egui::Modifiers::NONE,
         inspector: false,
         ime: None,
+        ime_pos: None,
         ime_cursor: None,
         ime_pane: None,
         ime_last_pane: None,
         ime_anchor: None,
         ime_editor_composing: false,
         ime_editor_grace: None,
+        ime_rearm: 0,
         tab_scroll: 0.0,
         tab_scroll_tab: 0,
         close_dialog: None,

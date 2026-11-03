@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # The existing raw PTY fixture is still running after native.sh's commit.
 step "M3e: exact row ends, wide input and bottom-row preview scroll"
+# M3d just committed; give the XIM re-arm the same settle window.
+sleep 2.0
 for mode in e i l; do
     "$CTL" send "$PANE" --text "$mode" >/dev/null
     sleep .3

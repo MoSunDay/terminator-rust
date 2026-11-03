@@ -149,11 +149,52 @@ pub fn handle(
     if let Some(w) = st.win_mut() {
         w.ui.mods_frame_end = ctx.input(|i| i.modifiers);
     }
+    // BEFORE the editor early-return: an IME commit can belong to a rename
+    // editor, whose IME event is otherwise consumed by the TextEdit. Every
+    // X11/XIM commit needs the context re-arm below or the NEXT composition
+    // never reaches the app (e2e-ime M3b).
+    let ime_reset = ctx.input(|i| {
+        i.events.iter().any(|ev| {
+            matches!(ev, Event::Ime(ImeEvent::Commit(_)))
+                || (matches!(ev, Event::Ime(ImeEvent::Preedit { text, .. }) if text.is_empty())
+                    && st.win().is_some_and(|w| w.ui.ime.is_some()))
+        })
+    });
+    if let Some(w) = st.win_mut() {
+        crate::input::ime::finish_rearm(ctx, &mut w.ui);
+        if ime_reset {
+            crate::input::ime::restart_after_commit(ctx, &mut w.ui);
+        }
+    }
+    // XIM cancels are SILENT: emptying the preedit with Escape/BackSpace
+    // fires no winit event (ibus clears its side, the panel hides, but
+    // no preedit-done reaches the client), so a latched composition
+    // would keep painting a stale preedit - and at the bottom row the
+    // stale preview scroll - until the grid cursor happens to move. A
+    // raw Key press proves the composition is gone: while one is live
+    // XIM filters every key press away from the app (e2e-ime M1). Drop
+    // the latch on the first raw key, whichever it is - a still-live
+    // composition's next preedit update simply re-latches.
+    #[cfg(target_os = "linux")]
+    if st.win().is_some_and(|w| w.ui.ime.is_some()) {
+        let raw_key = ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|ev| matches!(ev, Event::Key { pressed: true, .. }))
+        });
+        if raw_key {
+            if let Some(w) = st.win_mut() {
+                w.ui.ime = None;
+                w.ui.ime_pos = None;
+            }
+        }
+    }
     if ctx.egui_wants_keyboard_input() {
         // A text field has focus and owns IME; any stale pane preedit
         // must not linger (the overlay would keep painting).
         if let Some(w) = st.win_mut() {
             w.ui.ime = None;
+            w.ui.ime_pos = None;
         }
         return; // a text field has focus; let it keep the keys
     }
@@ -333,6 +374,11 @@ pub fn handle(
                     } else {
                         Some(text.clone())
                     };
+                    // The next render re-latches the composition cursor:
+                    // XIM sends no event when a preedit empties (BackSpace
+                    // on the last syllable), so the pane render must be
+                    // able to tell a fresh composition from a stale one.
+                    w.ui.ime_pos = None;
                 }
             }
             Event::Ime(ImeEvent::Commit(text)) => {
@@ -343,6 +389,7 @@ pub fn handle(
                 if let Some(w) = st.win_mut() {
                     crate::input::ime::clear_editor_latch(&mut w.ui);
                     w.ui.ime = None;
+                    w.ui.ime_pos = None;
                 }
                 if let Some(p) = focused {
                     if let Some(s) = sess.map.get_mut(&p) {

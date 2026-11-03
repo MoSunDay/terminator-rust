@@ -8,7 +8,11 @@
 #       the candidate window is adjacent to the input row without overlap.
 #   M3: space commits the libpinyin default candidate (汉字) and the raw
 #       UTF-8 lands in the pty.
-#   M3b: preedit hides existing colored text; Escape restores that text.
+#   M3b: preedit hides existing colored text; cancellation restores it.
+#       Escape does NOT cancel current libpinyin preedit anymore, so the
+#       gate cancels the way an engine switch does: flip to xkb English
+#       (the IME drops the composition and sends an empty preedit), then
+#       back to libpinyin for the later steps.
 #   M3c/M3d: delayed echo and visible native panel placement boundaries.
 #   M3e: exact row end, wide-character wrap and last-row cancel/commit.
 #   M4: tab-chip rename - double-click the chip, compose 'hanzi', commit;
@@ -62,9 +66,20 @@ scrot "$ROOT/overlap-base.png"
 xdotool type --delay 150 'hanzi'
 sleep 0.4
 scrot "$ROOT/overlap-compose.png"
-xdotool key --clearmodifiers Escape
-sleep 0.4
+ibus engine xkb:us::eng >/dev/null 2>&1 || true  # cancel: IME drops the preedit
+sleep 0.6
+ibus engine libpinyin >/dev/null 2>&1 || true  # CLI may race the switch
+for _ in $(seq 1 20); do
+    [ "$(ibus engine 2>/dev/null)" = libpinyin ] && break
+    sleep 0.3
+done
+[ "$(ibus engine 2>/dev/null)" = libpinyin ] || fail "M3b: libpinyin engine did not come back"
+sleep 0.5
 scrot "$ROOT/overlap-cancel.png"
+# The engine swap resets the XIM input context; re-focus the window so the
+# next composition reaches the app again (same FocusIn rule as M5).
+xdotool windowfocus "$WID"
+sleep 0.8
 python3 - "$ROOT" <<'PY'
 import sys
 from PIL import Image
@@ -89,7 +104,7 @@ covered = [(x, y) for y in range(max(0, bottom - 24), bottom - 2)
            for x in range(left + 12, right - 2) if red(base.getpixel((x, y)))]
 assert len(covered) >= 10, "fixture has too little existing ink under preedit"
 assert not any(red(comp.getpixel(p)) for p in covered), "existing text bleeds through preedit"
-assert all(red(cancel.getpixel(p)) for p in covered), "Escape did not restore existing text"
+assert all(red(cancel.getpixel(p)) for p in covered), "cancellation did not restore existing text"
 print(f"M3b ok: {len(covered)} existing ink pixels hidden and restored")
 PY
 xdotool key --clearmodifiers ctrl+c
