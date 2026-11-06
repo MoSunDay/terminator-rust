@@ -50,6 +50,35 @@ struct Terminator {
 impl Terminator {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         ui::fonts::install(&cc.egui_ctx);
+        // The adapter is only known after eframe created it. A software
+        // rasterizer gets a lower default CPU budget (an explicit env
+        // target still wins), and the effective target is logged HERE -
+        // before this line lived in main(), where it always printed the
+        // hardware default.
+        if let Some(render_state) = cc.wgpu_render_state.as_ref() {
+            let info = render_state.adapter.get_info();
+            render::stats::note_adapter(&info.name);
+            log::info!(
+                "wgpu adapter: {} ({:?}, {:?})",
+                info.name,
+                info.device_type,
+                info.backend
+            );
+        }
+        log::info!(
+            "cpu governor: {} (target {:.1}% of one core, {})",
+            if render::stats::governor_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            },
+            render::stats::cpu_target_pct(),
+            if render::stats::using_software_target() {
+                "software adapter"
+            } else {
+                "default"
+            }
+        );
         let path = persist::state_path();
         let mut st = launch_state(&path);
         // Compositor-less environments (Xvfb e2e, bare WMs) cannot blend a
@@ -97,7 +126,7 @@ impl Terminator {
                     base,
                     render::frame_cpu::ema_us(),
                     render::stats::cpu_target_pct(),
-                    render::frame_cpu::interactive(),
+                    render::frame_cpu::interaction_age(),
                 )
             } else {
                 render::cadence::pacing_floor(base)
@@ -247,25 +276,24 @@ fn launch_state(path: &std::path::Path) -> AppState {
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    // Runtime gates read this line back: an explicit valid
-    // TERMINATOR_FRAME_FLOOR_MS disables the adaptive CPU budget, so a
-    // governor e2e that did not assert the state could pass vacuously.
-    log::info!(
-        "cpu governor: {} (target {:.1}% of one core)",
-        if render::stats::governor_enabled() {
-            "enabled"
-        } else {
-            "disabled"
-        },
-        render::stats::cpu_target_pct()
-    );
+    // The effective governor + adapter lines are logged in Terminator::new:
+    // the adapter (and therefore the software-budget default) is only known
+    // after eframe has created it.
     // Decode the embedded logo up front (one shared raster for every
     // viewport); a decode failure only costs the custom icon, never the
     // app - app_icon warns and the builders fall back to the default.
     if let Some(icon) = app_icon::icon() {
         log::debug!("window icon: {}x{} rgba", icon.width, icon.height);
     }
+    if let Ok(raw) = std::env::var(render::present::ENV) {
+        log::info!(
+            "present mode: {:?} (requested {:?})",
+            render::present::parse(&raw),
+            raw
+        );
+    }
     let options = eframe::NativeOptions {
+        wgpu_options: render::present::configuration(),
         // The embedded logo (assets/logo, gen-logo.py) becomes the window
         // icon: eframe publishes it as X11 _NET_WM_ICON / the macOS dock
         // icon (see app_icon - secondaries need their own copy).

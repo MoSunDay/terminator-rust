@@ -8,6 +8,7 @@ pub mod frame_cpu;
 pub mod grid;
 mod ink;
 pub mod preedit;
+pub mod present;
 pub mod row_cache;
 pub mod screen;
 pub mod stats;

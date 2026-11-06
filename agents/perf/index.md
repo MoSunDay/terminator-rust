@@ -2,13 +2,17 @@
 
 ## 目标 / 验收口径（三层）
 - **tier1 断言（gate 实跑：`release.yml` → `scripts/deploy/verify-release.sh` → `e2e-idle-cpu.sh`）**
-  - S1：`max1s < 1%`（单核）**且 frames == 0** —— 唯一的 `<1%` 硬断言
-    （`IDLE_GPU_BACKEND=gl` 软件后端，无宿主驱动地板；见下方 GPU BACKEND 段）。
-  - S2 / S13：`fps <= 65`（基础 16ms pacing floor；governor 只会再抬高）；
-    CPU 只记录。
-  - S14（10Hz 输出稳态）：**主线程** `max1s <= 1.0%` 且 `fps <= 12` ——
-    CPU 预算调速器的 `<1%` 硬门；process CPU 只记录（gl 沙箱里 llvmpipe
-    光栅线程每帧的成本会占满 process，见 M6）。启动日志必须是
+  - S1：`max1s < 1%`（单核）**且 frames == 0** —— 唯一以 **max1s**
+    断言的 `<1%` 硬门（`IDLE_GPU_BACKEND=gl` 软件后端，无宿主驱动地板；
+    见下方 GPU BACKEND 段）。
+  - S2 / S13：`fps <= 65`（基础 16ms pacing floor；governor 只会再抬高）。
+    S2 在 gl 后端另断言 process 平均 CPU `< 80%`（软件光栅的真实账单）；
+    S13 的 CPU 只记录。
+  - S14（10Hz 输出稳态）：**主线程平均** `< 1.0%` 且 `fps <= 12` ——
+    CPU 预算调速器的 `<1%` 硬门；`max1s <= 2.0%` 只作 1 秒突发上限。
+    `/proc` tick 是 100Hz，一个 10ms jiffy 在 1 秒桶里恰为 1.0%，短桶
+    可读出 1–2%；持续成本由平均承担。gl 下 process 平均也必须 `< 30%`
+    （llvmpipe 光栅线程的真实账单，见 M6）；native 只记录。启动日志必须是
     `cpu governor: enabled`，否则 S14 直接 FAIL（继承的显式 floor /
     target=0 会让该门变得空洞）。
   - S15（8 pane 空闲）：`frames == 0` 且 process **avg < 1%**（`max1s <= 1.0%`，
@@ -77,7 +81,7 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | S11 | 边缘 resize 手势 | 远程 s11：右边缘 `mousedown 1`，按住时 +/- 拖动，采样结束 `mouseup 1`（EXIT trap 兜底释放） | 记录（tier2） |
 | S12 | tab chip 拖动 / 跨窗拖拽 | 待补：本地 e2e（drag/drop overlay 每帧重绘） | 未实现（tier3） |
 | S13 | `cat` 40k 行输出洪泛 | 远程 s13（需 `S13_ALLOW_FLOOD=1`，会写 live pane）：远端生成 4 万行文件后 `ctl send cat <file>` | 断言 fps <= 65；CPU 仅记录（输出带宽受限） |
-| S14 | 10Hz spinner 稳态 | 本地 S14：`printf "spin10 %s\r"` + `sleep 0.1`，等待 900ms 交互闩锁 + EMA 收敛后采样；远程 s14（需 `S14_ALLOW_TYPE=1`，24s live spinner）同一 payload | 启动日志 `cpu governor: enabled` + 主线程 max1s <= 1%、fps <= 12；process 记录 |
+| S14 | 10Hz spinner 稳态 | 本地 S14：`printf "spin10 %s\r"` + `sleep 0.1`，等待 900ms 交互闩锁 + EMA 收敛后采样；远程 s14（需 `S14_ALLOW_TYPE=1`，24s live spinner）同一 payload | 启动日志 `cpu governor: enabled` + 主线程 avg < 1%、max1s <= 2%（突发上限）、fps <= 12；gl 下 process avg < 30% |
 | S15 | 8 pane 空闲 | 本地 S15：`Ctrl+Shift+E` x7（windowfocus 后真键），settle 后采样；远程 s15 需 `S15_ALLOW_SPLITS=1`（live 窗口会留下 8 pane） | 断言 frames == 0、process avg < 1%、max1s <= 1% |
 
 ## 环境开关
@@ -99,16 +103,19 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | `S7_SAMPLE_S` / `S7_MAX1S_PCT` | 5 / 50 | S7 重命名编辑器窗口与 runaway 兜底 |
 | `PIN_SAMPLE_S` | 5 | S1b 常驻探针窗口 |
 | `MAX_FPS_SPIN` / `MAX_FPS_BUSY` | 65 / 65 | S2 / S13 帧率上限（配合 floor 16ms ≈ 62.5fps；governor 只降不升） |
-| `S14_SAMPLE_S` / `S14_MAX1S_PCT` / `MAX_FPS_SPIN10` | 5 / 1.0 / 12 | S14 窗口、主线程门槛、帧率上限（首窗超限自动重采一次取更优） |
+| `S14_SAMPLE_S` / `S14_AVG_PCT` / `S14_MAX1S_PCT` / `MAX_FPS_SPIN10` | 5 / 1.0 / 2.0 / 12 | S14 窗口、主线程平均门槛、1 秒突发上限、帧率上限（首窗超限自动重采一次取更优窗口） |
+| `S2_MAX_PROC_PCT` / `S14_MAX_PROC_PCT` | 80 / 30 | gl/软件后端下 S2、S14 的 process 平均 CPU 上限；native 只记录 |
 | `S14_SPIN_N` / `S14` settle | 240 / 6s | 24s payload；6s 让 900ms 交互闩锁结束且 8 样本 EMA 收敛（软件后端可能已在 1fps，3s 会抓到启动 ramp） |
 | `S15_PANES` / `S15_SETTLE_S` / `S15_SAMPLE_S` | 8 / 3 / 8 | 分裂数、静默期、采样窗（超限重采一次取更优） |
 | `APP_BIN` / `CTL_BIN` | target/debug/… | 指向 release 包（`verify-release.sh` 用它） |
 
 - S1/S7 走 `e2e_sandbox` → `TERMINATOR_OPAQUE=1` + `TERMINATOR_NO_MOTION=1`：
   空闲/编辑器场景必须是**帧静止**态；悬停/光标动画由别的像素用例覆盖。
-- 软件后端下 S2/S13/S14 的 process CPU（llvmpipe 多线程可到 ~600%/核）
-  只记录、不断言；S14 断言的是主线程（app 自己的循环），真机 `native`
-  才是可比成本。S15 的 8 pane 空闲没有帧，llvmpipe 不跑，process 可以直接断言。
+- 软件后端下 llvmpipe 多线程可到 ~600%/核，因此 process 门槛只限制
+  **平均**（S2 < 80%、S14 < 30%）并只在 gl 后端生效；瞬时 max1s 会被
+  光栅突发拉爆（实测 S2 单桶 122%），不能作为 60Hz 门。S14 的 `<1%`
+  断言的是主线程（app 自己的循环），native 的 process 只记录可比成本。
+  S15 的 8 pane 空闲没有帧，llvmpipe 不跑，process 可以直接断言。
 
 ## egui 0.36 重绘语义（修正）
 - 零延迟 `request_repaint` 只是把 `outstanding` 置 1，同一轮里每个输出事件仍渲染**两遍**（0.36 context.rs）；
@@ -353,10 +360,58 @@ gl 沙箱实测（2026-11-02，release）：
 | S15 8 pane 空闲 | — | avg 0.25% / max1s 1.0%（1-2 jiffy） | 0 |
 | S1 空闲 | 0.0% | 0.0% | 0 |
 | S2 60Hz spinner（交互 ramp 后） | — | 记录 | ~1（预算）/ 首秒 24.7 |
+
+> 2026-11-06 起 S14 的门槛改为 **主线程 avg < 1.0%**（契约）+
+> **max1s <= 2.0%**（100Hz jiffy 的突发上限），gl 后端另断言
+> **process avg < 30%**；上表 1.0% / 9.0% 是 M6 当天的历史 max1s/process
+> 记录，保留不改。详见下方 P1 段。
+
 1fps 下限在软件后端是 process 预算的物理极限：每帧 llvmpipe 光栅 ~60ms，
 要到 1% 需 0.16fps；真机 GPU 上每帧成本低一个量级，10Hz 输出会以更接近
 10fps 的速率运行。真机验证用 `measure-cpu-remote.sh` 的 s14：
 `SCEN=s14 DEPLOY_HOST=... bash scripts/deploy/measure-cpu-remote.sh`
-（native-GPU s14 只**记录** process CPU；沙箱门槛是主线程
-`thread_max1s`，即 S14 自动断言的是 app 主线程——process CPU 没有
-自动化阈值）。
+（native-GPU s14 只记录 process CPU；沙箱现在是主线程 avg<1% +
+max1s<=2%，gl process avg<30%，见 2026-11-06 段）。
+
+## P1 输出成本预算：软件默认、交互让路、present 探针（2026-11-06）
+
+M6 把无人值守输出压到 1fps 后，软件光栅沙箱的剩余账单仍在 process
+（llvmpipe 每帧全屏 raster + present）。P1 不改结构（P2 damage 重绘未开工），
+只把预算默认值和交互期行为调准：
+
+1. **软件适配器默认 0.3%**（`render/stats.rs`）。`TERMINATOR_CPU_TARGET_PCT`
+   仍显式优先（`0`=关）；适配器名大小写不敏感匹配 llvmpipe / softpipe /
+   SwiftShader / lavapipe / Microsoft WARP / Apple Software Renderer 等。
+   适配器信息在 `Terminator::new` 从 `cc.wgpu_render_state` 读取后
+   `note_adapter()`，启动日志打印真实 target；`main()` 不再打印过时的硬件默认。
+   llvmpipe 的全窗 S14 仍被 1fps 地板钳住（0.3% 与 1% 帧数相同）；
+   收益在尚未触底的每帧成本区间 - 同一 `cpu_ms` 下 0.3% 的帧间隔约为
+   1% 的 3.3 倍。本轮 S14 process avg 5.6–8.0%（M6 记录 9.0%，不同 run
+   的量级参考，不可把差值单独归因于该默认值）。
+2. **交互闩锁尾部让路**（`render/cadence.rs`）。900ms 闩锁的前
+   `INTERACTIVE_FULL_MS=150` 仍 60fps；之后若单帧成本已超 60fps 预算
+   （`budget_floor > 1/60s`），降到 `INTERACTIVE_RELAXED_FLOOR=33ms`
+   （~30fps）。便宜帧不降；首击键回声仍走全速。`frame_cpu::interaction_age()`
+   提供闩锁年龄，`budgeted_floor(..., Option<Duration>)` 统一合成。
+3. **present mode 实验钩子**（`render/present.rs`）。默认仍是
+   egui-wgpu `HIGH_THROUGHPUT`（字节等价）；`TERMINATOR_PRESENT_MODE=`
+   `immediate|auto-no-vsync|mailbox|fifo|fifo-relaxed` 可覆盖并强制
+   `desired_maximum_frame_latency=1`，用于验证 vblank/present 等待占比。
+   这不是用户设置，未知值回退默认。
+4. **P3 进程级门槛**（`scripts/bin/e2e-idle-cpu.sh`）。gl/软件后端下
+   S2 process avg `< 80%`、S14 process avg `< 30%`；native 只记录。
+   S14 主线程契约改为 avg `< 1.0%` + max1s `<= 2.0%` 突发上限：
+   `/proc` tick=100Hz，一个 jiffy 在 1s 桶就是 1.0%，短桶可读出
+   1–2%，用 max1s 承担 `<1%` 会把量化噪声当回归。
+
+### 验证（2026-11-06，release，gl/llvmpipe，1200x800）
+- `e2e-idle-cpu.sh` 全 PASS（多次完整 run）：
+  S1 0 帧 / 0.0%；wake 13–20ms；S2 fps 16.9–18.2、process avg
+  16.1–21.1%；S13 0.8–3.2%；S14 主线程 avg 0.4–0.6%、max1s
+  1.0–1.435%、process avg 5.6–8.0%、fps 1.0；S15 8 pane 0 帧。
+- S2 的 process max1s 实测可到 122.5%（llvmpipe 突发），因此只断言
+  avg；这也验证了用平均而非单桶做软件账单门。
+- `cargo test --workspace` 绿；`cargo clippy --workspace --all-targets
+  -- -D warnings` 绿；`cargo fmt --check` 绿。
+- 未做 P2：每帧全屏 raster/present 仍是软件后端主成本；vendor
+  egui-wgpu + damage 局部重绘是下一步结构杠杆。

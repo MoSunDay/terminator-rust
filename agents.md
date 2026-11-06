@@ -260,11 +260,15 @@ Pure-functional Rust (no classes) terminal multiplexer: egui 0.36 front-end
   clip_rect=EVERYTHING (paint-time clipping) and only a dirty row
   re-tessellates. M6 (same day): frame_cpu.rs process-CPU EMA (alpha
   1/8) + cadence::budget_floor fps=clamp(10*target/cpu_ms,1,60) raises
-  the output floor up to 1s; TERMINATOR_CPU_TARGET_PCT=1 default, an
-  EXPLICIT TERMINATOR_FRAME_FLOOR_MS disables the governor, and a 900ms
-  interaction latch keeps typing/output at full 60fps. Gates:
-  e2e-idle-cpu S14 (10Hz main-thread max1s<=1%) + S15 (8-pane idle,
-  frames==0). 60Hz single-pane spinner measured
+  the output floor up to 1s; TERMINATOR_CPU_TARGET_PCT defaults to 1%
+  (hardware) / 0.3% (software adapter), an EXPLICIT
+  TERMINATOR_FRAME_FLOOR_MS disables the governor, and the 900ms
+  interaction latch keeps the first 150ms at 60fps then relaxes to 33ms
+  only while a frame is over budget. TERMINATOR_PRESENT_MODE is a
+  measurement-only surface override (default HIGH_THROUGHPUT). Gates:
+  e2e-idle-cpu S14 (10Hz main-thread avg<1%, max1s<=2% burst cap, gl
+  process avg<30%) + S15 (8-pane idle, frames==0); S2 gl process avg<80%.
+  60Hz single-pane spinner measured
   0.6% core on the deployed desktop (vs the 23% complaint). IME panel
   chase (ime/x11.rs sync): the 16ms follow-up must run for the WHOLE
   composition - the IME server re-docks its panel asynchronously

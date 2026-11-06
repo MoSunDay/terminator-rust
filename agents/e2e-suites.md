@@ -39,10 +39,12 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
   （实测 19ms）、S7 重命名编辑器：期间 frames==0 + 回车提交
   （egui TextEdit 的 caret blink 已在 ui/style.rs 钉住）、
   S2 spinner / S13 busy 的 fps 门（≤65；基础 floor 16ms ≈ 62.5fps，
-  governor 只会抬高，pass 统计见 render/stats.rs）、S14 10Hz 稳态
-  （启动日志必须 `cpu governor: enabled` —— 显式合法 floor 或
-  target=0 会直接 FAIL；主线程 max1s ≤1%、fps ≤12，process 只记录）
-  与 S15 8 pane 空闲（frames==0、process avg <1%、max1s ≤1%）；
+  governor 只会抬高，pass 统计见 render/stats.rs；gl 下 S2 另断言
+  process avg <80%）、S14 10Hz 稳态（启动日志必须
+  `cpu governor: enabled` —— 显式合法 floor 或 target=0 会直接 FAIL；
+  主线程 avg <1% + max1s ≤2% 突发上限、fps ≤12，gl 下 process
+  avg <30%，native 只记录）与 S15 8 pane 空闲（frames==0、
+  process avg <1%、max1s ≤1%）；
   release 验收走 `verify-release.sh`（`env -i` 清掉 APP_BIN/CTL_BIN/
   IDLE_*/TERMINATOR_FRAME_FLOOR_MS/TERMINATOR_CPU_TARGET_PCT）；
   `IDLE_SETTLE_S=6`

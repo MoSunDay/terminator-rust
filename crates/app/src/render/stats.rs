@@ -27,7 +27,7 @@
 //! `TERMINATOR_FRAME_FLOOR_MS` (including `0`) disables the governor so
 //! e2e runs keep a deterministic cadence.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,11 @@ pub const DEFAULT_FLOOR_MS: u64 = 16;
 pub const MAX_FLOOR_MS: u64 = 1000;
 /// Default CPU budget for output-driven frames (% of one core).
 pub const DEFAULT_CPU_TARGET_PCT: f32 = 1.0;
+/// Lower default on software rasterizers (llvmpipe / SwiftShader / WARP):
+/// one frame costs tens of milliseconds there, so a 1% budget would leave
+/// only a few frames per second anyway and would still burn a large share
+/// of the host. The explicit env var always wins.
+pub const SOFTWARE_CPU_TARGET_PCT: f32 = 0.3;
 /// Upper bound for `TERMINATOR_CPU_TARGET_PCT`; beyond this the budget
 /// is indistinguishable from "off" and more likely a typo.
 pub const MAX_CPU_TARGET_PCT: f32 = 100.0;
@@ -134,13 +139,64 @@ pub fn parse_target_pct(s: &str) -> f32 {
         .unwrap_or(DEFAULT_CPU_TARGET_PCT)
 }
 
-/// The configured CPU target for output-driven frames (0 = off).
-pub fn cpu_target_pct() -> f32 {
-    static TARGET: OnceLock<f32> = OnceLock::new();
+/// Whether an adapter name identifies a software rasterizer. Pure so the
+/// heuristic is testable without a GPU; matching is case-insensitive.
+pub fn is_software_adapter(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "llvmpipe",
+        "softpipe",
+        "swiftshader",
+        "lavapipe",
+        "software rasterizer",
+        "software renderer",
+        "microsoft basic render",
+        "warp",
+    ]
+    .iter()
+    .any(|needle| name.contains(needle))
+}
+
+/// Remember that the wgpu adapter is a software rasterizer. Called once
+/// after adapter creation; an explicit TERMINATOR_CPU_TARGET_PCT still
+/// wins, so this never overrides a user's choice.
+pub fn note_adapter(name: &str) {
+    if is_software_adapter(name) {
+        SOFTWARE.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The env override, if present. An invalid value still counts as
+/// explicit and falls back to [`DEFAULT_CPU_TARGET_PCT`] through the
+/// parser (never silently switched to the software target).
+fn env_target_pct() -> Option<f32> {
+    static TARGET: OnceLock<Option<f32>> = OnceLock::new();
     *TARGET.get_or_init(|| {
         std::env::var("TERMINATOR_CPU_TARGET_PCT")
-            .map_or(DEFAULT_CPU_TARGET_PCT, |v| parse_target_pct(&v))
+            .ok()
+            .map(|v| parse_target_pct(&v))
     })
+}
+
+/// Pure target selection: an explicit env value always wins, then the
+/// software-adapter default, then the hardware default.
+pub fn target_pct(explicit: Option<f32>, software: bool) -> f32 {
+    explicit.unwrap_or(if software {
+        SOFTWARE_CPU_TARGET_PCT
+    } else {
+        DEFAULT_CPU_TARGET_PCT
+    })
+}
+
+/// The configured CPU target for output-driven frames (0 = off).
+pub fn cpu_target_pct() -> f32 {
+    target_pct(env_target_pct(), SOFTWARE.load(Ordering::Relaxed))
+}
+
+/// True when no explicit target was supplied and the software default is
+/// active (for the startup log / diagnostics).
+pub fn using_software_target() -> bool {
+    env_target_pct().is_none() && SOFTWARE.load(Ordering::Relaxed)
 }
 
 /// Whether the adaptive output budget is active: no explicit frame floor
@@ -152,6 +208,10 @@ pub fn governor_enabled() -> bool {
         !floor_is_explicit(floor.as_deref()) && cpu_target_pct() > 0.0
     })
 }
+
+/// Set once the wgpu adapter is known. Kept module-local because only
+/// [`note_adapter`] should mutate the detection state.
+static SOFTWARE: AtomicBool = AtomicBool::new(false);
 
 /// Cheap gate for [`record`]: read once, then a cached branch per pass.
 pub fn enabled() -> bool {
@@ -247,6 +307,34 @@ mod tests {
                 DEFAULT_CPU_TARGET_PCT,
                 "{bad:?} falls back to the default"
             );
+        }
+    }
+
+    #[test]
+    fn software_target_is_lower_but_explicit_env_wins() {
+        assert_eq!(target_pct(None, false), DEFAULT_CPU_TARGET_PCT);
+        assert_eq!(target_pct(None, true), SOFTWARE_CPU_TARGET_PCT);
+        assert_eq!(target_pct(Some(2.0), true), 2.0);
+        assert_eq!(target_pct(Some(0.0), true), 0.0, "0 = governor off");
+    }
+
+    #[test]
+    fn software_adapters_are_recognized_case_insensitively() {
+        for name in [
+            "llvmpipe (LLVM 19.1.7, 256 bits)",
+            "Softpipe",
+            "SwiftShader Device (Subzero)",
+            "Microsoft Basic Render Driver",
+            "Apple Software Renderer",
+        ] {
+            assert!(is_software_adapter(name), "{name:?}");
+        }
+        for name in [
+            "NVIDIA GeForce RTX 4090",
+            "Apple M2",
+            "Intel(R) UHD Graphics",
+        ] {
+            assert!(!is_software_adapter(name), "{name:?}");
         }
     }
 

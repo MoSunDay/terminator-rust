@@ -108,6 +108,15 @@ black, ctl list/capture; remote px differ only via wallpaper blend).
   `e2e-bg-seams.sh` K1-K5 ALL GREEN after the mesh cache (merged bg
   runs, bottom/right bleed, CJK pair selection unchanged). M4 chrome
   test/size facts and M5 bake-key invariants in agents/perf/index.md.
+- perf P1/P3 (2026-11-06, release on the gl Xvfb sandbox):
+  `e2e-idle-cpu.sh` PASS over repeated full runs with software target
+  0.3% - S1 0.0%/0 frames, wake 13-20ms, S7 0.0-1.0% recorded,
+  S2 16.9-18.2fps with process avg 16.1-21.1% (max1s bursts to 122.5%),
+  S13 0.8-3.2%, S14 main avg 0.4-0.6% / max1s 1.0-1.435% / process
+  avg 5.6-8.0% / fps 1.0, S15 0 frames. S14 now gates on the main-thread
+  average (<1%) plus a 2% max1s burst ceiling; gl process averages are
+  asserted for S2/S14. Details in
+  features/changelog/2026-11-06/p1-software-budget-interaction-relax.md.
 - persistence: state.json save/restore across restart
 
 See [agents.md](../agents.md) for the crate map and the

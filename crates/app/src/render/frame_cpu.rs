@@ -23,7 +23,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// EMA smoothing factor: alpha = 1/8.
 pub const EMA_DEN: u64 = 8;
@@ -67,12 +67,13 @@ pub fn mark_interaction() {
     LAST_INTERACTION_MS.store(interaction_now_ms(), Ordering::Relaxed);
 }
 
-/// Whether the interaction window is still open.
-pub fn interactive() -> bool {
-    within_interaction(
-        LAST_INTERACTION_MS.load(Ordering::Relaxed),
-        interaction_now_ms(),
-    )
+/// Age of the current human-interaction latch, or `None` once the
+/// 900ms window has expired. The age lets the pacing layer keep the
+/// first 150ms at full 60fps and relax only the tail of the window.
+pub fn interaction_age() -> Option<Duration> {
+    let last = LAST_INTERACTION_MS.load(Ordering::Relaxed);
+    let now = interaction_now_ms();
+    within_interaction(last, now).then(|| Duration::from_millis(now - last))
 }
 
 /// One EMA step with the sample clamp. `prev_us == 0` seeds from the
@@ -174,8 +175,9 @@ mod tests {
     }
 
     #[test]
-    fn interaction_latch_reports_true_immediately() {
+    fn interaction_latch_reports_an_age_immediately() {
         mark_interaction();
-        assert!(interactive());
+        let age = interaction_age().expect("latch open");
+        assert!(age.as_millis() < INTERACTIVE_MS as u128);
     }
 }

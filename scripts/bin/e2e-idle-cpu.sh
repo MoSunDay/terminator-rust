@@ -31,12 +31,16 @@
 #   S2  60Hz spinner: `printf ... \\r` every 16ms. ASSERTED fps <= 65:
 #       output pacing (base TERMINATOR_FRAME_FLOOR_MS=16ms, raised by the
 #       CPU governor) must keep output-driven frames at/below the output
-#       rate, never faster.
+#       rate, never faster. Under gl process avg is asserted < 80%.
 #   S13 busy: `cat` a 40k-line file. ASSERTED fps <= 65, CPU recorded.
 #   S14 10Hz spinner (steady state): the CPU-budget governor must keep the
 #       MAIN thread inside 1% while it downsamples output frames
-#       (ASSERTED main-thread max1s <= 1.0% and fps <= 12; process CPU is
-#       recorded - on the gl sandbox llvmpipe's rasterizer threads own it).
+#       (ASSERTED main-thread average < 1.0%, max1s <= 2.0% as a burst
+#       guard, and fps <= 12; under gl process avg must also stay < 30%,
+#       on native it is recorded - on the gl sandbox llvmpipe's rasterizer
+#       threads own it). The 100Hz jiffy makes a single 10ms tick read
+#       exactly 1.0% in a one-second bucket, so the sustained contract is
+#       the window average.
 #   S15 8-pane idle: split to 8 panes with Ctrl+Shift+E, settle, ASSERT
 #       frames == 0 and process avg < 1% (max1s <= 1%) - the idle contract
 #       must hold per-pane, not just single-pane. One 10ms jiffy IS exactly
@@ -101,9 +105,14 @@
 #   S7_SAMPLE_S=5       S7 window seconds
 #   S7_MAX1S_PCT=50     S7 runaway guard (% of one core)
 #   MAX_FPS_SPIN=65     S2 frame-rate ceiling
+#   S2_MAX_PROC_PCT=80  S2 process CPU ceiling under the gl/software
+#                       backend (llvmpipe raster + app; recorded on native)
 #   MAX_FPS_BUSY=65     S13 frame-rate ceiling
 #   S14_SAMPLE_S=5      S14 per-attempt window (retried once, better kept)
-#   S14_MAX1S_PCT=1.0   S14 main-thread CPU ceiling (% of one core)
+#   S14_AVG_PCT=1.0     S14 main-thread average ceiling (% of one core)
+#   S14_MAX1S_PCT=2.0   S14 main-thread max1s burst ceiling (% of one core;
+#                       100Hz jiffy + fractional buckets quantize this)
+#   S14_MAX_PROC_PCT=30 S14 process CPU ceiling under gl/software
 #   MAX_FPS_SPIN10=12   S14 frame-rate ceiling (10Hz output, governor on)
 #   S14_SPIN_N=240      S14 spinner ticks (0.1s apart -> 24s of payload)
 #   S15_PANES=8         S15 pane count after the splits
@@ -125,9 +134,12 @@ PIN_SAMPLE_S=${PIN_SAMPLE_S:-5}
 S7_SAMPLE_S=${S7_SAMPLE_S:-5}
 S7_MAX1S_PCT=${S7_MAX1S_PCT:-50}
 MAX_FPS_SPIN=${MAX_FPS_SPIN:-65}
+S2_MAX_PROC_PCT=${S2_MAX_PROC_PCT:-80}
 MAX_FPS_BUSY=${MAX_FPS_BUSY:-65}
 S14_SAMPLE_S=${S14_SAMPLE_S:-5}
-S14_MAX1S_PCT=${S14_MAX1S_PCT:-1.0}
+S14_AVG_PCT=${S14_AVG_PCT:-1.0}
+S14_MAX1S_PCT=${S14_MAX1S_PCT:-2.0}
+S14_MAX_PROC_PCT=${S14_MAX_PROC_PCT:-30}
 MAX_FPS_SPIN10=${MAX_FPS_SPIN10:-12}
 S14_SPIN_N=${S14_SPIN_N:-240}
 S15_PANES=${S15_PANES:-8}
@@ -174,7 +186,7 @@ export TERMINATOR_FRAME_STATS=1
 # S7 must be composition-free: a stray XIM server (a shared box's ibus
 # --xim) would eat the ASCII rename keys into a preedit instead.
 unset XMODIFIERS || true
-step "app=$APP ctl=$CTL display=$DISPLAY_N floor=${TERMINATOR_FRAME_FLOOR_MS:-auto(16ms base)} cpu_target=${TERMINATOR_CPU_TARGET_PCT:-1.0(default)}% backend=$IDLE_GPU_BACKEND"
+step "app=$APP ctl=$CTL display=$DISPLAY_N floor=${TERMINATOR_FRAME_FLOOR_MS:-auto(16ms base)} cpu_target=${TERMINATOR_CPU_TARGET_PCT:-auto(hw 1.0 / software 0.3)}% backend=$IDLE_GPU_BACKEND"
 
 GPU_ENV=()
 if [ "$IDLE_GPU_BACKEND" != "native" ] && [ -n "$IDLE_GPU_BACKEND" ]; then
@@ -374,6 +386,14 @@ echo "spinner: avg=${spin_avg}% max1s=${spin_max1s}% frames=${spin_frames} maxfp
     || fail "S2: no frames at all while the spinner ran (frame-stats off, or the send never executed)"
 float_le "$spin_maxfps" "$MAX_FPS_SPIN" \
     || fail "S2: spinner ran at ${spin_maxfps}fps > ${MAX_FPS_SPIN} - output pacing (TERMINATOR_FRAME_FLOOR_MS) is not holding"
+# Process-level acceptance (gl/llvmpipe only): the app's own main thread
+# stays tiny, but the raster/present workers are the real 60Hz cost. The
+# software-adapter budget (0.3%) must keep that host-wide bill bounded;
+# native backends record it without asserting (driver cost varies).
+if [ "$IDLE_GPU_BACKEND" = "gl" ]; then
+    float_lt "$spin_avg" "$S2_MAX_PROC_PCT" \
+        || fail "S2: process avg=${spin_avg}% >= ${S2_MAX_PROC_PCT}% under gl - the software-adapter CPU budget is not containing full-screen raster"
+fi
 cap | grep -qE 'spin [0-9]' || fail "S2: no spinner output in the pane (the payload never ran)"
 # Let the bounded loop end AND its trailing frame-stats bucket close, so
 # none of its frames leak into the S13 window below.
@@ -409,13 +429,17 @@ float_le "$busy_maxfps" "$MAX_FPS_BUSY" \
 # --- S14: 10Hz output steady state (governor contract) -------------------
 grep -q 'cpu governor: enabled' <<<"$GOV_LINE" \
     || fail "S14: governor is DISABLED at startup (explicit TERMINATOR_FRAME_FLOOR_MS or CPU_TARGET_PCT=0? line: $GOV_LINE) - the 10Hz contract would pass vacuously"
-step "S14 10Hz spinner: governor must hold main-thread max1s <= ${S14_MAX1S_PCT}% and fps <= ${MAX_FPS_SPIN10}"
+step "S14 10Hz spinner: governor must hold main-thread avg < ${S14_AVG_PCT}% (max1s <= ${S14_MAX1S_PCT}% burst guard) and fps <= ${MAX_FPS_SPIN10}"
 # The 10Hz steady state IS the <1% contract for output (the 60Hz spinner
 # in S2 is an upper bound only): each output burst wakes the loop, and
 # render/frame_cpu.rs + cadence::budget_floor must downsample frames until
-# the PROCESS CPU EMA fits TERMINATOR_CPU_TARGET_PCT (default 1%). The
+# the PROCESS CPU EMA fits TERMINATOR_CPU_TARGET_PCT (hardware default
+# 1%; 0.3% when the adapter is a software rasterizer). The
 # gate samples the MAIN thread because the gl sandbox's llvmpipe workers
 # are host raster cost, not app loop cost (their jiffies are recorded).
+# AVERAGE is the contract; max1s is a burst ceiling. /proc tick accounting
+# is 100Hz, so one jiffy in a short bucket reads 1-2% even when the
+# sustained main-thread cost is ~0.5%.
 SPIN10_CMD="i=0; while [ \$i -lt $S14_SPIN_N ]; do printf \"spin10 %s\\\\r\" \"\$(date +%s%N)\"; sleep 0.1; i=\$((i+1)); done"
 "$CTL" send "$PANE" --text "$SPIN10_CMD"$'\n' >/dev/null
 # Let the interaction latch (typing above + ctl drain marks intent) expire
@@ -427,24 +451,37 @@ sleep 6.0
 mark=$(lines_now)
 J=$(cpu_sample_thread "$S14_SAMPLE_S")
 app_alive "the S14 sample"
-if ! float_le "$(json_num_thread "$J" max1s_pct)" "$S14_MAX1S_PCT"; then
+spin10_avg=$(json_num_thread "$J" avg_pct)
+spin10_max1s=$(json_num_thread "$J" max1s_pct)
+if ! float_lt "$spin10_avg" "$S14_AVG_PCT" || ! float_le "$spin10_max1s" "$S14_MAX1S_PCT"; then
     J2=$(cpu_sample_thread "$S14_SAMPLE_S")
     app_alive "the S14 retry"
-    echo "S14 retry: window1 thread max1s=$(json_num_thread "$J" max1s_pct)% avg=$(json_num_thread "$J" avg_pct)%, window2 thread max1s=$(json_num_thread "$J2" max1s_pct)% avg=$(json_num_thread "$J2" avg_pct)% - keeping the better window"
-    if float_lt "$(json_num_thread "$J2" max1s_pct)" "$(json_num_thread "$J" max1s_pct)"; then J=$J2; fi
+    j2_avg=$(json_num_thread "$J2" avg_pct)
+    j2_max=$(json_num_thread "$J2" max1s_pct)
+    echo "S14 retry: window1 thread avg=${spin10_avg}% max1s=${spin10_max1s}%, window2 thread avg=${j2_avg}% max1s=${j2_max}% - keeping the better window"
+    if float_lt "$j2_avg" "$S14_AVG_PCT" && float_le "$j2_max" "$S14_MAX1S_PCT"; then
+        J=$J2; spin10_avg=$j2_avg; spin10_max1s=$j2_max
+    elif python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < float(sys.argv[2]) else 1)' "$j2_avg" "$spin10_avg"; then
+        J=$J2; spin10_avg=$j2_avg; spin10_max1s=$j2_max
+    fi
 fi
 read -r spin10_frames spin10_maxfps <<<"$(frame_report "$mark")"
-spin10_max1s=$(json_num_thread "$J" max1s_pct)
-spin10_avg=$(json_num_thread "$J" avg_pct)
 spin10_proc=$(json_num "$J" max1s_pct)
-echo "spin10: main avg=${spin10_avg}% max1s=${spin10_max1s}%; process max1s=${spin10_proc}% (recorded); frames=${spin10_frames} maxfps=${spin10_maxfps}"
+spin10_proc_avg=$(json_num "$J" avg_pct)
+echo "spin10: main avg=${spin10_avg}% max1s=${spin10_max1s}%; process avg=${spin10_proc_avg}% max1s=${spin10_proc}% (recorded); frames=${spin10_frames} maxfps=${spin10_maxfps}"
 [ "$spin10_frames" -gt 0 ] \
     || fail "S14: no frames at all while the 10Hz spinner ran (the governor must downsample, never silence output)"
 cap | grep -qE 'spin10 [0-9]' || fail "S14: no spin10 output in the pane (the payload never ran)"
+float_lt "$spin10_avg" "$S14_AVG_PCT" \
+    || fail "S14: main-thread avg=${spin10_avg}% >= ${S14_AVG_PCT}% under 10Hz output - the CPU governor is not holding (EMA/floor in render/frame_cpu.rs, cadence.rs)"
 float_le "$spin10_max1s" "$S14_MAX1S_PCT" \
-    || fail "S14: main-thread max1s=${spin10_max1s}% > ${S14_MAX1S_PCT}% under 10Hz output - the CPU governor is not holding (EMA/floor in render/frame_cpu.rs, cadence.rs)"
+    || fail "S14: main-thread max1s=${spin10_max1s}% > ${S14_MAX1S_PCT}% (burst guard) under 10Hz output - a 1s CPU burst escapes the governor"
 float_le "$spin10_maxfps" "$MAX_FPS_SPIN10" \
     || fail "S14: 10Hz spinner ran at ${spin10_maxfps}fps > ${MAX_FPS_SPIN10} - the budget floor was not applied to output wakes"
+if [ "$IDLE_GPU_BACKEND" = "gl" ]; then
+    float_lt "$spin10_proc_avg" "$S14_MAX_PROC_PCT" \
+        || fail "S14: process avg=${spin10_proc_avg}% >= ${S14_MAX_PROC_PCT}% under gl - the software-adapter budget is not containing raster cost"
+fi
 # Stop the bounded loop instead of sleeping out its 16s, then let its
 # trailing frame-stats bucket close so S15 starts from a quiet loop.
 "$CTL" send "$PANE" --text $'\003' >/dev/null
@@ -486,4 +523,4 @@ float_le "$panes_max1s" "$S15_MAX1S_PCT" \
     || fail "S15: ${npanes}-pane idle max1s=${panes_max1s}% > ${S15_MAX1S_PCT}% - a sustained idle burst appeared (see frame-stats: $(last_stats))"
 
 app_alive "the final report"
-step "PASS: idle max1s=${idle_max1s}% frames=${idle_frames}; pinned max1s=${pin_max1s}% frames=${pin_frames}; wake=${wake_ms}ms; s7 max1s=${s7_max1s}% frames=${s7_frames}; spinner fps=${spin_maxfps} max1s=${spin_max1s}%; busy fps=${busy_maxfps} max1s=${busy_max1s}% pass=${busy_pass}; spin10 main max1s=${spin10_max1s}% proc=${spin10_proc}% fps=${spin10_maxfps}; panes n=${npanes} max1s=${panes_max1s}% frames=${panes_frames}"
+step "PASS: idle max1s=${idle_max1s}% frames=${idle_frames}; pinned max1s=${pin_max1s}% frames=${pin_frames}; wake=${wake_ms}ms; s7 max1s=${s7_max1s}% frames=${s7_frames}; spinner fps=${spin_maxfps} max1s=${spin_max1s}%; busy fps=${busy_maxfps} max1s=${busy_max1s}% pass=${busy_pass}; spin10 main avg=${spin10_avg}% max1s=${spin10_max1s}% proc=${spin10_proc}% fps=${spin10_maxfps}; panes n=${npanes} max1s=${panes_max1s}% frames=${panes_frames}"

@@ -62,11 +62,24 @@ const UNFOCUSED_FLOOR: Duration = Duration::from_millis(50);
 /// whose per-frame cost is several ms (software rasterizer, huge font,
 /// 4K glass) cannot meet a 1% budget at 4fps. A slow host therefore
 /// downsamples an unattended stream to 1fps (still progress); human
-/// input opens a 900ms 60fps window, so only unattended output is paced.
+/// input opens a 900ms interaction window. Its first
+/// [`INTERACTIVE_FULL_MS`] keeps 60fps for key-echo latency; the rest
+/// relaxes to [`INTERACTIVE_RELAXED_FLOOR`] (~30fps) when the measured
+/// frame already exceeds the 16ms budget, halving the frames a fast
+/// typist pays for without making the first keystroke feel slow.
 pub const CPU_BUDGET_MIN_FPS: f32 = 1.0;
 pub const CPU_BUDGET_MAX_FPS: f32 = 60.0;
 pub const CPU_BUDGET_MIN_FLOOR: Duration = Duration::from_millis(16);
 pub const CPU_BUDGET_MAX_FLOOR: Duration = Duration::from_millis(1_000);
+/// Full-latency head of the interaction latch (60fps).
+pub const INTERACTIVE_FULL_MS: u64 = 150;
+/// Relaxed interaction floor (~30fps) once the full-latency head has
+/// passed AND one frame no longer fits the CPU budget at 60fps.
+pub const INTERACTIVE_RELAXED_FLOOR: Duration = Duration::from_millis(33);
+/// The 60fps end of the budget curve (1/60s), distinct from the 16ms
+/// minimum floor: a frame fitting 60fps must not be treated as over
+/// budget just because 1/60s rounds above 16ms.
+const FULL_RATE_FLOOR: Duration = Duration::from_micros(16_667);
 
 /// What the current pass still needs a future frame for.
 #[derive(Debug, Default, Clone, Copy)]
@@ -206,17 +219,34 @@ pub fn budget_floor(ema_us: u64, target_pct: f32) -> Duration {
     floor.max(CPU_BUDGET_MIN_FLOOR).min(CPU_BUDGET_MAX_FLOOR)
 }
 
-/// The full output-wake floor: focus pacing (unfocused raise), the
-/// adaptive CPU budget, and the interactive override, combined with
-/// max - no component may lower another. Inside the interaction window
-/// the budget contributes only the 16ms floor (60fps for a human);
-/// otherwise it scales the frame rate to the CPU target.
-pub fn budgeted_floor(base: Duration, ema_us: u64, target_pct: f32, interactive: bool) -> Duration {
-    let pacing = pacing_floor(base);
-    let budget = if interactive {
+/// Floor while a human is interacting: the first 150ms stay at 60fps
+/// (latency), then an over-budget frame relaxes to ~30fps; a cheap frame
+/// stays at 60fps for the whole window.
+pub fn interactive_floor(ema_us: u64, target_pct: f32, age: Duration) -> Duration {
+    if age.as_millis() < INTERACTIVE_FULL_MS as u128
+        || budget_floor(ema_us, target_pct) <= FULL_RATE_FLOOR
+    {
         CPU_BUDGET_MIN_FLOOR
     } else {
-        budget_floor(ema_us, target_pct)
+        INTERACTIVE_RELAXED_FLOOR
+    }
+}
+
+/// The full output-wake floor: focus pacing (unfocused raise), the
+/// adaptive CPU budget, and the interactive override, combined with
+/// max - no component may lower another. `interaction_age == None`
+/// applies the unattended CPU budget; `Some(age)` uses
+/// [`interactive_floor`] instead.
+pub fn budgeted_floor(
+    base: Duration,
+    ema_us: u64,
+    target_pct: f32,
+    interaction_age: Option<Duration>,
+) -> Duration {
+    let pacing = pacing_floor(base);
+    let budget = match interaction_age {
+        Some(age) => interactive_floor(ema_us, target_pct, age),
+        None => budget_floor(ema_us, target_pct),
     };
     pacing.max(budget)
 }
@@ -486,24 +516,51 @@ mod tests {
         let ms = |d: Duration| d.as_millis() as i64;
         // Interactive: latency wins, 16ms floor even for a 2ms pass.
         assert_eq!(
-            ms(budgeted_floor(Duration::from_millis(16), 2_000, 1.0, true)),
+            ms(budgeted_floor(
+                Duration::from_millis(16),
+                2_000,
+                1.0,
+                Some(Duration::ZERO)
+            )),
             16
         );
         // Unfocused raises to 50ms, never lowered by a cheaper budget.
         assert_eq!(
-            ms(budgeted_floor(Duration::from_millis(16), 500, 1.0, false)),
+            ms(budgeted_floor(Duration::from_millis(16), 500, 1.0, None)),
             50
         );
         // Budget above the unfocused floor wins.
         assert_eq!(
-            ms(budgeted_floor(Duration::from_millis(16), 2_000, 1.0, false)),
+            ms(budgeted_floor(Duration::from_millis(16), 2_000, 1.0, None)),
             200
         );
         // Exemplar of the 10Hz target: a 2.6ms pass at 1% = 3.8fps
         // (1/3.846s = 259ms; floor arithmetic is f32).
         assert_eq!(
-            ms(budgeted_floor(Duration::from_millis(16), 2_600, 1.0, false)),
+            ms(budgeted_floor(Duration::from_millis(16), 2_600, 1.0, None)),
             259
+        );
+    }
+
+    #[test]
+    fn interaction_relaxes_only_after_the_full_latency_head() {
+        let ms = |d: Duration| d.as_millis() as i64;
+        // First 150ms: always 60fps, even when over budget.
+        assert_eq!(
+            ms(interactive_floor(2_600, 1.0, Duration::from_millis(149))),
+            16
+        );
+        // Tail with an over-budget frame: ~30fps.
+        assert_eq!(
+            ms(interactive_floor(2_600, 1.0, Duration::from_millis(150))),
+            33
+        );
+        // A cheap frame keeps 60fps for the whole latch.
+        assert_eq!(ms(interactive_floor(100, 1.0, Duration::from_secs(1))), 16);
+        // The governor being off cannot throttle interaction.
+        assert_eq!(
+            ms(interactive_floor(10_000, 0.0, Duration::from_secs(1))),
+            16
         );
     }
 
