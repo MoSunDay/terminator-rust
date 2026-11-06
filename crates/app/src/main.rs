@@ -57,7 +57,7 @@ impl Terminator {
         // hardware default.
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
             let info = render_state.adapter.get_info();
-            render::stats::note_adapter(&info.name);
+            render::stats::note_adapter(&info.name, info.device_type);
             log::info!(
                 "wgpu adapter: {} ({:?}, {:?})",
                 info.name,
@@ -65,6 +65,16 @@ impl Terminator {
                 info.backend
             );
         }
+        if let Some(raw) = render::stats::invalid_target_env() {
+            log::warn!(
+                "ignoring invalid TERMINATOR_CPU_TARGET_PCT={raw:?}; using the adapter default"
+            );
+        }
+        let target_source = match render::stats::target_source() {
+            render::stats::TargetSource::Explicit => "explicit env",
+            render::stats::TargetSource::SoftwareAdapter => "software adapter",
+            render::stats::TargetSource::Default => "default",
+        };
         log::info!(
             "cpu governor: {} (target {:.1}% of one core, {})",
             if render::stats::governor_enabled() {
@@ -73,11 +83,7 @@ impl Terminator {
                 "disabled"
             },
             render::stats::cpu_target_pct(),
-            if render::stats::using_software_target() {
-                "software adapter"
-            } else {
-                "default"
-            }
+            target_source
         );
         let path = persist::state_path();
         let mut st = launch_state(&path);
@@ -119,7 +125,8 @@ impl Terminator {
             // adaptive CPU budget (render/frame_cpu.rs): a measured pass
             // may not cost more than TERMINATOR_CPU_TARGET_PCT of a core
             // per second of output. Human interaction opens a 900ms
-            // 60fps window, so only unattended streams are throttled.
+            // window: 60fps for its first 150ms, then at most a 33ms
+            // floor (and never slower than the governed rate).
             let base = render::stats::output_floor();
             let floor = if render::stats::governor_enabled() {
                 render::cadence::budgeted_floor(
@@ -286,11 +293,17 @@ fn main() -> eframe::Result {
         log::debug!("window icon: {}x{} rgba", icon.width, icon.height);
     }
     if let Ok(raw) = std::env::var(render::present::ENV) {
-        log::info!(
-            "present mode: {:?} (requested {:?})",
-            render::present::parse(&raw),
-            raw
-        );
+        match render::present::parse(&raw) {
+            Some(mode) => log::info!(
+                "present mode: {:?} (requested {:?}; Auto* capability fallback)",
+                mode,
+                raw
+            ),
+            None => log::warn!(
+                "present mode: unknown {:?}; keeping the HIGH_THROUGHPUT default",
+                raw
+            ),
+        }
     }
     let options = eframe::NativeOptions {
         wgpu_options: render::present::configuration(),

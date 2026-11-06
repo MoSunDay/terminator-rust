@@ -81,7 +81,7 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | S11 | 边缘 resize 手势 | 远程 s11：右边缘 `mousedown 1`，按住时 +/- 拖动，采样结束 `mouseup 1`（EXIT trap 兜底释放） | 记录（tier2） |
 | S12 | tab chip 拖动 / 跨窗拖拽 | 待补：本地 e2e（drag/drop overlay 每帧重绘） | 未实现（tier3） |
 | S13 | `cat` 40k 行输出洪泛 | 远程 s13（需 `S13_ALLOW_FLOOD=1`，会写 live pane）：远端生成 4 万行文件后 `ctl send cat <file>` | 断言 fps <= 65；CPU 仅记录（输出带宽受限） |
-| S14 | 10Hz spinner 稳态 | 本地 S14：`printf "spin10 %s\r"` + `sleep 0.1`，等待 900ms 交互闩锁 + EMA 收敛后采样；远程 s14（需 `S14_ALLOW_TYPE=1`，24s live spinner）同一 payload | 启动日志 `cpu governor: enabled` + 主线程 avg < 1%、max1s <= 2%（突发上限）、fps <= 12；gl 下 process avg < 30% |
+| S14 | 10Hz spinner 稳态 | 本地 S14：`printf "spin10 %s\r"` + `sleep 0.1`，等待 900ms 交互闩锁 + EMA 收敛后采样；远程 s14（需 `S14_ALLOW_TYPE=1`，24s live spinner）同一 payload | 启动日志 `cpu governor: enabled`（gl 且未显式 target/floor 时还要求 `target 0.3% ... software adapter`）+ 主线程 avg < 1%、max1s <= 2%（突发上限）、fps <= 12；gl 下 process avg < 30% |
 | S15 | 8 pane 空闲 | 本地 S15：`Ctrl+Shift+E` x7（windowfocus 后真键），settle 后采样；远程 s15 需 `S15_ALLOW_SPLITS=1`（live 窗口会留下 8 pane） | 断言 frames == 0、process avg < 1%、max1s <= 1% |
 
 ## 环境开关
@@ -105,8 +105,8 @@ python3 scripts/bin/cpu-sample.py --pid PID --seconds N \
 | `MAX_FPS_SPIN` / `MAX_FPS_BUSY` | 65 / 65 | S2 / S13 帧率上限（配合 floor 16ms ≈ 62.5fps；governor 只降不升） |
 | `S14_SAMPLE_S` / `S14_AVG_PCT` / `S14_MAX1S_PCT` / `MAX_FPS_SPIN10` | 5 / 1.0 / 2.0 / 12 | S14 窗口、主线程平均门槛、1 秒突发上限、帧率上限（首窗超限自动重采一次取更优窗口） |
 | `S2_MAX_PROC_PCT` / `S14_MAX_PROC_PCT` | 80 / 30 | gl/软件后端下 S2、S14 的 process 平均 CPU 上限；native 只记录 |
-| `S14_SPIN_N` / `S14` settle | 240 / 6s | 24s payload；6s 让 900ms 交互闩锁结束且 8 样本 EMA 收敛（软件后端可能已在 1fps，3s 会抓到启动 ramp） |
-| `S15_PANES` / `S15_SETTLE_S` / `S15_SAMPLE_S` | 8 / 3 / 8 | 分裂数、静默期、采样窗（超限重采一次取更优） |
+| `S14_SPIN_N` / `S14` settle | 240 / 固定 6s | 24s payload；6s（脚本常量，**不是**环境变量）让 900ms 交互闩锁结束且 8 样本 EMA 收敛（软件后端可能已在 1fps，3s 会抓到启动 ramp） |
+| `S15_PANES` / `S15_SETTLE_S` / `S15_SAMPLE_S` / `S15_MAX1S_PCT` | 8 / 3 / 8 / 1.0 | 分裂数、静默期、采样窗（超限重采一次取更优）、process CPU 的 avg 与 max1s 上限（皆 % 单核） |
 | `APP_BIN` / `CTL_BIN` | target/debug/… | 指向 release 包（`verify-release.sh` 用它） |
 
 - S1/S7 走 `e2e_sandbox` → `TERMINATOR_OPAQUE=1` + `TERMINATOR_NO_MOTION=1`：
@@ -348,11 +348,13 @@ shape 生成，Text shape（每个非空格一个，单 pane 300–900 个）仍
   输出永不静默（大输出仍会逐秒推进），上限 16ms 保留原有 60fps 上限。
 - `main.rs` 的 pty wake 用 `budgeted_floor` 取代裸 pacing floor；
   `stats::governor_enabled` / `cpu_target_pct` 读
-  `TERMINATOR_CPU_TARGET_PCT`（默认 1.0，0=关，>100 回退默认）。
+  `TERMINATOR_CPU_TARGET_PCT`（默认 1.0，0=关；非法值或 >100 视为
+  unset-like，走硬件/软件适配器默认）。
   **显式设置 `TERMINATOR_FRAME_FLOOR_MS`（含 0）会关闭调速器**，e2e 的
   确定节奏因此不受影响。
-- 交互期不降速（900ms 闩锁在每次输入时续期），所以键入手感不受影响；
-  只有无人交互的持续输出才会被降采样。
+- 交互期每次输入续期 900ms 延迟窗口：前 150ms 固定 60fps，之后调速器
+  的帧间隔上限为 33ms（~30fps），所以键入手感不受影响，只有无人交互的
+  持续输出才会被完整降采样。
 gl 沙箱实测（2026-11-02，release）：
 | 场景 | 主线程 max1s | process（记录） | fps |
 | --- | --- | --- | --- |
@@ -380,24 +382,31 @@ M6 把无人值守输出压到 1fps 后，软件光栅沙箱的剩余账单仍�
 只把预算默认值和交互期行为调准：
 
 1. **软件适配器默认 0.3%**（`render/stats.rs`）。`TERMINATOR_CPU_TARGET_PCT`
-   仍显式优先（`0`=关）；适配器名大小写不敏感匹配 llvmpipe / softpipe /
-   SwiftShader / lavapipe / Microsoft WARP / Apple Software Renderer 等。
+   仍显式优先（`0`=关；非法值丢弃并告警，按 unset-like 处理）；适配器名
+   大小写不敏感匹配 llvmpipe / softpipe / SwiftShader / lavapipe / Microsoft
+   WARP / Apple Software Renderer，`DeviceType::Cpu` 也直接判定为软件。
    适配器信息在 `Terminator::new` 从 `cc.wgpu_render_state` 读取后
-   `note_adapter()`，启动日志打印真实 target；`main()` 不再打印过时的硬件默认。
+   `note_adapter()`，启动日志打印真实 target 和来源（explicit env /
+   software adapter / default）；`main()` 不再打印过时的硬件默认。
    llvmpipe 的全窗 S14 仍被 1fps 地板钳住（0.3% 与 1% 帧数相同）；
    收益在尚未触底的每帧成本区间 - 同一 `cpu_ms` 下 0.3% 的帧间隔约为
    1% 的 3.3 倍。本轮 S14 process avg 5.6–8.0%（M6 记录 9.0%，不同 run
    的量级参考，不可把差值单独归因于该默认值）。
 2. **交互闩锁尾部让路**（`render/cadence.rs`）。900ms 闩锁的前
    `INTERACTIVE_FULL_MS=150` 仍 60fps；之后若单帧成本已超 60fps 预算
-   （`budget_floor > 1/60s`），降到 `INTERACTIVE_RELAXED_FLOOR=33ms`
-   （~30fps）。便宜帧不降；首击键回声仍走全速。`frame_cpu::interaction_age()`
-   提供闩锁年龄，`budgeted_floor(..., Option<Duration>)` 统一合成。
+   （`budget_floor > 1/60s`），帧间隔**上限**为
+   `INTERACTIVE_RELAXED_FLOOR=33ms`（~30fps），即
+   `min(budget_floor, 33ms)`；介于 16.7–33ms 的预算保留更快的原值，
+   不会反而被拖慢。便宜帧不降；首击键回声仍走全速。
+   `frame_cpu::interaction_age()` 提供闩锁年龄，
+   `budgeted_floor(..., Option<Duration>)` 统一合成。
 3. **present mode 实验钩子**（`render/present.rs`）。默认仍是
    egui-wgpu `HIGH_THROUGHPUT`（字节等价）；`TERMINATOR_PRESENT_MODE=`
    `immediate|auto-no-vsync|mailbox|fifo|fifo-relaxed` 可覆盖并强制
    `desired_maximum_frame_latency=1`，用于验证 vblank/present 等待占比。
-   这不是用户设置，未知值回退默认。
+   请求先映射到 wgpu 的 `Auto*` 回退链（raw Mailbox/FifoRelaxed 在
+   surface 不支持时会在 `configure` panic），启动日志同时打印请求值与
+   生效的 Auto 模式。这不是用户设置，未知值回退默认。
 4. **P3 进程级门槛**（`scripts/bin/e2e-idle-cpu.sh`）。gl/软件后端下
    S2 process avg `< 80%`、S14 process avg `< 30%`；native 只记录。
    S14 主线程契约改为 avg `< 1.0%` + max1s `<= 2.0%` 突发上限：

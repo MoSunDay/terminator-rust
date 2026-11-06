@@ -429,6 +429,16 @@ float_le "$busy_maxfps" "$MAX_FPS_BUSY" \
 # --- S14: 10Hz output steady state (governor contract) -------------------
 grep -q 'cpu governor: enabled' <<<"$GOV_LINE" \
     || fail "S14: governor is DISABLED at startup (explicit TERMINATOR_FRAME_FLOOR_MS or CPU_TARGET_PCT=0? line: $GOV_LINE) - the 10Hz contract would pass vacuously"
+# The gl sandbox is a software adapter: unless the caller supplied an
+# explicit target/floor, the 0.3% software default must be the effective
+# one (render/stats.rs TargetSource). A silent fallback to the 1.0%
+# hardware default here would make the S2/S14 process budgets too loose.
+if [ "$IDLE_GPU_BACKEND" = "gl" ] \
+    && [ -z "${TERMINATOR_CPU_TARGET_PCT:-}" ] \
+    && [ -z "${TERMINATOR_FRAME_FLOOR_MS:-}" ]; then
+    grep -q 'target 0.3% of one core, software adapter' <<<"$GOV_LINE" \
+        || fail "S14: gl/software backend did not select the 0.3% software target (line: $GOV_LINE) - adapter detection or the CPU_TARGET_PCT override regressed"
+fi
 step "S14 10Hz spinner: governor must hold main-thread avg < ${S14_AVG_PCT}% (max1s <= ${S14_MAX1S_PCT}% burst guard) and fps <= ${MAX_FPS_SPIN10}"
 # The 10Hz steady state IS the <1% contract for output (the 60Hz spinner
 # in S2 is an upper bound only): each output burst wakes the loop, and

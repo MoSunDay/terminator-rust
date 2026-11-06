@@ -16,10 +16,10 @@
 //! tessellation + submit, which happen inside eframe after `App::ui`
 //! returns.
 //!
-//! [`interactive`] latches a 900ms latency window whenever the user
-//! touches the app (input event, IPC request, OSC notice, focus gain):
-//! the budget never delays a response to a human, only unattended
-//! output. Pure helpers, no classes.
+//! [`mark_interaction`]/[`interaction_age`] latch a 900ms latency window
+//! whenever the user touches the app (input event, IPC request, OSC
+//! notice, focus gain): the budget never delays the first response to a
+//! human, only unattended output. Pure helpers, no classes.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -31,7 +31,8 @@ pub const EMA_DEN: u64 = 8;
 /// (page-in, a giant paste) that one frame should not pin on the loop.
 pub const MIN_SAMPLE_US: u64 = 50;
 pub const MAX_SAMPLE_US: u64 = 50_000;
-/// Latency window after human input: framespace stays at 16ms.
+/// Latency window after human input: a 60fps head followed by a capped
+/// relaxation tail (see `cadence::interactive_floor`).
 pub const INTERACTIVE_MS: u64 = 900;
 
 /// Sentinel for "no previous sample"; a real `CLOCK_PROCESS_CPUTIME_ID`
@@ -61,8 +62,9 @@ fn within_interaction(last_ms: u64, now_ms: u64) -> bool {
     last_ms != 0 && now_ms >= last_ms && now_ms - last_ms < INTERACTIVE_MS
 }
 
-/// Latch human interaction: the next 900ms of output pacing keeps the
-/// 16ms floor (interactive latency beats the CPU budget).
+/// Latch human interaction: the next 900ms of output pacing starts at
+/// the 16ms floor and caps the budgeted tail at ~30fps (interactive
+/// latency beats the CPU budget, but never paces slower than it).
 pub fn mark_interaction() {
     LAST_INTERACTION_MS.store(interaction_now_ms(), Ordering::Relaxed);
 }

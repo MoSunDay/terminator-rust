@@ -14,24 +14,30 @@ bucket, which is quantized by the kernel's 100Hz tick.
 1. **Software-adapter target** (`crates/app/src/render/stats.rs`):
    `SOFTWARE_CPU_TARGET_PCT = 0.3`, selected when the adapter name looks
    like llvmpipe / softpipe / SwiftShader / lavapipe / WARP / Microsoft
-   Basic Render Driver / Apple Software Renderer. An explicit
-   `TERMINATOR_CPU_TARGET_PCT` still wins, including `0` (governor off).
-   Detection runs in `Terminator::new` after eframe exposes the adapter;
-   the startup line now reports the effective target instead of the
-   hardware default. At the 1fps software floor the target does not
+   Basic Render Driver / Apple Software Renderer, or wgpu's
+   `DeviceType::Cpu`. An explicit `TERMINATOR_CPU_TARGET_PCT` still wins,
+   including `0` (governor off); an invalid value is discarded and logged
+   as unset-like instead of pinning the hardware default. Detection runs
+   in `Terminator::new` after eframe exposes the adapter; the startup
+   line reports the effective target AND its source (explicit env /
+   software adapter / default). At the 1fps software floor the target does not
    change the frame count; the gain is the 3.3x longer budget interval
    while a frame is still cheap enough to stay above that floor.
 2. **Interaction tail relax** (`crates/app/src/render/frame_cpu.rs`,
    `cadence.rs`): `interaction_age()` replaces the boolean latch.
-   The first `INTERACTIVE_FULL_MS = 150` stays at 60fps; after that, if
-   the measured frame no longer fits the 60fps budget, the floor relaxes
-   to `INTERACTIVE_RELAXED_FLOOR = 33ms` (~30fps). Cheap frames keep
-   60fps for the whole latch, and an off governor never throttles input.
+   The first `INTERACTIVE_FULL_MS = 150` stays at 60fps; after that, an
+   over-budget frame's governed floor is capped at
+   `INTERACTIVE_RELAXED_FLOOR = 33ms` (~30fps) - a cap, never a slower
+   replacement. Cheap frames keep 60fps for the whole latch, and an off
+   governor never throttles input.
 3. **Present-mode experiment** (`crates/app/src/render/present.rs`):
    `TERMINATOR_PRESENT_MODE` selects an alternate surface mode
    (`immediate`/`auto-no-vsync`, `mailbox`, `fifo`, `fifo-relaxed`) with
    one frame of latency; unset/invalid keeps egui-wgpu's
-   `HIGH_THROUGHPUT` preset. This is a measurement hook, not a setting.
+   `HIGH_THROUGHPUT` preset. Raw Mailbox/FifoRelaxed requests are mapped
+   to wgpu's `Auto*` fallback chains because an unsupported raw mode
+   panics in `Surface::configure`; the log shows the requested and
+   effective Auto mode. This is a measurement hook, not a setting.
 4. **Process-level e2e gates** (`scripts/bin/e2e-idle-cpu.sh`):
    under the gl/software backend S2 asserts process average < 80% and
    S14 asserts process average < 30%; native only records. S14's main

@@ -35,9 +35,10 @@ Commit: d0584de719aac52afc1c02384e061a39806eecb0
 - idle CPU e2e（`e2e-idle-cpu.sh`）：S1 空闲 1s 桶 PEAK <1% 单核
   （默认 `IDLE_GPU_BACKEND=gl` —— 宿主 NVIDIA Vulkan 驱动线程
   `[vkps] Update` 有 ~0.3-0.4%/核 的零帧地板，会掩蔽应用自身成本；
-  `native` 用来测真实驱动）、S1b 常驻探针门、wake 往返 ≤2000ms
-  （实测 19ms）、S7 重命名编辑器：期间 frames==0 + 回车提交
-  （egui TextEdit 的 caret blink 已在 ui/style.rs 钉住）、
+  `native` 用来测真实驱动）、S1b 常驻探针（只记录，不设断言）、wake
+  往返 ≤2000ms（实测 19ms）、S7 重命名编辑器：断言 max1s runaway
+  ≤50% + 回车提交成功且按键不漏到 shell（frames 只记录，非断言；
+  egui TextEdit 的 caret blink 已在 ui/style.rs 钉住）、
   S2 spinner / S13 busy 的 fps 门（≤65；基础 floor 16ms ≈ 62.5fps，
   governor 只会抬高，pass 统计见 render/stats.rs；gl 下 S2 另断言
   process avg <80%）、S14 10Hz 稳态（启动日志必须

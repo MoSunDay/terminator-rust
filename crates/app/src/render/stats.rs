@@ -31,6 +31,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use eframe::wgpu::DeviceType;
+
 /// Output pacing floor (ms) when `TERMINATOR_FRAME_FLOOR_MS` is unset or
 /// unusable: ~1/60s between output-driven frames.
 pub const DEFAULT_FLOOR_MS: u64 = 16;
@@ -128,20 +130,32 @@ pub fn predicted_dt_us(secs: f32) -> u64 {
     (us.round().max(1.0) as u64).min(1_000_000)
 }
 
-/// `TERMINATOR_CPU_TARGET_PCT` -> percent of one core. Unparseable,
-/// negative/non-finite or absurd (> [`MAX_CPU_TARGET_PCT`]) values fall
-/// back to [`DEFAULT_CPU_TARGET_PCT`]; `0` is a valid "off".
-pub fn parse_target_pct(s: &str) -> f32 {
+/// Parse `TERMINATOR_CPU_TARGET_PCT`: `Some` only for a finite value in
+/// `0..=MAX_CPU_TARGET_PCT` (`0` is a valid "off"). Invalid input is
+/// unset-like so the software/hardware default still applies.
+fn parse_target_pct_opt(s: &str) -> Option<f32> {
     s.trim()
         .parse::<f32>()
         .ok()
         .filter(|v| v.is_finite() && (0.0..=MAX_CPU_TARGET_PCT).contains(v))
-        .unwrap_or(DEFAULT_CPU_TARGET_PCT)
 }
 
-/// Whether an adapter name identifies a software rasterizer. Pure so the
-/// heuristic is testable without a GPU; matching is case-insensitive.
-pub fn is_software_adapter(name: &str) -> bool {
+/// `TERMINATOR_CPU_TARGET_PCT` with the hardware fallback. Test-only:
+/// the env path uses [`parse_target_pct_opt`], so an invalid value does
+/// NOT count as an explicit override.
+#[cfg(test)]
+pub fn parse_target_pct(s: &str) -> f32 {
+    parse_target_pct_opt(s).unwrap_or(DEFAULT_CPU_TARGET_PCT)
+}
+
+/// Whether an adapter name or wgpu device type identifies a software
+/// rasterizer. Pure so the heuristic is testable without a GPU; name
+/// matching is case-insensitive and covers hosts whose driver reports a
+/// generic CPU device name.
+pub fn is_software_adapter(name: &str, device_type: DeviceType) -> bool {
+    if matches!(device_type, DeviceType::Cpu) {
+        return true;
+    }
     let name = name.to_ascii_lowercase();
     [
         "llvmpipe",
@@ -157,25 +171,33 @@ pub fn is_software_adapter(name: &str) -> bool {
     .any(|needle| name.contains(needle))
 }
 
-/// Remember that the wgpu adapter is a software rasterizer. Called once
-/// after adapter creation; an explicit TERMINATOR_CPU_TARGET_PCT still
-/// wins, so this never overrides a user's choice.
-pub fn note_adapter(name: &str) {
-    if is_software_adapter(name) {
+/// Remember whether the wgpu adapter is a software rasterizer. Called
+/// once after adapter creation; a valid explicit
+/// TERMINATOR_CPU_TARGET_PCT still wins, so this never overrides a
+/// user's choice.
+pub fn note_adapter(name: &str, device_type: DeviceType) {
+    if is_software_adapter(name, device_type) {
         SOFTWARE.store(true, Ordering::Relaxed);
     }
 }
 
-/// The env override, if present. An invalid value still counts as
-/// explicit and falls back to [`DEFAULT_CPU_TARGET_PCT`] through the
-/// parser (never silently switched to the software target).
+/// The env override, if valid. Invalid values are ignored (treated as
+/// unset) rather than masquerading as an explicit hardware default.
 fn env_target_pct() -> Option<f32> {
     static TARGET: OnceLock<Option<f32>> = OnceLock::new();
     *TARGET.get_or_init(|| {
         std::env::var("TERMINATOR_CPU_TARGET_PCT")
             .ok()
-            .map(|v| parse_target_pct(&v))
+            .and_then(|v| parse_target_pct_opt(&v))
     })
+}
+
+/// The raw env value when it is present but unusable (for a startup
+/// warning); `None` means unset or valid.
+pub fn invalid_target_env() -> Option<String> {
+    std::env::var("TERMINATOR_CPU_TARGET_PCT")
+        .ok()
+        .filter(|v| parse_target_pct_opt(v).is_none())
 }
 
 /// Pure target selection: an explicit env value always wins, then the
@@ -188,15 +210,31 @@ pub fn target_pct(explicit: Option<f32>, software: bool) -> f32 {
     })
 }
 
+/// Where the effective target came from (startup diagnostics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetSource {
+    Explicit,
+    SoftwareAdapter,
+    Default,
+}
+
+/// Pure source selection for [`TargetSource`].
+pub fn target_source_for(explicit: Option<f32>, software: bool) -> TargetSource {
+    match (explicit, software) {
+        (Some(_), _) => TargetSource::Explicit,
+        (None, true) => TargetSource::SoftwareAdapter,
+        (None, false) => TargetSource::Default,
+    }
+}
+
 /// The configured CPU target for output-driven frames (0 = off).
 pub fn cpu_target_pct() -> f32 {
     target_pct(env_target_pct(), SOFTWARE.load(Ordering::Relaxed))
 }
 
-/// True when no explicit target was supplied and the software default is
-/// active (for the startup log / diagnostics).
-pub fn using_software_target() -> bool {
-    env_target_pct().is_none() && SOFTWARE.load(Ordering::Relaxed)
+/// Source of the effective CPU target, for the startup log.
+pub fn target_source() -> TargetSource {
+    target_source_for(env_target_pct(), SOFTWARE.load(Ordering::Relaxed))
 }
 
 /// Whether the adaptive output budget is active: no explicit frame floor
@@ -303,10 +341,11 @@ mod tests {
         assert_eq!(parse_target_pct("100"), 100.0);
         for bad in ["", "abc", "-1", "101", "NaN", "inf"] {
             assert_eq!(
-                parse_target_pct(bad),
-                DEFAULT_CPU_TARGET_PCT,
-                "{bad:?} falls back to the default"
+                parse_target_pct_opt(bad),
+                None,
+                "{bad:?} is unset-like, not an explicit hardware default"
             );
+            assert_eq!(parse_target_pct(bad), DEFAULT_CPU_TARGET_PCT);
         }
     }
 
@@ -316,10 +355,18 @@ mod tests {
         assert_eq!(target_pct(None, true), SOFTWARE_CPU_TARGET_PCT);
         assert_eq!(target_pct(Some(2.0), true), 2.0);
         assert_eq!(target_pct(Some(0.0), true), 0.0, "0 = governor off");
+        assert_eq!(target_source_for(None, false), TargetSource::Default);
+        assert_eq!(target_source_for(None, true), TargetSource::SoftwareAdapter);
+        assert_eq!(
+            target_source_for(Some(0.0), true),
+            TargetSource::Explicit,
+            "an explicit 0 turns the governor off, not the software default"
+        );
     }
 
     #[test]
-    fn software_adapters_are_recognized_case_insensitively() {
+    fn software_adapters_are_recognized_by_name_or_device_type() {
+        use DeviceType::{Cpu, DiscreteGpu, IntegratedGpu};
         for name in [
             "llvmpipe (LLVM 19.1.7, 256 bits)",
             "Softpipe",
@@ -327,14 +374,15 @@ mod tests {
             "Microsoft Basic Render Driver",
             "Apple Software Renderer",
         ] {
-            assert!(is_software_adapter(name), "{name:?}");
+            assert!(is_software_adapter(name, DiscreteGpu), "{name:?}");
         }
+        assert!(is_software_adapter("Generic Render Device", Cpu));
         for name in [
             "NVIDIA GeForce RTX 4090",
             "Apple M2",
             "Intel(R) UHD Graphics",
         ] {
-            assert!(!is_software_adapter(name), "{name:?}");
+            assert!(!is_software_adapter(name, IntegratedGpu), "{name:?}");
         }
     }
 
